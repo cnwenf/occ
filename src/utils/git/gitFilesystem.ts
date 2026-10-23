@@ -614,16 +614,69 @@ class GitFileWatcher {
 
 const gitWatcher = new GitFileWatcher()
 
-async function computeBranch(): Promise<string> {
-  const gitDir = await resolveGitDir()
+/**
+ * Official 2.1.309 branch-detection sentinel (BIN309 `not_a_repo` @121672596,
+ * adjacent to `--abbrev-ref` @121672618). A folder that is NOT a git repository
+ * reports this sentinel rather than the literal `HEAD`, so the remote-control
+ * status line never renders `HEAD` for a non-repo (changelog item 20). A
+ * detached HEAD inside a real repo still reports `HEAD` (official `zl`
+ * @258128100 distinguishes `y("not_a_repo")` from a resolved detached HEAD).
+ */
+export const NOT_A_REPO_BRANCH = 'not_a_repo'
+
+/** True when a branch value is the non-repo sentinel (item 20). */
+export function isNotARepoBranch(
+  branch: string | null | undefined,
+): boolean {
+  return branch === NOT_A_REPO_BRANCH
+}
+
+/**
+ * Map an internal branch-detection value to the public branch string.
+ *
+ * Item 20: the `not_a_repo` sentinel becomes `''`. OCC's public `getBranch`
+ * contract is a plain string consumed by truthy-gated renderers (the bridge
+ * status line renders the branch only when it is non-empty) and by `=== 'HEAD'`
+ * guards; translating the sentinel to empty makes every consumer OMIT the
+ * branch for a non-repo instead of rendering `HEAD`/`not_a_repo`. Official
+ * keeps `not_a_repo` internal and renders empty at the status line — the same
+ * observable result. DECLARED DEVIATION: the translation is centralized in the
+ * public getter (git.ts `getBranch`) because the bridge render sites live
+ * outside this work package's files; detection here stays faithful (sentinel).
+ */
+export function toPublicBranch(branch: string): string {
+  return isNotARepoBranch(branch) ? '' : branch
+}
+
+/** HEAD as parsed by readGitHead (branch symref, detached sha, or null). */
+type GitHeadValue =
+  | { type: 'branch'; name: string }
+  | { type: 'detached'; sha: string }
+  | null
+
+/**
+ * Pure branch-derivation seam (item 20). A null `gitDir` (not a repository)
+ * yields NOT_A_REPO_BRANCH; a repo with an unreadable/unborn HEAD or a detached
+ * HEAD yields 'HEAD'; a repo on a branch yields the branch name. Extracted so
+ * the sentinel decision is unit-testable without ambient-cwd manipulation.
+ */
+export function deriveBranch(
+  gitDir: string | null,
+  head: GitHeadValue,
+): string {
   if (!gitDir) {
-    return 'HEAD'
+    return NOT_A_REPO_BRANCH
   }
-  const head = await readGitHead(gitDir)
   if (!head) {
     return 'HEAD'
   }
   return head.type === 'branch' ? head.name : 'HEAD'
+}
+
+async function computeBranch(): Promise<string> {
+  const gitDir = await resolveGitDir()
+  const head = gitDir ? await readGitHead(gitDir) : null
+  return deriveBranch(gitDir, head)
 }
 
 async function computeHead(): Promise<string> {

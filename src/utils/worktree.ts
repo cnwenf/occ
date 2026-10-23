@@ -18,6 +18,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 import { execFileNoThrow, execFileNoThrowWithCwd } from './execFileNoThrow.js'
+import { buildMergedGitEnv } from './git/gitEnv.js'
 import { parseGitConfigValue } from './git/gitConfigParser.js'
 import {
   getCommonDir,
@@ -33,6 +34,18 @@ import {
   worktreeBaseKindFor,
 } from './git/worktreeBaseResolve.js'
 import type { WorktreeBaseKind } from './git/worktreeBaseResolve.js'
+// Official 2.1.309 item 56 — worktree lazy-fetch hardening + partial-clone
+// pre-fetch (BIN309 @252742600..@252783700; see worktreeLazyFetch.ts filedoc
+// for the full symbol map + declared deviations).
+import {
+  computePartialCloneContext,
+  formatLazyFetchFailure,
+  guardHiddenChars,
+  isWorktreeFetchSandboxed,
+  lazyFetchEnv,
+  prefetchMissingObjects,
+  sanitizeGitStderr,
+} from './git/worktreeLazyFetch.js'
 import {
   findCanonicalGitRoot,
   findGitRoot,
@@ -347,7 +360,11 @@ export async function resolveGitRef(params: {
     : ['rev-parse', '--verify', '--quiet', base]
   const result = await execFileNoThrowWithCwd(gitExe(), args, {
     cwd,
-    env: { ...process.env, LC_ALL: 'C' },
+    // Official 2.1.309 items 10+44: the base-resolver spawns under the merge
+    // builder `WNt(e,{LC_ALL:"C"})`→`air` — inherited GIT_* redirect/config
+    // vars are scrubbed, GIT_NO_REPLACE_OBJECTS=1 is default-injected (item
+    // 10), and the C locale is pinned as an explicit override (item 44).
+    env: buildMergedGitEnv({ LC_ALL: 'C' }) as NodeJS.ProcessEnv,
   })
   const stdoutTrimmed = result.stdout.trim()
   if (result.code === 0 && stdoutTrimmed !== '') {
@@ -400,6 +417,14 @@ export async function getOrCreateWorktree(
   // Read the .git pointer file directly (no subprocess, no upward walk) — a
   // subprocess `rev-parse HEAD` burns ~15ms on spawn overhead even for a 2ms
   // task, and the await yield lets background spawnSyncs pile on (seen at 55ms).
+  //
+  // DECLARED DEVIATION (2.1.309 item 56): the official resume path `xGr`
+  // (@252760456) is a full resume-REBASE subsystem (default-branch refresh,
+  // claim/dirt checks, `git status` under the item-44 `{userLocale:!0}` pin,
+  // and a `$st(…,RGr)` pre-fetch of the NEW base's missing objects under a
+  // 2-minute budget — RESUME_FETCH_BUDGET_MINUTES). OCC's fast resume only
+  // re-reads the HEAD sha and never moves the worktree's base, so there is no
+  // host site for the resume prefetch; it is NOT ported rather than invented.
   const existingHead = await readWorktreeHeadSha(worktreePath)
   if (existingHead) {
     return {
@@ -427,6 +452,13 @@ export async function getOrCreateWorktree(
   // (2.1.285 changelog item 3) — SSH_ASKPASS_REQUIRE=never + SSH_ASKPASS=false
   // pins and a detached-from-controlling-terminal spawn, so ssh passphrase /
   // new-host prompts fail fast instead of seizing the terminal.
+  // PARTIAL-WIRING DECLARATION (2.1.309 item 10/44): this fetch env pipeline
+  // stays on the v285 fail-fast formula — it is NOT routed through
+  // buildMergedGitEnv, because the merge scrub would strip the SSH_ASKPASS
+  // pins' surrounding env shape the fail-fast path was verified against, and
+  // the official fetch-site 309 formula was not separately recovered. The
+  // item-56 promisor fetch (worktreeLazyFetch.prefetchMissingObjects) DOES use
+  // the official merge-builder env (WNt=air).
   const fetchSpawn = await resolveFetchSshFailFast(
     { ...process.env, ...GIT_NO_PROMPT_ENV },
     repoRoot,
@@ -513,7 +545,12 @@ export async function getOrCreateWorktree(
         const headRevParse = await execFileNoThrowWithCwd(
           gitExe(),
           ['rev-parse', '--verify', '--quiet', 'HEAD'],
-          { cwd: headCwd, env: { ...process.env, LC_ALL: 'C' } },
+          {
+            cwd: headCwd,
+            // Official 2.1.309 items 10+44: merge builder + explicit C locale
+            // (same `WNt(e,{LC_ALL:"C"})` formula as resolveGitRef above).
+            env: buildMergedGitEnv({ LC_ALL: 'C' }) as NodeJS.ProcessEnv,
+          },
         )
         const headSha = headRevParse.stdout.trim()
         if (headRevParse.code === 0 && headSha !== '') {
@@ -562,10 +599,53 @@ export async function getOrCreateWorktree(
   // sets it or throws (resolveGitRef never returns falsy).
   addArgs.push('-B', worktreeBranch, worktreePath, `${baseSha}^{commit}`)
 
+  // Official 2.1.309 item 56 (@252779841): BEFORE the add, compute the
+  // partial-clone context (`be=await kMn(e,null)`) and pre-fetch the base
+  // commit's still-missing objects under a shared 10-minute budget
+  // (`we=(await $st(e,q,be,…)).failure`). The add spawn then layers
+  // `yne(be)` — GIT_NO_LAZY_FETCH=1 + GIT_ALLOW_PROTOCOL=/ when in force —
+  // over the merge env (`WNt(e,{LC_ALL:"C",...yne(be)})`), and the add-failure
+  // diagnostic appends `ve(Je)`: the prefetch failure when one happened, else
+  // Fst's explanation when the checkout ran with on-demand fetching off.
+  // DECLARED DEVIATION: the official $st resource callback narrows enumeration
+  // to sparsePaths (`eMn(K)`) — not ported; whole-tree QPn enumeration only
+  // (see worktreeLazyFetch.ts deviation #1). The official add argv also
+  // carries `--no-track` + a `-b`/`-B` variant and the Gst/Ust arg prefixes —
+  // OCC keeps its existing `-B` argv (pre-existing deviation).
+  const lazyCtx = await computePartialCloneContext(
+    repoRoot,
+    isWorktreeFetchSandboxed,
+  )
+  const prefetch = await prefetchMissingObjects(repoRoot, baseSha, lazyCtx)
+  const lazyDiagnostic = (stderr: string): string =>
+    prefetch.failure !== null
+      ? `\n${prefetch.failure}`
+      : lazyCtx.inForce
+        ? formatLazyFetchFailure(stderr, {}, baseSha)
+        : ''
+
   const { code: createCode, stderr: createStderr } =
-    await execFileNoThrowWithCwd(gitExe(), addArgs, { cwd: repoRoot })
+    await execFileNoThrowWithCwd(gitExe(), addArgs, {
+      cwd: repoRoot,
+      // Official env:WNt(e,{LC_ALL:"C",...yne(be)}) — merge builder (scrubs
+      // inherited GIT_* redirect/config vars; item-10 default
+      // GIT_NO_REPLACE_OBJECTS=1) + C locale + the lazy-fetch overlay. A
+      // caller-provided GIT_NO_LAZY_FETCH survives the merge scrub, so
+      // inForce checkouts really run with on-demand fetching off.
+      env: buildMergedGitEnv({
+        LC_ALL: 'C',
+        ...(lazyFetchEnv(lazyCtx) ?? {}),
+      }) as NodeJS.ProcessEnv,
+    })
   if (createCode !== 0) {
-    throw new Error(`Failed to create worktree: ${createStderr}`)
+    // Official `Failed to create worktree: ${Gc(zXe(Je,"git's error"))}${ve(Je)}`
+    // (Je = yO-normalized stderr). Gc≈identity + yO/sA≈sanitizeGitStderr per
+    // worktreeLazyFetch.ts deviations #5/#6; OCC keeps its plain Error class
+    // (official throws qf with a git_worktree_create_add_failed telemetry
+    // marker — OCC has no such telemetry channel here).
+    throw new Error(
+      `Failed to create worktree: ${guardHiddenChars(sanitizeGitStderr(createStderr), "git's error")}${lazyDiagnostic(createStderr)}`,
+    )
   }
 
   if (sparsePaths?.length) {
@@ -585,18 +665,50 @@ export async function getOrCreateWorktree(
       await execFileNoThrowWithCwd(
         gitExe(),
         ['sparse-checkout', 'set', '--cone', '--', ...sparsePaths],
-        { cwd: worktreePath },
+        {
+          cwd: worktreePath,
+          // Official 2.1.309 item 56 (@252782780): env:WNt(s,yne(be)) — merge
+          // builder + the lazy-fetch overlay, NO LC_ALL pin on this spawn.
+          env: buildMergedGitEnv({
+            ...(lazyFetchEnv(lazyCtx) ?? {}),
+          }) as NodeJS.ProcessEnv,
+        },
       )
     if (sparseCode !== 0) {
-      await tearDown(`Failed to configure sparse-checkout: ${sparseErr}`)
+      await tearDown(
+        `Failed to configure sparse-checkout: ${guardHiddenChars(sanitizeGitStderr(sparseErr), "git's error")}`,
+      )
     }
     const { code: coCode, stderr: coErr } = await execFileNoThrowWithCwd(
       gitExe(),
       ['checkout', 'HEAD'],
-      { cwd: worktreePath },
+      {
+        cwd: worktreePath,
+        // Official (@252783350): env:WNt(s,{...be.inForce&&{LC_ALL:"C"},
+        // ...yne(be)}) — the C locale is pinned ONLY when lazy fetching is in
+        // force. OCC keeps its existing `checkout HEAD` argv (the official
+        // adds --no-recurse-submodules + Gst/Ust prefixes — pre-existing
+        // deviation, not part of the 309 delta).
+        env: buildMergedGitEnv({
+          ...(lazyCtx.inForce ? { LC_ALL: 'C' } : {}),
+          ...(lazyFetchEnv(lazyCtx) ?? {}),
+        }) as NodeJS.ProcessEnv,
+      },
     )
+    // Official (@252783560): `Xt=be.inForce&&Fst(qt,be,q)!==""` — a checkout
+    // that EXITED 0 but whose stderr matches the lazy-fetch detector means git
+    // silently left out files it could not read; tear the worktree down too.
+    const checkoutLeftOutFiles =
+      lazyCtx.inForce && formatLazyFetchFailure(coErr, {}, baseSha) !== ''
     if (coCode !== 0) {
-      await tearDown(`Failed to checkout sparse worktree: ${coErr}`)
+      await tearDown(
+        `Failed to checkout sparse worktree: ${guardHiddenChars(sanitizeGitStderr(coErr), "git's error")}${lazyDiagnostic(coErr)}`,
+      )
+    }
+    if (checkoutLeftOutFiles) {
+      await tearDown(
+        `Failed to checkout sparse worktree: git left out files whose contents it could not read, so the new worktree was removed.${lazyDiagnostic(coErr)}`,
+      )
     }
   }
 

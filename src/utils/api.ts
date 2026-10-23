@@ -46,6 +46,7 @@ import { isEnvTruthy } from './envUtils.js'
 import { createUserMessage } from './messages.js'
 import {
   getAPIProvider,
+  isDefaultBedrockBaseUrl,
   isFirstPartyAnthropicBaseUrl,
 } from './model/providers.js'
 import {
@@ -221,13 +222,34 @@ export async function toolToAPISchema(
     // Enable fine-grained tool streaming via per-tool API field.
     // Without FGTS, the API buffers entire tool input parameters before sending
     // input_json_delta events, causing multi-minute hangs on large tool inputs.
-    // Gated to direct api.anthropic.com: proxies (LiteLLM etc.) and Bedrock/Vertex
-    // with Claude 4.5 reject this field with 400. See GH#32742, PR #21729.
+    // Gated to direct api.anthropic.com: proxies (LiteLLM etc.) reject this
+    // field with 400. See GH#32742, PR #21729.
+    //
+    // CC 2.1.309 #37: added the bedrock arm. Official 309 gate `N5t`
+    // (@~250486000) vs 308 `A6t` (@~249594900) — the ONLY delta is the
+    // bedrock arm: `!a.ANTHROPIC_BEDROCK_BASE_URL` → `jrr()`
+    // (isDefaultBedrockBaseUrl in model/providers.ts, byte-faithful port of
+    // jrr @BIN309:240757331). Real AWS now accepts eager_input_streaming on
+    // the DEFAULT `bedrock-runtime.<region>.amazonaws.com` endpoint; custom/
+    // proxy Bedrock endpoints stay OFF (400-avoidance preserved).
+    //
+    // DECLARED DEVIATION (structure): the official bedrock arm is NOT
+    // tengu_fgts-gated — it is `jrr() && per-model cfg.eagerInputStreaming
+    // .bedrock` (model-catalog capability map @BIN309:240725004, e.g.
+    // `eager_input_streaming:{bedrock:!0}` on 5+ models in BOTH 308/309).
+    // OCC has no per-model eagerInputStreaming table, so per triage-T2 #37
+    // the bedrock arm reuses OCC's existing tengu_fgts/env flag gate (same
+    // shape as the firstParty arm). The official gate also has a vertex arm
+    // (`!ANTHROPIC_VERTEX_BASE_URL && cfg.vertex`) — unchanged from 308 and
+    // out of item-37 scope; OCC's firstParty-only FGTS surface predates it.
+    const fgtsFlagEnabled =
+      getFeatureValue_CACHED_MAY_BE_STALE('tengu_fgts', false) ||
+      isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING)
+    const fgtsProvider = getAPIProvider()
     if (
-      getAPIProvider() === 'firstParty' &&
-      isFirstPartyAnthropicBaseUrl() &&
-      (getFeatureValue_CACHED_MAY_BE_STALE('tengu_fgts', false) ||
-        isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING))
+      fgtsFlagEnabled &&
+      ((fgtsProvider === 'firstParty' && isFirstPartyAnthropicBaseUrl()) ||
+        (fgtsProvider === 'bedrock' && isDefaultBedrockBaseUrl()))
     ) {
       base.eager_input_streaming = true
     }

@@ -12,7 +12,6 @@ import { useSettings } from '../../../hooks/useSettings.js';
 import { BashTool } from '../../../tools/BashTool/BashTool.js';
 import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../tools/BashTool/bashPermissions.js';
 import { getDestructiveCommandWarning } from '../../../tools/BashTool/destructiveCommandWarning.js';
-import { parseSedEditCommand } from '../../../tools/BashTool/sedEditParser.js';
 import { shouldUseSandbox } from '../../../tools/BashTool/shouldUseSandbox.js';
 import { getCompoundCommandPrefixesStatic } from '../../../utils/bash/prefix.js';
 import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../utils/permissions/bashClassifier.js';
@@ -27,7 +26,6 @@ import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js';
 import { PermissionDialog } from '../PermissionDialog.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
-import { SedEditPermissionRequest } from '../SedEditPermissionRequest/SedEditPermissionRequest.js';
 import { useShellPermissionFeedback } from '../useShellPermissionFeedback.js';
 import { logUnaryPermissionEvent } from '../utils.js';
 import { bashToolUseOptions } from './bashToolUseOptions.js';
@@ -76,7 +74,10 @@ function ClassifierCheckingSubtitle() {
   return t2;
 }
 export function BashPermissionRequest(props) {
-  const $ = _c(21);
+  // CC 2.1.309 #52: the sed-in-place branch that rerouted to
+  // SedEditPermissionRequest (simulated file-edit preview, official BIN308
+  // `J1e` parser + preview block @271962725) was removed upstream — every
+  // Bash command, sed -i included, renders the standard Bash dialog below.
   const {
     toolUseConfirm,
     toolUseContext,
@@ -85,58 +86,11 @@ export function BashPermissionRequest(props) {
     verbose,
     workerBadge
   } = props;
-  let command;
-  let description;
-  let t0;
-  if ($[0] !== toolUseConfirm.input) {
-    ({
-      command,
-      description
-    } = BashTool.inputSchema.parse(toolUseConfirm.input));
-    t0 = parseSedEditCommand(command);
-    $[0] = toolUseConfirm.input;
-    $[1] = command;
-    $[2] = description;
-    $[3] = t0;
-  } else {
-    command = $[1];
-    description = $[2];
-    t0 = $[3];
-  }
-  const sedInfo = t0;
-  if (sedInfo) {
-    let t1;
-    if ($[4] !== onDone || $[5] !== onReject || $[6] !== sedInfo || $[7] !== toolUseConfirm || $[8] !== toolUseContext || $[9] !== verbose || $[10] !== workerBadge) {
-      t1 = <SedEditPermissionRequest toolUseConfirm={toolUseConfirm} toolUseContext={toolUseContext} onDone={onDone} onReject={onReject} verbose={verbose} workerBadge={workerBadge} sedInfo={sedInfo} />;
-      $[4] = onDone;
-      $[5] = onReject;
-      $[6] = sedInfo;
-      $[7] = toolUseConfirm;
-      $[8] = toolUseContext;
-      $[9] = verbose;
-      $[10] = workerBadge;
-      $[11] = t1;
-    } else {
-      t1 = $[11];
-    }
-    return t1;
-  }
-  let t1;
-  if ($[12] !== command || $[13] !== description || $[14] !== onDone || $[15] !== onReject || $[16] !== toolUseConfirm || $[17] !== toolUseContext || $[18] !== verbose || $[19] !== workerBadge) {
-    t1 = <BashPermissionRequestInner toolUseConfirm={toolUseConfirm} toolUseContext={toolUseContext} onDone={onDone} onReject={onReject} verbose={verbose} workerBadge={workerBadge} command={command} description={description} />;
-    $[12] = command;
-    $[13] = description;
-    $[14] = onDone;
-    $[15] = onReject;
-    $[16] = toolUseConfirm;
-    $[17] = toolUseContext;
-    $[18] = verbose;
-    $[19] = workerBadge;
-    $[20] = t1;
-  } else {
-    t1 = $[20];
-  }
-  return t1;
+  const {
+    command,
+    description
+  } = BashTool.inputSchema.parse(toolUseConfirm.input);
+  return <BashPermissionRequestInner toolUseConfirm={toolUseConfirm} toolUseContext={toolUseContext} onDone={onDone} onReject={onReject} verbose={verbose} workerBadge={workerBadge} command={command} description={description} />;
 }
 
 // Inner component that uses hooks - only called for non-MCP CLI commands

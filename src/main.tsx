@@ -163,6 +163,7 @@ import { isXaaEnabled } from 'src/services/mcp/xaaIdpLogin.js';
 import { getRelevantTips } from 'src/services/tips/tipRegistry.js';
 import { logContextMetrics } from 'src/utils/api.js';
 import { type SkippedMcpServerError, recordSkippedMcpServerErrors } from 'src/services/mcp/skippedMcpServerErrors.js';
+import { collectFlagMcpConfigFilePath, setFlagMcpConfigFilePaths } from 'src/services/mcp/flagMcpConfigFilePaths.js';
 import { registerCleanup } from 'src/utils/cleanupRegistry.js';
 import { eagerParseCliFlag } from 'src/utils/cliArgs.js';
 import { createEmptyAttributionState } from 'src/utils/commitAttribution.js';
@@ -1775,6 +1776,10 @@ async function run(): Promise<CommanderCommand> {
       let allConfigs: Record<string, McpServerConfig> = {};
       const fatalErrors: ValidationError[] = [];
       const skippedCandidates: SkippedMcpServerError[] = [];
+      // CC 2.1.309 item 3 (security): file-path --mcp-config entries are
+      // recorded (resolved + realpath spellings) for sandbox denyWrite and
+      // the auto-edit guard — official `je` accumulator (s2.txt @35136600+).
+      const flagMcpConfigPaths: string[] = [];
       for (const configItem of processedConfigs) {
         let configs: Record<string, McpServerConfig> | null = null;
         let errors: ValidationError[] = [];
@@ -1804,6 +1809,10 @@ async function run(): Promise<CommanderCommand> {
             configs = result.config.mcpServers;
           }
           errors = result.errors;
+          // CC 2.1.309 item 3: official records the path REGARDLESS of parse
+          // outcome (stat/realpath gate only) — a config that fails to parse
+          // is still a file the sandbox must not be able to rewrite.
+          flagMcpConfigPaths.push(...await collectFlagMcpConfigFilePath(configPath));
         }
 
         if (configs) {
@@ -1834,6 +1843,10 @@ async function run(): Promise<CommanderCommand> {
           fatalErrors.push(...errors);
         }
       }
+      // CC 2.1.309 item 3: official `Ses(L(je))` — the setter (with dedup)
+      // runs BEFORE the fatal-error early return, so the protection state is
+      // recorded even when startup subsequently exits on invalid config.
+      setFlagMcpConfigFilePaths(flagMcpConfigPaths);
       if (fatalErrors.length > 0) {
         const formattedErrors = fatalErrors.map(err => `${err.path ? err.path + ': ' : ''}${err.message}`).join('\n');
         logForDebugging(`--mcp-config validation failed (${fatalErrors.length} errors): ${formattedErrors}`, {

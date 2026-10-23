@@ -253,3 +253,74 @@ export function isEndpointOnConfiguredAnthropicBase(
     isApprovedCredentialHost(endpointHost)
   )
 }
+
+/**
+ * CC 2.1.309 #37: Bedrock default-endpoint detector — byte-faithful port of
+ * the official `jrr()` (NEW in 2.1.309, @BIN309:240757331; zero hits in
+ * BIN308):
+ *
+ *   function jrr(){let e=i.ANTHROPIC_BEDROCK_BASE_URL;if(e===void 0)return!0;
+ *     return I4r("bedrock",e)&&K.test(new URL(e).hostname.toLowerCase().replace(/\.$/,""))}
+ *
+ * Supporting infrastructure @BIN309:240755400 (present in BOTH 308/309 —
+ * only the FGTS gate's use of it is new):
+ *
+ *   var E="[a-z]{2,4}(?:-[a-z]{2,5})?-[a-z]+-\\d+"                       // region
+ *   var W="(?:amazonaws\\.(?:com(?:\\.cn)?|eu)|api\\.aws|c2s\\.ic\\.gov|sc2s\\.sgov\\.gov|cloud\\.adc-e\\.uk|csp\\.hci\\.ic\\.gov)"
+ *   var K=new RegExp(`\\.(?!us-gov-)${E}\\.(?:vpce\\.)?(?:amazonaws\\.com|api\\.aws)$`)
+ *   function y(e){return new RegExp(`^(?:vpce-[a-z0-9-]+\\.)?${e}(?:-fips)?\\.${E}\\.(?:vpce\\.)?${W}$`)}
+ *   x.bedrock.ownHost = y("bedrock(?:-runtime)?")
+ *   function k(e,t){...unparsable→"unparsable"; !ownHost→"foreign"; https→"own"; else "insecure"}
+ *   function I4r(e,t){return k(e,t)==="own"}
+ *
+ * Semantics: env unset → true; env set → must PARSE, be https, match the
+ * bedrock(-runtime) own-host regex (optional vpce prefix, optional -fips,
+ * any official partition suffix), AND end in a COMMERCIAL amazonaws.com or
+ * api.aws region suffix (K excludes us-gov via lookahead and .cn/eu/gov
+ * partitions by only admitting amazonaws.com|api.aws).
+ *
+ * Consumed by the api.ts FGTS gate's bedrock arm (309 delta: 308's
+ * `!a.ANTHROPIC_BEDROCK_BASE_URL` → `jrr()`, so a SET-but-DEFAULT endpoint
+ * now enables eager_input_streaming; custom/proxy endpoints stay off —
+ * GH#32742 400-avoidance preserved).
+ *
+ * Official symbol → OCC name: `jrr` → isDefaultBedrockBaseUrl.
+ */
+// E — AWS region id: 2-4 letters, optional 2-5-letter mid-segment, -name-#
+const BEDROCK_REGION_PATTERN = '[a-z]{2,4}(?:-[a-z]{2,5})?-[a-z]+-\\d+'
+// W — official AWS partition DNS suffixes
+const BEDROCK_PARTITION_SUFFIX =
+  '(?:amazonaws\\.(?:com(?:\\.cn)?|eu)|api\\.aws|c2s\\.ic\\.gov|sc2s\\.sgov\\.gov|cloud\\.adc-e\\.uk|csp\\.hci\\.ic\\.gov)'
+// K — commercial-partition region suffix (excludes us-gov, .cn, .eu, gov clouds)
+const BEDROCK_COMMERCIAL_REGION_SUFFIX = new RegExp(
+  `\\.(?!us-gov-)${BEDROCK_REGION_PATTERN}\\.(?:vpce\\.)?(?:amazonaws\\.com|api\\.aws)$`,
+)
+// y("bedrock(?:-runtime)?") — bedrock own-host regex
+const BEDROCK_OWN_HOST = new RegExp(
+  `^(?:vpce-[a-z0-9-]+\\.)?bedrock(?:-runtime)?(?:-fips)?\\.${BEDROCK_REGION_PATTERN}\\.(?:vpce\\.)?${BEDROCK_PARTITION_SUFFIX}$`,
+)
+
+export function isDefaultBedrockBaseUrl(): boolean {
+  const baseUrl = process.env.ANTHROPIC_BEDROCK_BASE_URL
+  // jrr: `if(e===void 0)return!0` — ONLY undefined short-circuits; a set
+  // empty string falls through to the URL parse and fails (unparsable).
+  if (baseUrl === undefined) {
+    return true
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(baseUrl)
+  } catch {
+    // k(): "unparsable" ≠ "own"
+    return false
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '')
+  // I4r("bedrock", url) === k()==="own": ownHost match AND https
+  if (!BEDROCK_OWN_HOST.test(hostname)) {
+    return false
+  }
+  if (parsed.protocol !== 'https:') {
+    return false
+  }
+  return BEDROCK_COMMERCIAL_REGION_SUFFIX.test(hostname)
+}

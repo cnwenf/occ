@@ -93,6 +93,26 @@ import {
   hasTrustedReadDenyList,
   isUntrustedSource,
 } from './trustedTierGrants.js'
+import { getFlagMcpConfigFilePaths } from '../../services/mcp/flagMcpConfigFilePaths.js'
+
+/**
+ * CC 2.1.309 (triage-T1-A item 1, security): thrown when the sandbox produced
+ * no confinement for a command that was supposed to run sandboxed — the
+ * command is NOT run unconfined. Official class, verbatim (@246555591):
+ *   `class Dne extends Error{reason;constructor(e,n){super(e);this.reason=n;
+ *    this.name="SandboxPolicyRefusalError"}}`
+ * (neighbors in the official bundle: SandboxCommandTooLongError,
+ * SandboxUnavailableForShellError — not ported, no OCC callers).
+ */
+export class SandboxPolicyRefusalError extends Error {
+  reason: string
+
+  constructor(message: string, reason: string) {
+    super(message)
+    this.reason = reason
+    this.name = 'SandboxPolicyRefusalError'
+  }
+}
 
 // Local copies to avoid circular dependency
 // (permissions.ts imports SandboxManager, bashPermissions.ts imports permissions.ts)
@@ -572,6 +592,14 @@ export function convertToSandboxRuntimeConfig(
   ).filter((p): p is string => p !== undefined)
   denyWrite.push(...settingsPaths)
   denyWrite.push(getManagedSettingsDropInDir())
+  // CC 2.1.309 (triage-T1-A item 3, security): deny writes to the files passed
+  // via --mcp-config — official denyWrite delta @246583600:
+  //   308: `if(mt.push(...pbe()),De.push(...mt.map(qs)),…`
+  //   309: `if(ct.push(...rSe()),ct.push(...oSe()),De.push(...ct.map(Qs)),…`
+  // `oSe()`=flagMcpConfigFilePaths (ported store). Sub-gap: the official also
+  // pushes `rSe()`=flagAgentsFilePaths (--agents files) — OCC has no
+  // agents-flag store, so that push is not ported.
+  denyWrite.push(...getFlagMcpConfigFilePaths())
 
   // Also block settings files in the current working directory if it differs from original
   // This handles the case where the user has cd'd to a different directory

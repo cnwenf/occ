@@ -874,24 +874,12 @@ async function checkPermissionsAndCallTool(
 
   const resultingMessages = []
 
-  // Defense-in-depth: strip _simulatedSedEdit from model-provided Bash input.
-  // This field is internal-only — it must only be injected by the permission
-  // system (SedEditPermissionRequest) after user approval. If the model supplies
-  // it, the schema's strictObject should already reject it, but we strip here
-  // as a safeguard against future regressions.
+  // CC 2.1.309 #52: the `_simulatedSedEdit` defense-in-depth strip was
+  // removed upstream together with the whole sed-edit simulation (BIN308
+  // @252031627 has no BIN309 counterpart; BIN309 keeps only name-based
+  // defensive strips in the remote-execution allow branch @250768466, a
+  // surface OCC does not ship). The strict input schema rejects the key now.
   let processedInput = parsedInput.data
-  if (
-    tool.name === BASH_TOOL_NAME &&
-    processedInput &&
-    typeof processedInput === 'object' &&
-    '_simulatedSedEdit' in processedInput
-  ) {
-    const { _simulatedSedEdit: _, ...rest } =
-      processedInput as typeof processedInput & {
-        _simulatedSedEdit: unknown
-      }
-    processedInput = rest as typeof processedInput
-  }
 
   // Backfill legacy/derived fields on a shallow clone so hooks/canUseTool see
   // them without affecting tool.call(). SendMessageTool adds fields; file
@@ -1615,10 +1603,10 @@ async function checkPermissionsAndCallTool(
         )
       } else if (tool.name === BASH_TOOL_NAME && 'command' in processedInput) {
         const bashInput = processedInput as BashToolInput
-        fileExtension = getFileExtensionsFromBashCommand(
-          bashInput.command,
-          bashInput._simulatedSedEdit?.filePath,
-        )
+        // CC 2.1.309 #52: official telemetry call is single-arg in BIN309
+        // (`Qei(Yi.command)`; BIN308 passed `_simulatedSedEdit?.filePath`
+        // as a 2nd arg @252175104 — removed with the sed-edit simulation).
+        fileExtension = getFileExtensionsFromBashCommand(bashInput.command)
       }
     }
 

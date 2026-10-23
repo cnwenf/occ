@@ -20,10 +20,32 @@
  * OCC port: Shell.ts — `isDiskFullError` (FSn), `DISK_EXHAUSTION_ERRNOS`
  * (O_e), `formatDiskFullStartError` (verbatim message), open moved inside the
  * try, catch branch added after isE2BIG.
+ *
+ * CC 2.1.309 (triage-T3 item 46) UPDATE: the startup message was rewritten
+ * in 309 — official @252265394 (byte-verified):
+ *   `if($r===void 0&&Rst(vs)){let Ss=E(vs),ki=Ss==="EDQUOT"?`the user's disk
+ *    quota is used up (${Ss})`:`this computer's disk is full (${Ss})`;return
+ *    Gy(`The command was not started: ${ki} on the volume holding
+ *    ${xMr(bp(),jNe())} (Claude Code's temporary directory), so the file that
+ *    captures command output could not be created there and nothing ran.
+ *    ${j9}`)}` — same guard/branch position (after e2big, before the raw
+ * passthrough), new text: EDQUOT distinction, the temp-volume name via
+ * join(bp(),jNe()) (= OCC join(getTmpRootDir(), getClaudeTempDirName())),
+ * and the j9 remedy sentence appended.
  */
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import * as REAL_CHILD_PROCESS from 'child_process'
-import * as REAL_FS_PROMISES from 'fs/promises'
+import * as CHILD_PROCESS_NAMESPACE from 'child_process'
+import * as FS_PROMISES_NAMESPACE from 'fs/promises'
+
+// Snapshot the REAL exports by value BEFORE mock.module patches the live
+// namespace bindings (precedent: hookStdioFlags285RealChild.test.ts) —
+// restoring from the patched namespace in afterEach would leak the failing
+// `open` mock into later test files in the same worker.
+const REAL_CHILD_PROCESS = { ...CHILD_PROCESS_NAMESPACE }
+const REAL_FS_PROMISES = { ...FS_PROMISES_NAMESPACE }
+import { join } from 'path'
+import { getClaudeTempDirName } from '../permissions/filesystem.js'
+import { getTmpRootDir } from '../tmpDirBackstop.js'
 import {
   DISK_EXHAUSTION_ERRNOS,
   exec,
@@ -31,8 +53,18 @@ import {
   isDiskFullError,
 } from '../Shell.js'
 
-const OFFICIAL_DISK_FULL_MESSAGE = (errName: string): string =>
-  `The command was not started: this computer's disk is full (${errName}), so the file that captures command output could not be created. Nothing ran. If this is the user's own computer, tell them before deleting anything to make room.`
+// Official j9 remedy const @249266879 (byte-verified).
+const DISK_FULL_REMEDY_309 =
+  "Free space on that volume, or restart Claude Code with CLAUDE_CODE_TMPDIR set to a directory on another one, then retry. If this is the user's own computer, tell them before deleting anything to make room."
+
+const OFFICIAL_DISK_FULL_MESSAGE = (errName: string): string => {
+  const cause =
+    errName === 'EDQUOT'
+      ? `the user's disk quota is used up (${errName})`
+      : `this computer's disk is full (${errName})`
+  const tempDir = join(getTmpRootDir(), getClaudeTempDirName())
+  return `The command was not started: ${cause} on the volume holding ${tempDir} (Claude Code's temporary directory), so the file that captures command output could not be created there and nothing ran. ${DISK_FULL_REMEDY_309}`
+}
 
 function makeErrnoError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code, errno: -1 })

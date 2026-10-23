@@ -8,6 +8,19 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
+// PARTIAL-WIRING DECLARATION (2.1.309 items 10/44, git-env builders in
+// ./git/gitEnv.ts): execFileNoThrow now supports an opt-in `gitEnv` flag that
+// routes the child env through the official merge builder `air`
+// (buildMergedGitEnv — scrub inherited GIT_* redirect/config vars + default
+// GIT_NO_REPLACE_OBJECTS=1). The worktree.ts spawn sites (worktree add /
+// sparse-checkout / checkout / base-resolver) are wired this round because
+// their official 309 formulas were byte-recovered (WNt(e,{LC_ALL:"C",…}) @
+// 252779841/252782780/252783350). The read-only / remote-touching spawns in
+// THIS file are NOT opted in yet: the official 309 env per site (Ts-hardened
+// `od`/`yt` vs `air` vs raw) was not separately recovered, and Ts injects
+// GIT_SSH_COMMAND:"false" unless ssh is explicitly allowed — applying it
+// blindly would break the ls-remote/fetch sites below. Per the no-invention
+// rule this stays a declared gap for a per-site forensics round.
 import { getFsImplementation } from './fsOperations.js'
 import {
   getCachedBranch,
@@ -17,6 +30,7 @@ import {
   getWorktreeCountFromFs,
   isShallowClone as isShallowCloneFs,
   resolveGitDir,
+  toPublicBranch,
 } from './git/gitFilesystem.js'
 import { logError } from './log.js'
 import { memoizeWithLRU } from './memoize.js'
@@ -306,7 +320,11 @@ export const getHead = async (): Promise<string> => {
 }
 
 export const getBranch = async (): Promise<string> => {
-  return getCachedBranch()
+  // Item 20 (2.1.309): detection reports the `not_a_repo` sentinel for a
+  // non-git folder; the public contract translates it to '' so truthy-gated
+  // renderers (bridge status line) omit the branch instead of showing 'HEAD'.
+  // See toPublicBranch / NOT_A_REPO_BRANCH in git/gitFilesystem.ts.
+  return toPublicBranch(await getCachedBranch())
 }
 
 export const getDefaultBranch = async (): Promise<string> => {

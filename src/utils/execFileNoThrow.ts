@@ -4,6 +4,12 @@
 
 import { type ExecaError, execa } from 'execa'
 import { getCwd } from '../utils/cwd.js'
+import { type GitEnvOptions, buildMergedGitEnv } from './git/gitEnv.js'
+import {
+  GIT_MISSING_MACOS_EXIT_CODE,
+  GIT_MISSING_MACOS_MESSAGE,
+  isGitMissingOnMacos,
+} from './git/macosGitMissing.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
 
@@ -26,6 +32,14 @@ type ExecFileOptions = {
   // controlling terminal on POSIX so ssh cannot prompt on /dev/tty. Used by
   // the worktree/teleport fetch fail-fast (2.1.285 changelog item 3).
   withoutControllingTerminal?: boolean
+  // Opt-in git-env hardening (official git-spawn wrapper `WNt`/`jKs`→`air`,
+  // BIN309 @23003239/@22986874). When set, `env` is treated as the minimal
+  // override layer and routed through buildMergedGitEnv before reaching execa:
+  // inherited GIT_* redirect/config vars are scrubbed and (2.1.309 item 10)
+  // GIT_NO_REPLACE_OBJECTS=1 is default-injected. Pass `true` for the default
+  // merge, or a GitEnvOptions to pin a repository / opt out of the C locale.
+  // Absent → the generic exec path is unchanged (no git coupling).
+  gitEnv?: boolean | GitEnvOptions
 }
 
 export function execFileNoThrow(
@@ -46,6 +60,7 @@ export function execFileNoThrow(
     stdin: options.stdin,
     input: options.input,
     withoutControllingTerminal: options.withoutControllingTerminal,
+    gitEnv: options.gitEnv,
   })
 }
 
@@ -61,6 +76,8 @@ type ExecFileWithCwdOptions = {
   input?: string
   /** See ExecFileOptions.withoutControllingTerminal (official `Je` `be`). */
   withoutControllingTerminal?: boolean
+  /** See ExecFileOptions.gitEnv (official git-spawn wrapper `WNt`/`jKs`→`air`). */
+  gitEnv?: boolean | GitEnvOptions
 }
 
 type ExecaResultWithError = {
@@ -108,6 +125,7 @@ export function execFileNoThrowWithCwd(
     stdin: finalStdin,
     input: finalInput,
     withoutControllingTerminal,
+    gitEnv,
   }: ExecFileWithCwdOptions = {
     timeout: 10 * SECONDS_IN_MINUTE * MS_IN_SECOND,
     preserveOutputOnError: true,
@@ -120,6 +138,32 @@ export function execFileNoThrowWithCwd(
   // new-host prompts fail fast instead of seizing the REPL's terminal.
   const detachFromTerminal =
     withoutControllingTerminal === true && getPlatform() !== 'windows'
+  // Official git-spawn wrapper `WNt`/`jKs`→`air` (BIN309 @23003239/@22986874):
+  // when `gitEnv` is opted into, `finalEnv` is the minimal override layer and
+  // the real child env is assembled by the hardened merge-builder (scrubs
+  // inherited GIT_* redirect/config vars; default-injects
+  // GIT_NO_REPLACE_OBJECTS=1 per 2.1.309 item 10). Generic exec is untouched
+  // when `gitEnv` is absent.
+  const resolvedEnv =
+    gitEnv === undefined
+      ? finalEnv
+      : buildMergedGitEnv(
+          finalEnv ?? {},
+          typeof gitEnv === 'object' ? gitEnv : {},
+        )
+  // Official 2.1.309 item 42 guard (BIN309 @240891566):
+  //   if (T !== null && JNe(A, T.env)) return { stdout:"", stderr:Lvn, code:127, error:Lvn }
+  // `isGitMissingOnMacos` is a faithful FALSE STUB (official linux-x64 `JNe`
+  // @240801245), so this git-spawn-path branch EXISTS but is unreachable — no
+  // darwin detection logic is invented. See git/macosGitMissing.ts.
+  if (gitEnv !== undefined && isGitMissingOnMacos(file, resolvedEnv)) {
+    return Promise.resolve({
+      stdout: '',
+      stderr: GIT_MISSING_MACOS_MESSAGE,
+      code: GIT_MISSING_MACOS_EXIT_CODE,
+      error: GIT_MISSING_MACOS_MESSAGE,
+    })
+  }
   return new Promise(resolve => {
     // Use execa for cross-platform .bat/.cmd compatibility on Windows
     const subprocess = execa(file, args, {
@@ -133,7 +177,7 @@ export function execFileNoThrowWithCwd(
       cancelSignal: abortSignal,
       timeout: finalTimeout,
       cwd: finalCwd,
-      env: finalEnv,
+      env: resolvedEnv,
       shell,
       stdin: finalStdin,
       input: finalInput,

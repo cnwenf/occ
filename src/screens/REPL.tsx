@@ -53,6 +53,7 @@ import { useRemoteControlChannel } from '../hooks/useRemoteControlChannel.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import { shouldKeepScrollPositionOnSubmit } from '../types/command.js';
 import { PROMPT_SUPPRESSION_MS, shouldReleaseSuppressedDialogs } from './promptSuppression.js';
+import { resolveEffectiveInputMode, shouldSkipAutoPromptRestore } from './submitInputMode309.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
 import { selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
 import { RewindMessageSelector } from '../components/RewindMessageSelector.js';
@@ -3415,7 +3416,22 @@ export function REPL({
     setAppState: SetAppState;
   }, options?: {
     fromKeybinding?: boolean;
+    /**
+     * 2.1.309 (item 14): forces this submit to be processed as the given mode
+     * regardless of the live composer mode. Official BIN309 composer computes
+     * `ao=D?.inputModeOverride??st.mode` (@276384951) and threads `ao` through
+     * the history prefix, the bash ghost-text gate, the submit call and
+     * `mode:ao` into the handlePromptSubmit analog (@276389479). OCC mirror:
+     * `effectiveMode` below (helper: src/screens/submitInputMode309.ts).
+     */
+    inputModeOverride?: 'prompt';
   }) => {
+    // 2.1.309 (item 14): official `ao=D?.inputModeOverride??st.mode` — the
+    // mode this submit is processed as. A key-bound slash command fired from
+    // `!` (bash) mode carries inputModeOverride:'prompt' so it never routes
+    // through the shell (processUserInput's bash branch precedes the slash
+    // branch).
+    const effectiveMode = resolveEffectiveInputMode(inputMode, options);
     // Re-pin scroll to bottom on submit so the user always sees the new
     // exchange (matches OpenCode's auto-scroll behavior).
     // Official v299 (#033): local-jsx commands flagged keepsScrollPosition
@@ -3597,12 +3613,16 @@ export function REPL({
     // Skip history for keybinding-triggered commands (user didn't type the command).
     if (!options?.fromKeybinding) {
       addToHistory({
-        display: speculationAccept ? input : prependModeCharacterToInput(input, inputMode),
+        // 2.1.309 (item 14): official `{display:SPe(h,ao)}` (@276385717) uses
+        // the EFFECTIVE mode, not the live mode, for the history prefix.
+        display: speculationAccept ? input : prependModeCharacterToInput(input, effectiveMode),
         pastedContents: speculationAccept ? {} : pastedContents
       });
       // Add the just-submitted command to the front of the ghost-text
       // cache so it's suggested immediately (not after the 60s TTL).
-      if (inputMode === 'bash') {
+      // 2.1.309 (item 14): official ghost-text gate is `ao==="bash"` —
+      // effective mode, not live mode.
+      if (effectiveMode === 'bash') {
         prependToShellHistoryCache(input.trim());
       }
     }
@@ -3638,7 +3658,14 @@ export function REPL({
       setPastedContents({});
     }
     if (submitsNow) {
-      setInputMode('prompt');
+      // 2.1.309 (item 14): official `if(Yo&&!tn)st.setMode("prompt")`
+      // (@276387905 region) where
+      // `tn=D?.inputModeOverride!==void 0&&(D.fromKeybinding===!0||D.keepsComposer===!0)`.
+      // A keybinding submit carrying inputModeOverride must NOT stomp the
+      // user's live `!` mode back to prompt after firing.
+      if (!shouldSkipAutoPromptRestore(options)) {
+        setInputMode('prompt');
+      }
       setIDESelection(undefined);
       setSubmitCount(_ => _ + 1);
       helpers.clearBuffer();
@@ -3647,7 +3674,9 @@ export function REPL({
       // Show the placeholder in the same React batch as setInputValue('').
       // Skip for slash/bash (they have their own echo), speculation and remote
       // mode (both setMessages directly with no gap to bridge).
-      if (!isSlashCommand && inputMode === 'prompt' && !speculationAccept && !activeRemote.isRemoteMode) {
+      // 2.1.309 (item 14): official gate is `!Sn&&ao==="prompt"` — effective
+      // mode, not live mode.
+      if (!isSlashCommand && effectiveMode === 'prompt' && !speculationAccept && !activeRemote.isRemoteMode) {
         setUserInputOnProcessing(input);
         // showSpinner includes userInputOnProcessing, so the spinner appears
         // on this render. Reset timing refs now (before queryGuard.reserve()
@@ -3774,7 +3803,10 @@ export function REPL({
       helpers,
       queryGuard,
       isExternalLoading,
-      mode: inputMode,
+      // 2.1.309 (item 14): official passes `mode:ao` (effective mode) into the
+      // handlePromptSubmit analog (@276389479), so a key-bound slash command
+      // from `!` mode is processed as a prompt, never as a shell command.
+      mode: effectiveMode,
       commands,
       onInputChange: setInputValue,
       setPastedContents,

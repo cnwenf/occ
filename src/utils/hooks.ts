@@ -24,7 +24,10 @@ import { getPlatform } from './platform.js'
 import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { DEFAULT_HOOK_SHELL } from './shell/shellProvider.js'
-import { buildPowerShellArgs } from './shell/powershellProvider.js'
+import {
+  buildHookPowerShellCommand,
+  buildPowerShellArgs,
+} from './shell/powershellProvider.js'
 import {
   loadPluginOptions,
   substituteUserConfigVariables,
@@ -2057,12 +2060,19 @@ async function execCommandHook(
           `PowerShell, or remove "shell": "powershell" to use bash.`,
       )
     }
-    child = spawn(pwshPath, buildPowerShellArgs(finalCommand), {
-      env: envVars,
-      cwd: safeCwd,
-      // Prevent visible console window on Windows (no-op on other platforms)
-      windowsHide: true,
-    }) as ChildProcessWithoutNullStreams
+    // CC 2.1.309 #32: append the exit-code-2 propagation wrapper (skipped
+    // for PermissionRequest and declaration-leading commands — official
+    // `n==="PermissionRequest"||IWe(to)?to:to+wrapper` @BIN309:~252637500).
+    child = spawn(
+      pwshPath,
+      buildPowerShellArgs(buildHookPowerShellCommand(hookEvent, finalCommand)),
+      {
+        env: envVars,
+        cwd: safeCwd,
+        // Prevent visible console window on Windows (no-op on other platforms)
+        windowsHide: true,
+      },
+    ) as ChildProcessWithoutNullStreams
   } else {
     // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
     // On other platforms, shell: true uses /bin/sh.

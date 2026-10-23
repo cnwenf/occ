@@ -18,6 +18,9 @@ import {
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
+import { logForDiagnosticsNoPII } from './diagLogs.js'
+import { getMemoryCharThreshold } from './memoryThreshold.js'
+import { safeSlice } from './safeSlice.js'
 import { count, uniq } from './array.js'
 import {
   getFsImplementation,
@@ -1896,6 +1899,18 @@ export function memoryFilesToAttachments(
   const attachments: Attachment[] = []
   const shouldFireHook = hasInstructionsLoadedHook()
 
+  // CC 2.1.309 (item 12): per-file character budget for nested memory files.
+  // Official `Sxn` @252512900 (BIN309): `H=Pje(n.options.mainLoopModel)` where
+  // `Pje` @250288561 is `Math.max(40000, Math.round(ctx×0.05×4))` — the same
+  // shape as OCC getMemoryCharThreshold(getContextWindowForModel(model)).
+  // Computed once per batch (official computes it before the loop).
+  // Defensive `options?.` — some test/harness contexts omit options;
+  // getContextWindowForModel falls back to the default window for unknown
+  // models, and getMemoryCharThreshold floors at 40000 chars.
+  const nestedFileCharBudget = getMemoryCharThreshold(
+    getContextWindowForModel(toolUseContext.options?.mainLoopModel ?? ''),
+  )
+
   for (const memoryFile of memoryFiles) {
     // Dedup: loadedNestedMemoryPaths is a non-evicting Set; readFileState
     // is a 100-entry LRU that drops entries in busy sessions, so relying
@@ -1904,10 +1919,59 @@ export function memoryFilesToAttachments(
       continue
     }
     if (!toolUseContext.readFileState.has(memoryFile.path)) {
+      // CC 2.1.309 (item 12): over-budget nested CLAUDE.md loads only its
+      // start. Official `Sxn` @252512900 (BIN309; zero hits for the banner /
+      // `nested_file_cut` in BIN308 — new in 309):
+      //   Q=q.content.trim(); be=!Se&&q.type!=="Managed"&&Q.length>H;
+      //   We=Q.lastIndexOf("\n",H); Ge=re(Q,We>0?We:H);
+      //   Je=We>0?Ft(Ge,"\n")+2:1;
+      //   we=`${Ge}\n\n> Only the start of this file is shown. For the rest,
+      //       call ${qe} on ${q.path} with offset=${Je} and a limit.`
+      //   content: be?{...q,content:we,rawContent:void 0}:q
+      // with qe="Read" @242571236, re≡safeSlice, Ft≡countCharInString.
+      //
+      // Declared structural deviations (official symbol → OCC):
+      // - official `Se` (already-announced check via s?.announced map) —
+      //   OCC has no announced-map subsystem; the loadedNestedMemoryPaths +
+      //   readFileState.has() dedup above is the OCC equivalent guard.
+      // - official `Pje(model)` → getMemoryCharThreshold(
+      //   getContextWindowForModel(model)) composition (same formula).
+      // - official `Ft` @239558666 → existing countCharInString (identical
+      //   indexOf-jump body).
+      // - official `f("context_claude_md_load","nested_file_cut")` telemetry
+      //   → logForDiagnosticsNoPII breadcrumb (claudemd.ts rules_walk_failed
+      //   precedent; stub-safe — no-op unless CLAUDE_CODE_DIAGNOSTICS_FILE).
+      // - official seeds readFileState with seededFromContext:!0 and
+      //   keepContent:!0 — OCC FileState has neither field and
+      //   fileStateCache.ts is out of scope for this change; only
+      //   isPartialView (pre-existing field) is seeded. OMITTED BY DESIGN.
+      const trimmedContent = memoryFile.content.trim()
+      const isOverBudget =
+        memoryFile.type !== 'Managed' &&
+        trimmedContent.length > nestedFileCharBudget
+      let attachmentMemoryFile = memoryFile
+      if (isOverBudget) {
+        const lastNewline = trimmedContent.lastIndexOf('\n', nestedFileCharBudget)
+        const head = safeSlice(
+          trimmedContent,
+          lastNewline > 0 ? lastNewline : nestedFileCharBudget,
+        )
+        const readOffset =
+          lastNewline > 0 ? countCharInString(head, '\n') + 2 : 1
+        const cutContent = `${head}\n\n> Only the start of this file is shown. For the rest, call ${FILE_READ_TOOL_NAME} on ${memoryFile.path} with offset=${readOffset} and a limit.`
+        // Immutable clone — official {...q, content:we, rawContent:void 0}.
+        attachmentMemoryFile = {
+          ...memoryFile,
+          content: cutContent,
+          rawContent: undefined,
+        }
+        logForDiagnosticsNoPII('warn', 'nested_file_cut')
+      }
+
       attachments.push({
         type: 'nested_memory',
         path: memoryFile.path,
-        content: memoryFile,
+        content: attachmentMemoryFile,
         displayPath: relative(getCwd(), memoryFile.path),
       })
       toolUseContext.loadedNestedMemoryPaths?.add(memoryFile.path)
@@ -1920,6 +1984,10 @@ export function memoryFilesToAttachments(
       // with `isPartialView: true`. Edit/Write see the flag and require a real
       // Read first; getChangedFiles sees real content + undefined offset/limit
       // so mid-session change detection still works.
+      //
+      // CC 2.1.309 (item 12): the head-cut also sets isPartialView (official
+      // `isPartialView:be||q.contentDiffersFromDisk`), and the FULL uncut
+      // content stays cached so change detection still sees the whole file.
       toolUseContext.readFileState.set(memoryFile.path, {
         content: memoryFile.contentDiffersFromDisk
           ? (memoryFile.rawContent ?? memoryFile.content)
@@ -1927,7 +1995,7 @@ export function memoryFilesToAttachments(
         timestamp: Date.now(),
         offset: undefined,
         limit: undefined,
-        isPartialView: memoryFile.contentDiffersFromDisk,
+        isPartialView: isOverBudget || !!memoryFile.contentDiffersFromDisk,
       })
 
 

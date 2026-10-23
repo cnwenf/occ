@@ -29,6 +29,11 @@ import {
  * is unavailable the loader now falls back to bundled roots instead of
  * deferring to the runtime.
  *
+ * claude-code 2.1.309 (F-20): the loader tracks WHY the system store could not
+ * supply trust (`CA_TRUST_FAILURE_REASONS`) and throws the official
+ * "No certificate authority to trust: …" diagnostic when the resolved store
+ * list is empty (`noCertificateAuthorityMessage`).
+ *
  * Memoized for performance. Call clearCACertsCache() to invalidate after
  * environment variable changes (e.g., after trust dialog applies settings.json).
  *
@@ -39,6 +44,40 @@ import {
 
 /** Default CA stores (claude-code 2.1.101: trust OS store by default). */
 export const DEFAULT_CERT_STORES = ['bundled', 'system'] as const
+
+/**
+ * claude-code 2.1.309 (F-20): the official loader `Kr` (BIN309 @241,583,000)
+ * tracks WHY the system store could not supply trust in a reason variable `h`,
+ * defaulting to `expiredOrDenied` and overwriting it in the empty-store and
+ * read-failure branches. All four strings are byte-verbatim from BIN309.
+ *
+ * Structural deviation: the official keeps `h` as a function-local `let`; OCC
+ * exports the reasons as named constants so the message builder below (and the
+ * tests) pin them byte-for-byte.
+ */
+export const CA_TRUST_FAILURE_REASONS = {
+  /** Default reason (`h` initializer): the store resolved to nothing usable. */
+  expiredOrDenied:
+    'every certificate in the system CA store is expired or on the deny list',
+  /** System CA API exists but returned an empty list (`l` truthy branch). */
+  emptySystemStore:
+    "the system CA store is empty: check that this process can read its CA files (SSL_CERT_FILE, SSL_CERT_DIR, or the system's default paths)",
+  /** Runtime exposes no system CA API at all (`l` falsy branch). */
+  noSystemStore: 'the runtime has no system CA store',
+  /** Reading the system store threw (catch branch). */
+  readFailed: 'reading the system CA store failed',
+} as const
+
+/**
+ * claude-code 2.1.309 (F-20): verbatim "No certificate authority to trust"
+ * diagnostic thrown by official `Kr` when the resolved store list is empty.
+ * The official throws `new R(long, short)` (two-message error class, short =
+ * "No certificate authority to trust"); OCC has no such class on this path, so
+ * it throws a plain Error carrying the long (user-facing) message.
+ */
+export function noCertificateAuthorityMessage(reason: string): string {
+  return `No certificate authority to trust: CLAUDE_CODE_CERT_STORE=system (or NODE_OPTIONS --use-system-ca or --use-openssl-ca) leaves out the runtime's bundled roots, and ${reason}. NODE_EXTRA_CA_CERTS only adds to the store; it does not count on its own.`
+}
 
 /**
  * Resolve the CA store list (mirrors claude-code 2.1.101's fd5()):
@@ -172,6 +211,11 @@ export const getCACertificates = memoize((): string[] | undefined => {
   let extraCerts: string[] = []
   let appendedExtra = false
 
+  // claude-code 2.1.309 (official `h` in `Kr`, BIN309 @241,583,9xx): why the
+  // system store could not supply trust — consumed by the empty-resolve guard
+  // below.
+  let systemStoreReason: string = CA_TRUST_FAILURE_REASONS.expiredOrDenied
+
   if (useBundled) {
     pushEntries('bundled', tls.rootCertificates)
     logForDebugging(
@@ -192,6 +236,9 @@ export const getCACertificates = memoize((): string[] | undefined => {
         logForDebugging(
           `CA certs: system store ${getCACerts ? 'returned empty' : 'unavailable'}`,
         )
+        systemStoreReason = getCACerts
+          ? CA_TRUST_FAILURE_REASONS.emptySystemStore
+          : CA_TRUST_FAILURE_REASONS.noSystemStore
         // Fall back to bundled root certs if bundled wasn't already included.
         if (!useBundled) {
           pushEntries('bundled', tls.rootCertificates)
@@ -202,6 +249,7 @@ export const getCACertificates = memoize((): string[] | undefined => {
         `CA certs: Failed to load system CA certificates: ${error}`,
         { level: 'error' },
       )
+      systemStoreReason = CA_TRUST_FAILURE_REASONS.readFailed
       if (!useBundled) {
         pushEntries('bundled', tls.rootCertificates)
       }
@@ -217,6 +265,19 @@ export const getCACertificates = memoize((): string[] | undefined => {
     blockedRoots,
     warnedExtraCerts,
   )
+
+  // claude-code 2.1.309 (official `if(P.length===0)throw` in `Kr`): when the
+  // resolved store list is empty, surface the reason it could not supply
+  // trust. In the shipped official CLI this guard is defensive — the empty
+  // resolve is gated by `refusesBundledFallback` (class default false
+  // @241,573,710; never set true in the binary — host-provided config only),
+  // and official `qr` (@241,581,524 ≡ resolveTrustedCertificates) throws the
+  // older 303 "No root certificates are left to trust" message before it can
+  // return []. OCC has no host/refusesBundledFallback surface, so the guard
+  // mirrors the official structure without inventing a new trigger.
+  if (storeCerts.length === 0) {
+    throw new Error(noCertificateAuthorityMessage(systemStoreReason))
+  }
 
   // Append extra certs from file (deny-list filtered per 2.1.303)
   if (extraCertsPath) {

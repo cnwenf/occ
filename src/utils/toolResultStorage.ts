@@ -20,6 +20,7 @@ import { logForDebugging } from './debug.js'
 import { getErrnoCode, toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
+import { safeSlice } from './safeSlice.js'
 import { getProjectDir } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
 
@@ -335,6 +336,13 @@ async function maybePersistLargeToolResult(
 
 /**
  * Generate a preview of content, truncating at a newline boundary when possible.
+ *
+ * CC 2.1.309 (item 16): the final cut routes through the surrogate-safe
+ * slicer. Official 309 `mht` @247455011 (BIN309):
+ * `return{preview:re(e,i),hasMore:!0}` where `re` ≡ `fe` @278224106
+ * (`e.slice(0,t).replace(/[\uD800-\uDBFF]$/,"")`); 308 `Bmt` @246552671 used
+ * the raw `e.slice(0,a)`, leaving a trailing lone high surrogate when the
+ * cut landed mid-emoji (corrupts JSON session transcripts).
  */
 export function generatePreview(
   content: string,
@@ -352,7 +360,7 @@ export function generatePreview(
   // Otherwise fall back to the exact limit
   const cutPoint = lastNewline > maxBytes * 0.5 ? lastNewline : maxBytes
 
-  return { preview: content.slice(0, cutPoint), hasMore: true }
+  return { preview: safeSlice(content, cutPoint), hasMore: true }
 }
 
 /**

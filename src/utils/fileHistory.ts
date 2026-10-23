@@ -26,7 +26,7 @@ import { inspect } from 'util'
 import { getGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import { getErrnoCode, isENOENT } from './errors.js'
+import { errorMessage, getErrnoCode, isENOENT } from './errors.js'
 import { pathExists } from './file.js'
 import { logError } from './log.js'
 import { recordFileHistorySnapshot } from './sessionStorage.js'
@@ -563,6 +563,391 @@ export async function fileHistoryHasAnyChanges(
     }
   }
   return false
+}
+
+// ---------------------------------------------------------------------------
+// CC 2.1.309 #23: pairwise turn-diff stats for the /rewind pick list.
+//
+// Port of the official `Cwo(state, fromMessageId, toMessageId, budget)`
+// (@BIN309 ~250360556; 2.1.309-only — 0 hits for `pairCounts` / `countUntil` /
+// "skipping turn diff stats" in BIN308). The 308 pick list computed row stats
+// by scanning transcript `structuredPatch` tool results (`NNt` @BIN308
+// 274189515), so a turn that changed a checkpointed file via shell command,
+// subagent, or /code-review --fix rendered "No code changes". The 309 fix
+// diffs the snapshot store instead: from-backup vs to-backup (pairwise) or
+// vs LIVE DISK when the row is the most recent restorable turn (toMessageId
+// undefined) — which is exactly how bash/subagent mutations get detected
+// without any new checkpointing.
+//
+// Official symbol → OCC mapping:
+//   Cwo            → fileHistoryGetTurnDiffStats (below)
+//   q6t            → computeTurnTextDiff (turn-change direction before→after,
+//                     NOT the restore-direction computeDiffStatsForFile)
+//   Ake            → splitTurnDiffLines
+//   TYe/CYe        → readTurnDiffBackup/readTurnDiffFile (lstat + readFile)
+//   xke            → isTurnDiffReadUsable
+//   ODt            → fileHistoryCanRestore (existing)
+//   $7             → maybeExpandFilePath (existing)
+//   Bke            → getBackupEntryFirstVersion (existing name-only wrapper
+//                     getBackupFileNameFirstVersion refactored onto it)
+//   t3t            → checkRewindDestinationSafety (existing)
+//   J6t            → compareStatsAndContent (existing)
+//   Awo=1000       → TURN_DIFF_ROW_COUNTING_MS (MessageSelector
+//                     `rowCountingMs` prop default @BIN309 275204134)
+//   eYo=500        → TURN_DIFF_MAX_EDIT_LENGTH (diffLines maxEditLength)
+//   tYo=2000       → TURN_DIFF_MTIME_FRESH_MS (backup mtime freshness)
+//   wYe=1048576    → NOT ported (see deviation 1)
+//
+// Declared structural deviations (OCC lacks the official substrate):
+//   1. Capped reads: official TYe/CYe read at most `wYe` (1 MiB) bytes with
+//      noFollow; OCC reads whole utf-8 files after an lstat regular-file
+//      gate. The budget-exhausted behavior IS kept: official passes
+//      maxBytes -1 when the deadline elapsed (stats-only read) — OCC models
+//      that with `skipText`.
+//   2. Hidden / read-denied early-null: official checks `[trackingPath,
+//      filePath].some(p => Gs(p) || sy(p))` (hidden-or-ignored / read-denied
+//      predicates) before the live-disk read and reports stats-unknown for
+//      such paths; OCC has no equivalent predicates, so hidden files get
+//      real stats instead. Row counts are unaffected.
+//   3. realParentDir: official FileHistoryBackup records `realParentDir` and
+//      passes it to t3t; OCC's FileHistoryBackup does not, so
+//      checkRewindDestinationSafety runs without the parent-dir comparison.
+//   4. `await Mg()` per-file yield: the minified zero-arg async yield helper
+//      is not uniquely locatable in the bundle (name reused); both observed
+//      call sites are batch-loop event-loop yields → yieldToEventLoop()
+//      (setTimeout 0).
+// ---------------------------------------------------------------------------
+
+/** Official `Awo=1000` (@BIN309 ~250360470) — default row-counting budget. */
+export const TURN_DIFF_ROW_COUNTING_MS = 1000
+
+/** Official `eYo=500` — diffLines maxEditLength for turn diffs. */
+const TURN_DIFF_MAX_EDIT_LENGTH = 500
+
+/** Official `tYo=2000` — backup mtime freshness window (ms). */
+const TURN_DIFF_MTIME_FRESH_MS = 2000
+
+/**
+ * Official Cwo's 4th parameter: per-load budget shared across pick-list rows.
+ * `pairCounts` caches `${before}:${after}` backup-pair stats across rows
+ * (adjacent rows share pairs); `countUntil` is a performance.now() deadline
+ * after which unread pairs degrade to stats-unknown; `signal` aborts the
+ * reverse-sequential row loop when the selector unmounts/re-runs.
+ */
+export type TurnDiffStatsBudget = {
+  pairCounts: Map<string, { insertions: number; deletions: number }>
+  countUntil: number
+  signal: AbortSignal
+}
+
+type TurnDiffRead = {
+  /** undefined when the read was skipped, failed, or the path is absent. */
+  text: string | undefined
+  /** null = path absent; undefined = stat failed (unknown). */
+  stats: Stats | null | undefined
+}
+
+/** Official `xke(read)`: usable when text was read OR the path is absent. */
+function isTurnDiffReadUsable(read: TurnDiffRead): boolean {
+  return read.text !== undefined || read.stats === null
+}
+
+/**
+ * Official `CYe(path, {noFollow, maxBytes})` shape, minus the byte cap
+ * (deviation 1). lstat-based (noFollow); only regular files are read as text.
+ */
+async function readTurnDiffFile(
+  path: string,
+  skipText: boolean,
+): Promise<TurnDiffRead> {
+  let stats: Stats
+  try {
+    stats = await lstat(path)
+  } catch (e: unknown) {
+    return { text: undefined, stats: isENOENT(e) ? null : undefined }
+  }
+  if (skipText || !stats.isFile()) {
+    return { text: undefined, stats }
+  }
+  try {
+    return { text: await readFile(path, 'utf-8'), stats }
+  } catch {
+    return { text: undefined, stats }
+  }
+}
+
+/**
+ * Official `TYe(backupFileName, maxBytes)`: a null backup name means the file
+ * did not exist at that version → {stats:null}; a MISSING backup file is
+ * unknown, not absent → {stats:undefined} (official: `r.stats===null?{stats:
+ * void 0}:r`).
+ */
+async function readTurnDiffBackup(
+  backupFileName: BackupFileName,
+  skipText: boolean,
+): Promise<TurnDiffRead> {
+  if (backupFileName === null) {
+    return { text: undefined, stats: null }
+  }
+  const read = await readTurnDiffFile(
+    resolveBackupPath(backupFileName),
+    skipText,
+  )
+  return read.stats === null ? { text: undefined, stats: undefined } : read
+}
+
+/** Official `Ake(text)`: split on \n, drop one trailing empty line. */
+function splitTurnDiffLines(text: string): string[] {
+  const lines = text.split('\n')
+  if (lines.at(-1) === '') {
+    lines.pop()
+  }
+  return lines
+}
+
+/**
+ * Official `q6t(beforeText, afterText)` (@BIN309 ~250362600). TURN-CHANGE
+ * direction (before→after): returns undefined when identical (file unchanged
+ * for this turn — the caller does not count it), else insertions/deletions.
+ * Empty-side special case, then diffLines with maxEditLength 500, then the
+ * multiset-line fallback used when diffLines bails on the edit-length cap.
+ */
+function computeTurnTextDiff(
+  beforeText: string | undefined,
+  afterText: string | undefined,
+): { insertions: number; deletions: number } | undefined {
+  if (beforeText === afterText) {
+    return undefined
+  }
+  const before = beforeText ?? ''
+  const after = afterText ?? ''
+  if (before === '' || after === '') {
+    return {
+      insertions: splitTurnDiffLines(after).length,
+      deletions: splitTurnDiffLines(before).length,
+    }
+  }
+  const changes = diffLines(before, after, {
+    maxEditLength: TURN_DIFF_MAX_EDIT_LENGTH,
+  })
+  if (changes) {
+    let insertions = 0
+    let deletions = 0
+    for (const change of changes) {
+      if (change.added) {
+        insertions += change.count ?? 0
+      } else if (change.removed) {
+        deletions += change.count ?? 0
+      }
+    }
+    return { insertions, deletions }
+  }
+  const beforeLines = splitTurnDiffLines(before)
+  const afterLines = splitTurnDiffLines(after)
+  const remaining = new Map<string, number>()
+  for (const line of beforeLines) {
+    remaining.set(line, (remaining.get(line) ?? 0) + 1)
+  }
+  let unmatchedAfter = 0
+  for (const line of afterLines) {
+    const count = remaining.get(line)
+    if (count) {
+      remaining.set(line, count - 1)
+    } else {
+      unmatchedAfter++
+    }
+  }
+  return {
+    insertions: unmatchedAfter,
+    deletions: beforeLines.length - (afterLines.length - unmatchedAfter),
+  }
+}
+
+/** Official per-file yield (`await Mg()`, deviation 4). */
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>(resolve => {
+    setTimeout(resolve, 0)
+  })
+}
+
+/**
+ * CC 2.1.309 #23 — computes what changed during ONE turn (fromMessageId →
+ * toMessageId) by diffing the file-history snapshot store. Port of official
+ * `Cwo`. Per-file outcomes:
+ *   - stats object  → file counted, totals accumulated;
+ *   - null          → file counted, stats unknown (link-safety refusal,
+ *                     unreadable/stat-only comparison, budget exhausted) —
+ *                     any null zeroes the aggregate insertions/deletions but
+ *                     keeps filesChanged (official `K?{...}:{w,0,0}`);
+ *   - undefined     → file unchanged for this turn, not counted.
+ * Returns undefined when checkpointing is disabled or fromMessageId has no
+ * snapshot. The official error string is preserved byte-for-byte:
+ * `FileHistory: skipping turn diff stats for ${path}: ${message}`
+ * (@BIN309 250361334 / 250362378).
+ */
+export async function fileHistoryGetTurnDiffStats(
+  state: FileHistoryState,
+  fromMessageId: UUID,
+  toMessageId: UUID | undefined,
+  budget: TurnDiffStatsBudget,
+): Promise<DiffStats> {
+  if (!fileHistoryEnabled()) {
+    return undefined
+  }
+  const fromSnapshot = state.snapshots.findLast(
+    snapshot => snapshot.messageId === fromMessageId,
+  )
+  if (!fromSnapshot) {
+    return undefined
+  }
+  const toSnapshot =
+    toMessageId === undefined
+      ? undefined
+      : state.snapshots.findLast(snapshot => snapshot.messageId === toMessageId)
+
+  // Pair build (official first loop; same skip rules).
+  type TurnDiffPair = {
+    trackingPath: string
+    before: BackupFileName
+    beforeTakenAt: number
+    after: BackupFileName | undefined
+  }
+  const pairs: TurnDiffPair[] = []
+  for (const trackingPath of state.trackedFiles) {
+    try {
+      const fromBackup = fromSnapshot.trackedFileBackups[trackingPath]
+      const toBackup = toSnapshot
+        ? toSnapshot.trackedFileBackups[trackingPath]
+        : undefined
+      if (toSnapshot && !fromBackup && !toBackup) {
+        continue
+      }
+      const beforeEntry =
+        fromBackup ?? getBackupEntryFirstVersion(trackingPath, state)
+      const before = beforeEntry?.backupFileName
+      const after = toSnapshot
+        ? (toBackup ?? getBackupEntryFirstVersion(trackingPath, state))
+            ?.backupFileName
+        : undefined
+      if (
+        before === undefined ||
+        (toSnapshot && (after === undefined || after === before))
+      ) {
+        continue
+      }
+      pairs.push({
+        trackingPath,
+        before,
+        // Official: `new Date(be?.backupTime ?? Number.NaN).getTime()`.
+        beforeTakenAt: new Date(beforeEntry?.backupTime ?? Number.NaN).getTime(),
+        after,
+      })
+    } catch (error) {
+      logError(
+        new Error(
+          `FileHistory: skipping turn diff stats for ${trackingPath}: ${errorMessage(error)}`,
+        ),
+      )
+    }
+  }
+
+  // Stats loop (official second loop).
+  const filesChanged: string[] = []
+  let insertions = 0
+  let deletions = 0
+  let allStatsKnown = true
+  for (const { trackingPath, before, beforeTakenAt, after } of pairs) {
+    if (budget.signal.aborted) {
+      return undefined
+    }
+    try {
+      const filePath = maybeExpandFilePath(trackingPath)
+      const budgetExhausted = performance.now() >= budget.countUntil
+      let stats: { insertions: number; deletions: number } | null | undefined
+      if (after === undefined) {
+        // Most-recent-turn row: diff the before-backup against LIVE DISK.
+        // Deviation 2: no hidden/read-denied early-null (OCC lacks Gs/sy).
+        // Deviation 3: no realParentDir for the t3t-equivalent safety check.
+        const refused = await checkRewindDestinationSafety(filePath).then(
+          verdict => verdict.verdict === 'refused',
+          () => true,
+        )
+        if (refused) {
+          stats = null
+        } else {
+          const [beforeRead, liveRead] = await Promise.all([
+            readTurnDiffBackup(before, budgetExhausted),
+            readTurnDiffFile(filePath, budgetExhausted),
+          ])
+          if (
+            isTurnDiffReadUsable(beforeRead) &&
+            isTurnDiffReadUsable(liveRead)
+          ) {
+            stats = computeTurnTextDiff(beforeRead.text, liveRead.text)
+          } else if (
+            beforeRead.stats === undefined ||
+            liveRead.stats === undefined
+          ) {
+            stats = null
+          } else {
+            // Stats-only fallback (official): trust an mtime difference when
+            // the live mtime moved, or the backup was taken within the 2 s
+            // freshness window of its recorded backupTime.
+            const backupMtimeMs = beforeRead.stats?.mtimeMs ?? 0
+            const mtimeTrusted =
+              liveRead.stats?.mtimeMs !== backupMtimeMs ||
+              beforeTakenAt - backupMtimeMs <= TURN_DIFF_MTIME_FRESH_MS
+            stats = compareStatsAndContent(
+              liveRead.stats,
+              beforeRead.stats,
+              () => mtimeTrusted,
+            )
+              ? null
+              : undefined
+          }
+        }
+      } else {
+        // Interior row: pairwise backup-vs-backup with the shared cache.
+        const pairKey = `${before}:${after}`
+        stats = budget.pairCounts.get(pairKey)
+        if (!stats && budgetExhausted) {
+          stats = null
+        } else if (!stats) {
+          const [beforeRead, afterRead] = await Promise.all([
+            readTurnDiffBackup(before, false),
+            readTurnDiffBackup(after, false),
+          ])
+          stats =
+            isTurnDiffReadUsable(beforeRead) && isTurnDiffReadUsable(afterRead)
+              ? computeTurnTextDiff(beforeRead.text, afterRead.text)
+              : null
+          if (stats) {
+            budget.pairCounts.set(pairKey, stats)
+          }
+        }
+      }
+      if (stats === undefined) {
+        continue
+      }
+      filesChanged.push(filePath)
+      if (stats === null) {
+        allStatsKnown = false
+        continue
+      }
+      insertions += stats.insertions
+      deletions += stats.deletions
+      await yieldToEventLoop()
+    } catch (error) {
+      logError(
+        new Error(
+          `FileHistory: skipping turn diff stats for ${trackingPath}: ${errorMessage(error)}`,
+        ),
+      )
+    }
+  }
+  return allStatsKnown
+    ? { filesChanged, insertions, deletions }
+    : { filesChanged, insertions: 0, deletions: 0 }
 }
 
 /**
@@ -1266,21 +1651,33 @@ async function restoreBackup(
  * did not exist in the first version, or undefined if we cannot find a
  * first version at all
  */
+/**
+ * CC 2.1.309 #23: official `Bke(trackingPath, state)` returns the whole
+ * first-version backup ENTRY (the turn-diff port needs its backupTime for the
+ * mtime-freshness window). undefined means the first version could not be
+ * resolved.
+ */
+function getBackupEntryFirstVersion(
+  trackingPath: string,
+  state: FileHistoryState,
+): FileHistoryBackup | undefined {
+  for (const snapshot of state.snapshots) {
+    const backup = snapshot.trackedFileBackups[trackingPath]
+    if (backup !== undefined && backup.version === 1) {
+      return backup
+    }
+  }
+  return undefined
+}
+
 function getBackupFileNameFirstVersion(
   trackingPath: string,
   state: FileHistoryState,
 ): BackupFileName | undefined {
-  for (const snapshot of state.snapshots) {
-    const backup = snapshot.trackedFileBackups[trackingPath]
-    if (backup !== undefined && backup.version === 1) {
-      // This can be either a file name or null, with null meaning the file
-      // did not exist in the first version.
-      return backup.backupFileName
-    }
-  }
-
-  // The undefined means there was an error resolving the first version.
-  return undefined
+  // This can be either a file name or null, with null meaning the file
+  // did not exist in the first version. The undefined means there was an
+  // error resolving the first version.
+  return getBackupEntryFirstVersion(trackingPath, state)?.backupFileName
 }
 
 /**

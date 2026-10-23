@@ -1,3 +1,35 @@
+/**
+ * CC 2.1.309 #52: the `sed -i` simulated file-edit preview was removed
+ * upstream — a sed in-place edit now gets the standard Bash permission
+ * prompt, runs as written (no `_simulatedSedEdit` pre-computed result), and
+ * is no longer checkpointed for /rewind. Official symbol → OCC mapping
+ * (BIN309=/tmp/cc-diff-309/vver/package/claude, BIN308=…/vprev, read-only
+ * dd/strings forensics):
+ *
+ *   - parser `J1e` @BIN308:253021236 → OCC `sedEditParser.ts`
+ *     `parseSedEditCommand` — DELETED (BIN309 markers
+ *     `if(!H.match(/^s\//))return null` 1→0 hits, `extendedRegex` 3→0;
+ *     `function KMs`/applySedSubstitution has no BIN309 definition).
+ *   - schema field `_simulatedSedEdit` `.describe("Internal: pre-computed sed
+ *     edit result from preview")` @BIN308:253029252 → 0 hits in BIN309 —
+ *     field DELETED from `fullInputSchema` below.
+ *   - `applySedEdit` (official `Uws`, call() short-circuit
+ *     `if(n._simulatedSedEdit&&!s.remoteCall)…` @BIN308:253043770) — DELETED.
+ *   - `userFacingName` sed branch — DELETED; BIN309 @253978500 is exactly
+ *     `userFacingName(e){if(!e)return"Bash";return i.CLAUDE_CODE_BASH_SANDBOX_SHOW_INDICATOR&&Y_(e)?"SandboxedBash":"Bash"}`.
+ *   - RETAINED by official (defensive name-based strips): omit-list constant
+ *     `HTr=[…,"run_in_background","_simulatedSedEdit"]` @BIN309:249206182
+ *     (inert — the omit helper filters `s in e.shape`) and the
+ *     remote-execution allow-branch strip @BIN309:250768466. OCC deviation:
+ *     OCC's zod omit is typed against the shape, so the inert name is dropped
+ *     from the omit call instead of kept as a dead string; semantics
+ *     identical (the field no longer exists to omit).
+ *   - KEPT untouched (unchanged 308→309 in the binary): `sedValidation.ts`
+ *     read-only/permission infra (`checkSedConstraints`,
+ *     `sedCommandIsAllowedByAllowlist`) and the bashEditDiff subsystem.
+ *
+ * See __tests__/sedEditSimulationRemoval309.test.ts for the full offsets.
+ */
 import { feature } from 'src/utils/featureFlags.js';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
@@ -8,7 +40,6 @@ import { z } from 'zod/v4';
 import { getKairosActive } from '../../bootstrap/state.js';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
-import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js';
 import type { SetToolJSXFn, ToolCallProgress, ToolUseContext, ValidationResult } from '../../Tool.js';
 import { buildTool, type ToolDef } from '../../Tool.js';
 import { backgroundExistingForegroundTask, markTaskNotified, registerForeground, spawnShellTask, unregisterForeground } from '../../tasks/LocalShellTask/LocalShellTask.js';
@@ -20,14 +51,10 @@ import { splitCommand_DEPRECATED, splitCommandWithOperators } from '../../utils/
 import { extractClaudeCodeHints } from '../../utils/claudeCodeHints.js';
 import { detectCodeIndexingFromCommand } from '../../utils/codeIndexing.js';
 import { areBackgroundTasksDisabled, isEnvTruthy } from '../../utils/envUtils.js';
-import { errorMessage as getErrorMessage, isENOENT, ShellError } from '../../utils/errors.js';
+import { errorMessage as getErrorMessage, ShellError } from '../../utils/errors.js';
 import { logForDebugging } from '../../utils/debug.js';
-import { detectFileEncoding, detectLineEndings, getFileModificationTime, writeTextContent } from '../../utils/file.js';
-import { fileHistoryEnabled, fileHistoryTrackEdit } from '../../utils/fileHistory.js';
 import { truncate } from '../../utils/format.js';
-import { getFsImplementation } from '../../utils/fsOperations.js';
 import { lazySchema } from '../../utils/lazySchema.js';
-import { expandPath } from '../../utils/path.js';
 import { getCwd } from '../../utils/cwd.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
@@ -42,7 +69,6 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
 import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
-import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
 import {
   getStdoutWithGitTail,
   trackGitOperations,
@@ -52,7 +78,6 @@ import { type BashReadTriggerContext, recordBashReadFiles } from './bashReadComm
 import { interpretCommandResult } from './commandSemantics.js';
 import { backgroundCompletionNoticeEnabled, clampTimeoutMs, getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
 import { checkReadOnlyConstraints } from './readOnlyValidation.js';
-import { parseSedEditCommand } from './sedEditParser.js';
 import { shouldUseSandbox } from './shouldUseSandbox.js';
 import { BASH_TOOL_NAME } from './toolName.js';
 import { BackgroundHint, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseQueuedMessage } from './UI.js';
@@ -254,24 +279,22 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
   // capable, the description documents `timeout` as the background lifetime
   // limit; the disabled branch keeps OCC's pre-existing sentence.
   run_in_background: semanticBoolean(z.boolean().optional()).describe(runInBackgroundDescription()),
-  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
-  _simulatedSedEdit: z.object({
-    filePath: z.string(),
-    newContent: z.string()
-  }).optional().describe('Internal: pre-computed sed edit result from preview')
+  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.')
+  // CC 2.1.309 #52: the internal `_simulatedSedEdit` field (BIN308
+  // @253029156, `.describe("Internal: pre-computed sed edit result from
+  // preview")`) was removed upstream — 0 hits in BIN309. sed -i commands run
+  // as written through the normal shell path.
 }));
 
-// Always omit _simulatedSedEdit from the model-facing schema. It is an internal-only
-// field set by SedEditPermissionRequest after the user approves a sed edit preview.
-// Exposing it in the schema would let the model bypass permission checks and the
-// sandbox by pairing an innocuous command with an arbitrary file write.
-// Also conditionally remove run_in_background when background tasks are disabled.
+// Conditionally remove run_in_background when background tasks are disabled.
+// Official 309 keeps an inert `"_simulatedSedEdit"` NAME in its model-facing
+// omit list (`HTr=[…,"run_in_background","_simulatedSedEdit"]`
+// @BIN309:249206182; the omit helper filters `s in e.shape`, and the field no
+// longer exists). OCC's zod omit is typed against the shape, so the dead name
+// is dropped instead — semantics identical (declared deviation, see filedoc).
 const inputSchema = lazySchema(() => isBackgroundTasksDisabled ? fullInputSchema().omit({
-  run_in_background: true,
-  _simulatedSedEdit: true
-}) : fullInputSchema().omit({
-  _simulatedSedEdit: true
-}));
+  run_in_background: true
+}) : fullInputSchema());
 type InputSchema = ReturnType<typeof inputSchema>;
 
 // Use fullInputSchema for the type to always include run_in_background
@@ -427,76 +450,14 @@ export function detectBlockedSleepPattern(command: string): string | null {
  * - Prefix patterns: "npm run test:*"
  */
 
-type SimulatedSedEditResult = {
-  data: Out;
-};
-type SimulatedSedEditContext = Pick<ToolUseContext, 'readFileState' | 'updateFileHistoryState'>;
+// CC 2.1.309 #52: `applySedEdit` (official `Uws` — the `_simulatedSedEdit`
+// short-circuit that wrote the previewed content directly, tracked it via
+// fileHistoryTrackEdit for /rewind, and notified VS Code) was removed
+// upstream along with the sed-edit preview. BIN308 call()-site
+// `if(n._simulatedSedEdit&&!s.remoteCall)return{...await Uws(...)}`
+// @253043770 has no BIN309 counterpart. sed -i now runs as an ordinary
+// shell command with no simulated-edit path and no file-history checkpoint.
 
-/**
- * Applies a simulated sed edit directly instead of running sed.
- * This is used by the permission dialog to ensure what the user previews
- * is exactly what gets written to the file.
- */
-async function applySedEdit(simulatedEdit: {
-  filePath: string;
-  newContent: string;
-}, toolUseContext: SimulatedSedEditContext, parentMessage?: AssistantMessage): Promise<SimulatedSedEditResult> {
-  const {
-    filePath,
-    newContent
-  } = simulatedEdit;
-  const absoluteFilePath = expandPath(filePath);
-  const fs = getFsImplementation();
-
-  // Read original content for VS Code notification
-  const encoding = detectFileEncoding(absoluteFilePath);
-  let originalContent: string;
-  try {
-    originalContent = await fs.readFile(absoluteFilePath, {
-      encoding
-    });
-  } catch (e) {
-    if (isENOENT(e)) {
-      return {
-        data: {
-          stdout: '',
-          stderr: `sed: ${filePath}: No such file or directory\nExit code 1`,
-          interrupted: false
-        }
-      };
-    }
-    throw e;
-  }
-
-  // Track file history before making changes (for undo support)
-  if (fileHistoryEnabled() && parentMessage) {
-    await fileHistoryTrackEdit(toolUseContext.updateFileHistoryState, absoluteFilePath, parentMessage.uuid);
-  }
-
-  // Detect line endings and write new content
-  const endings = detectLineEndings(absoluteFilePath);
-  writeTextContent(absoluteFilePath, newContent, encoding, endings);
-
-  // Notify VS Code about the file change
-  notifyVscodeFileUpdated(absoluteFilePath, originalContent, newContent);
-
-  // Update read timestamp to invalidate stale writes
-  toolUseContext.readFileState.set(absoluteFilePath, {
-    content: newContent,
-    timestamp: getFileModificationTime(absoluteFilePath),
-    offset: undefined,
-    limit: undefined
-  });
-
-  // Return success result matching sed output format (sed produces no output on success)
-  return {
-    data: {
-      stdout: '',
-      stderr: '',
-      interrupted: false
-    }
-  };
-}
 // H10 (2.1.116): throttled gh GitHub API rate-limit hint. When a `gh`
 // command's output signals rate limiting, surface a <system-reminder>
 // nudging the model to check `gh api rate_limit` and back off. Throttled
@@ -624,16 +585,10 @@ export const BashTool = buildTool({
     if (!input) {
       return 'Bash';
     }
-    // Render sed in-place edits as file edits
-    if (input.command) {
-      const sedInfo = parseSedEditCommand(input.command);
-      if (sedInfo) {
-        return fileEditUserFacingName({
-          file_path: sedInfo.filePath,
-          old_string: 'x'
-        });
-      }
-    }
+    // CC 2.1.309 #52: the sed-in-place branch (BIN308
+    // `if(e.command){let n=J1e(e.command);if(n)return BDe({file_path:…})}`)
+    // was removed upstream — BIN309 @253978500 is exactly the two-case form
+    // below.
     // Env var FIRST: shouldUseSandbox → splitCommand_DEPRECATED → shell-quote's
     // `new RegExp` per call. userFacingName runs per-render for every bash
     // message in history; with ~50 msgs + one slow-to-tokenize command, this
@@ -807,11 +762,9 @@ export const BashTool = buildTool({
     };
   },
   async call(input: BashToolInput, toolUseContext, _canUseTool?: CanUseToolFn, parentMessage?: AssistantMessage, onProgress?: ToolCallProgress<BashProgress>) {
-    // Handle simulated sed edit - apply directly instead of running sed
-    // This ensures what the user previewed is exactly what gets written
-    if (input._simulatedSedEdit) {
-      return applySedEdit(input._simulatedSedEdit, toolUseContext, parentMessage);
-    }
+    // CC 2.1.309 #52: the `input._simulatedSedEdit` short-circuit (official
+    // `Uws` apply path, BIN308 @253043770) was removed upstream — every
+    // command, sed -i included, runs through the normal shell path below.
     const {
       abortController,
       getAppState,

@@ -9,6 +9,7 @@ import {
   join,
   sep as pathSep,
   relative,
+  resolve,
 } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
@@ -69,7 +70,10 @@ import {
 import { gateAllowedToolsAtLoad } from '../utils/permissions/frontmatterGrants.js'
 import {
   filterRefusedReservedNames,
+  isPlaidHarborEnabled,
+  isReservedName,
   logReservedNamesRefusedTelemetry,
+  warnReservedNameRefused,
 } from '../utils/skills/reservedNames.js'
 import {
   escapeAngleBrackets,
@@ -328,6 +332,376 @@ export function dropShadowedFallbackSkills(skills: Command[]): Command[] {
  */
 export function dropShadowedSkills(skills: Command[]): Command[] {
   return dropShadowedFallbackSkills(dropShadowedBundledSkills(skills))
+}
+
+// ---------------------------------------------------------------------------
+// CC 2.1.309 item 27 (=F-12) — folder-qualified skill offering.
+//
+// A skill in an `--add-dir` folder was unreachable when another skill already
+// held its name. Official 309 offers it as `<folder>:<name>` with a scoped
+// description, and refuses (with a log) qualified names that would themselves
+// be ambiguous.
+//
+// Official surface (BIN309, skills chunk):
+//   - collision/offering merge loop ("bt loop") @251,216,800 — incl. the
+//     kt/ct/mt ambiguity prepass and the guard log
+//     `[skills] <name> is not offered: another skill would share the name`
+//   - `EM(e,n)=`${e}:${n}`` qualifier; `Tdr` folder label; `CTe` folder root;
+//     `jln` from-suffix; `vdr` qualified copy; `Yln` offerability gate
+//     @251,220,700
+//   - `D8t`/`Abe` workspace-root-relative label @250,658,038 (308's `sar`
+//     returned null for out-of-workspace folders — that IS the bug 309 fixes)
+//   - `vz` name gate @249,964,807 = `Y$o(q) || QV(q) && !pGt()` ≡
+//     `!isSkillNameOffered(q) || (isReservedName(q) && !isPlaidHarborEnabled())`
+//   - `hft` fallback-skill gate @249,938,013
+//   - `xTe` refusal recorder @252,292,039 ≡ OCC warnReservedNameRefused
+//
+// Declared structural deviations (official symbol → OCC):
+//   - `it` (names held by builtin/other already-offered commands) → EMPTY.
+//     The official runs this pass over the fully-merged command list; OCC's
+//     loader cannot import commands.ts (commands.ts imports loadSkillsDir —
+//     cycle), and folding builtin names in here would flip OCC's existing
+//     builtin-vs-skill precedence in the commands.ts merge, which is beyond
+//     item 27. Skill-vs-skill collisions (the changelog case) are complete.
+//   - `at` (skillRoots of already-offered non-skill commands) → empty (no
+//     OCC analog at this stage of the pipeline).
+//   - syncedSkills lanes dropped: the `Eze/RTe/_ze` loop branch, the
+//     `UHt()&&YX(EM(...))` disjunct in label selection, the `loadedFrom===
+//     "syncedSkills"` disjuncts in `hft`/`Yln`, and the `wdr` prepass (BD
+//     "[names]" warns for collisions against host-offered commands) — OCC's
+//     LoadedFrom union has no 'syncedSkills' source and no host command lane.
+//   - `mt` folder identities: official async-realpaths each skillRoot (`flr`
+//     + `q` cache, sync fallback `A8e`); OCC keys on the folder-root path
+//     string directly — the file-identity dedup pass has already collapsed
+//     same-file skills before this pass runs.
+//   - guard-log `$c(yo)` escaper: names reaching the log passed the `vz`
+//     gate (isSkillNameOffered), which rejects every character class `$c`
+//     transforms, so the escaper is the identity there and the name is
+//     interpolated directly (nameSafety's escaper is module-private).
+//   - `unqualifiedName`/`allowlistedByFullNameOnly` (official `vdr` fields,
+//     consumed by official `aDt` permission matching): types/command.ts is
+//     outside this work package's file budget → attached as runtime props
+//     via cast; inert in OCC today (no consumer), forward-compat parity.
+//   - the `--bare` explicit-dirs early return in getSkillDirCommands is left
+//     untouched: official runs the merge over ALL skills at command-assembly
+//     time, but OCC's pass lives in the loader and the bare-mode contract
+//     ("explicit dirs, user controls uniqueness") predates it; extending the
+//     pass there is not pinnable from the changelog scenario.
+// ---------------------------------------------------------------------------
+
+/** Official `EM`: the folder-qualified command name `${folder}:${name}`. */
+export function qualifiedSkillName(folder: string, name: string): string {
+  return `${folder}:${name}`
+}
+
+/**
+ * Official `hft` (@249,938,013): `type==="prompt" && fallback===true &&
+ * loadedFrom!=="syncedSkills"` — the syncedSkills disjunct is dropped (no
+ * such OCC source). `fallback` is set by buildSkillCommand but not on the
+ * Command type surface, hence the cast (same read as dropShadowedFallbackSkills).
+ */
+function isFallbackPromptSkill(skill: Command): boolean {
+  return (
+    skill.type === 'prompt' && (skill as { fallback?: boolean }).fallback === true
+  )
+}
+
+/**
+ * Official `CTe` (@251,220,700): the folder holding the skill's `.claude`
+ * directory — skillRoot cut before the LAST `${sep}.claude${sep}` segment, or
+ * null when there is none (legacy single-.md commands have no skillRoot).
+ */
+export function skillFolderRoot(skill: Command): string | null {
+  if (skill.type !== 'prompt' || !skill.skillRoot) return null
+  const idx = skill.skillRoot.lastIndexOf(`${pathSep}.claude${pathSep}`)
+  return idx === -1 ? null : skill.skillRoot.slice(0, idx)
+}
+
+/** Official `Ef(h,n,{alreadyComparable:!0})`: separator-boundary path prefix. */
+function isPathPrefixOf(prefix: string, target: string): boolean {
+  if (prefix === target) return true
+  const boundary = prefix.endsWith(pathSep) ? prefix : `${prefix}${pathSep}`
+  return target.startsWith(boundary)
+}
+
+/**
+ * Official `Hl()` workspace roots for the label pass: the `--add-dir`
+ * directories registered for CLAUDE.md (resolved to comparable absolutes).
+ */
+function skillWorkspaceRoots(): string[] {
+  return getAdditionalDirectoriesForClaudeMd().map(dir => resolve(dir))
+}
+
+/** Official `Abe` (@250,658,038): longest workspace root prefixing `folder`. */
+function longestWorkspaceRoot(folder: string): string | null {
+  const target = resolve(folder)
+  let match: string | null = null
+  for (const root of skillWorkspaceRoots()) {
+    if (
+      isPathPrefixOf(root, target) &&
+      (match === null || root.length > match.length)
+    ) {
+      match = root
+    }
+  }
+  return match
+}
+
+/**
+ * Official `D8t` (@250,658,038): label for a folder relative to the workspace
+ * root containing it — root basename, disambiguated as `${parent}/${base}`
+ * when another workspace root shares the basename, plus the remainder of the
+ * folder path joined with `/`. Null when no workspace root contains it.
+ */
+export function workspaceFolderLabel(folder: string): string | null {
+  const root = longestWorkspaceRoot(folder)
+  if (root === null) return null
+  const base = basename(root)
+  if (base === '') return null
+  const ambiguous = skillWorkspaceRoots().some(
+    other => other !== root && basename(other) === base,
+  )
+  const parentBase = basename(dirname(root))
+  const label = ambiguous && parentBase !== '' ? `${parentBase}/${base}` : base
+  const remainder = relative(root, resolve(folder))
+  return remainder === ''
+    ? label
+    : [label, ...remainder.split(pathSep)].join('/')
+}
+
+/**
+ * Official `Tdr` (@251,220,700): the folder label for a skill relative to the
+ * workspace dir — null for skills in the workspace itself (rel === ""),
+ * the `/`-joined relative path for folders inside it, and the `D8t`
+ * workspace-root label for folders outside it (the 309 fix — 308's `sar`
+ * returned null there, making colliding add-dir skills unreachable).
+ */
+export function skillFolderLabel(
+  skill: Command,
+  cwd: string | null,
+): string | null {
+  const folder = skillFolderRoot(skill)
+  if (folder === null) return null
+  const rel = cwd === null ? null : relative(cwd, folder)
+  if (rel === '') return null
+  if (rel === null || rel.startsWith('..') || isAbsolute(rel)) {
+    return workspaceFolderLabel(folder)
+  }
+  return rel.split(pathSep).join('/')
+}
+
+/** Official `vz` (@249,964,807): a qualified name that may not be offered. */
+function isQualifiedNameRefused(qualified: string): boolean {
+  return (
+    !isSkillNameOffered(qualified) ||
+    (isReservedName(qualified) && !isPlaidHarborEnabled())
+  )
+}
+
+/** Official `Yln`: true when the skill must NOT take the folder-qualified form. */
+function shouldSkipQualifiedForm(
+  skill: Command,
+  label: string | null,
+): boolean {
+  return (
+    label === null ||
+    isQualifiedNameRefused(qualifiedSkillName(label, skill.name))
+  )
+}
+
+/** Official `jln` (@251,220,700): from-suffix for a labelled, unconflicted skill. */
+function withFolderFromSuffix(skill: Command, label: string): Command {
+  if (skill.type !== 'prompt') return skill
+  return {
+    ...skill,
+    description: `${skill.description} (from ${label}/.claude/skills — applies when working on files under ${label}/)`,
+  }
+}
+
+/**
+ * Official `vdr` (@251,220,700): the folder-qualified copy — name/userFacingName
+ * become `<folder>:<name>`, aliases are dropped, `unqualifiedName` records the
+ * bare name, `allowlistedByFullNameOnly` marks folders outside the workspace
+ * dir (official `H` condition), and the description gains the scoped note.
+ */
+function buildFolderQualifiedCopy(
+  skill: Command,
+  label: string,
+  nameAlsoTaken: boolean,
+  cwd: string | null,
+): Command {
+  if (skill.type !== 'prompt') return skill
+  const qualified = qualifiedSkillName(label, skill.name)
+  const note = nameAlsoTaken
+    ? `scoped to ${label}/ — use this instead of the unscoped "${skill.name}" skill when the files being changed are under ${label}/`
+    : `from ${label}/.claude/skills — applies when working on files under ${label}/`
+  const folder = skillFolderRoot(skill)
+  const matchedRoot = folder === null ? null : longestWorkspaceRoot(folder)
+  const allowlistedByFullNameOnly =
+    folder !== null &&
+    matchedRoot !== null &&
+    (cwd === null ||
+      !isPathPrefixOf(cwd, folder) ||
+      (matchedRoot !== cwd && isPathPrefixOf(cwd, matchedRoot)))
+  return {
+    ...skill,
+    name: qualified,
+    unqualifiedName: skill.name,
+    ...(allowlistedByFullNameOnly ? { allowlistedByFullNameOnly: true } : {}),
+    aliases: undefined,
+    userFacingName: () => qualified,
+    description: `${skill.description} (${note})`,
+  } as Command
+}
+
+/**
+ * Official 309 collision/offering merge loop (the "bt loop", BIN309
+ * @251,216,800), scoped to the directory-loaded skill list. Runs after the
+ * file-identity dedup and before the conditional-skills split (official
+ * ordering: the loop feeds the `a1e` conditional split).
+ *
+ * Per skill, in list order:
+ *   - fallback skills (official `hft` branch) never take a qualified name;
+ *     they are dropped when a non-fallback skill or an already-offered name
+ *     holds theirs, else offered (with the from-suffix when labelled).
+ *   - an unconflicted name is offered as-is (+ from-suffix when labelled).
+ *   - a conflicted name with no usable label: first-wins — the first keeps
+ *     the name; later ones are refused via the official `xTe` recorder
+ *     (≡ warnReservedNameRefused) when a label existed, else dropped.
+ *   - a conflicted name with a usable label is offered as `<label>:<name>`
+ *     (official `vdr` copy), unless the kt/ct/mt ambiguity guard fires —
+ *     an outside-workspace skill whose qualified name would be shared with
+ *     an inside-workspace skill's qualified name, or with a second distinct
+ *     folder producing the same label — which logs the official
+ *     `[skills] <name> is not offered: another skill would share the name`
+ *     and drops the skill.
+ */
+export function applyFolderQualifiedOffering(
+  skills: readonly Command[],
+  cwd: string | null,
+): Command[] {
+  // Official `Re`: per-skill memoized label.
+  const labelCache = new Map<Command, string | null>()
+  const labelOf = (skill: Command): string | null => {
+    let label = labelCache.get(skill)
+    if (label === undefined) {
+      label = skillFolderLabel(skill, cwd)
+      labelCache.set(skill, label)
+    }
+    return label
+  }
+
+  // Official `ft`: per-name counts over NON-fallback skills.
+  const nameCounts = new Map<string, number>()
+  for (const skill of skills) {
+    if (isFallbackPromptSkill(skill)) continue
+    nameCounts.set(skill.name, (nameCounts.get(skill.name) ?? 0) + 1)
+  }
+
+  // Official kt/ct/mt ambiguity prepass: kt = labelled skills whose folder is
+  // outside the workspace dir; ct = qualified names produced by inside-cwd
+  // folders; mt = distinct folder roots per qualified name.
+  const outsideCwdLabeled = new Set<Command>()
+  const insideCwdQualifiedNames = new Set<string>()
+  const qualifiedNameFolders = new Map<string, Set<string>>()
+  for (const skill of skills) {
+    const label = labelOf(skill)
+    const folder = skillFolderRoot(skill)
+    if (
+      label === null ||
+      folder === null ||
+      skill.type !== 'prompt' ||
+      !skill.skillRoot
+    ) {
+      continue
+    }
+    const qualified = qualifiedSkillName(label, skill.name)
+    const rel = cwd === null ? null : relative(cwd, folder)
+    if (rel !== null && !rel.startsWith('..') && !isAbsolute(rel)) {
+      insideCwdQualifiedNames.add(qualified)
+      continue
+    }
+    outsideCwdLabeled.add(skill)
+    const folders = qualifiedNameFolders.get(qualified) ?? new Set<string>()
+    folders.add(folder)
+    qualifiedNameFolders.set(qualified, folders)
+  }
+
+  const offered: Command[] = []
+  // Official `Rt`: names already offered by this pass. (`it` — builtin/other
+  // command names — is empty in OCC; see the section deviations.)
+  const offeredNames = new Set<string>()
+
+  for (const skill of skills) {
+    const label = labelOf(skill)
+    // Official `Bn`: the usable label (null when the qualified form fails Yln/vz).
+    const usableLabel = shouldSkipQualifiedForm(skill, label) ? null : label
+
+    if (isFallbackPromptSkill(skill)) {
+      if (
+        (nameCounts.get(skill.name) ?? 0) > 0 ||
+        offeredNames.has(skill.name)
+      ) {
+        continue
+      }
+      offered.push(
+        usableLabel !== null ? withFolderFromSuffix(skill, usableLabel) : skill,
+      )
+      offeredNames.add(skill.name)
+      continue
+    }
+
+    const nameConflicted = (nameCounts.get(skill.name) ?? 0) > 1
+    if (!nameConflicted) {
+      offered.push(
+        usableLabel !== null ? withFolderFromSuffix(skill, usableLabel) : skill,
+      )
+      offeredNames.add(skill.name)
+      continue
+    }
+
+    if (usableLabel === null) {
+      if (offeredNames.has(skill.name)) {
+        // Official `xTe({name:EM(pn,on.name),path:on.skillRoot,change:"path"})`
+        // — only when a (vz-refused) label existed.
+        if (label !== null) {
+          warnReservedNameRefused({
+            name: qualifiedSkillName(label, skill.name),
+            path: skill.type === 'prompt' ? skill.skillRoot : undefined,
+            change: 'path',
+          })
+        }
+        continue
+      }
+      offered.push(skill)
+      offeredNames.add(skill.name)
+      continue
+    }
+
+    const qualified = qualifiedSkillName(usableLabel, skill.name)
+    if (offeredNames.has(qualified)) continue
+    if (
+      outsideCwdLabeled.has(skill) &&
+      (insideCwdQualifiedNames.has(qualified) ||
+        (qualifiedNameFolders.get(qualified)?.size ?? 0) > 1)
+    ) {
+      logForDebugging(
+        `[skills] ${qualified} is not offered: another skill would share the name`,
+      )
+      continue
+    }
+    offered.push(
+      buildFolderQualifiedCopy(
+        skill,
+        usableLabel,
+        offeredNames.has(skill.name),
+        cwd,
+      ),
+    )
+    offeredNames.add(qualified)
+  }
+
+  return offered
 }
 
 /**
@@ -1133,10 +1507,17 @@ export const getSkillDirCommands = memoize(
       logForDebugging(`Deduplicated ${duplicatesRemoved} skills (same file)`)
     }
 
+    // CC 2.1.309 item 27 (=F-12): folder-qualified offering pass — a skill
+    // whose name is already held by another skill is offered as
+    // `<folder>:<name>` (from its --add-dir folder) instead of being
+    // unreachable. Runs after the file-identity dedup and before the
+    // conditional split (official ordering).
+    const offeredSkills = applyFolderQualifiedOffering(deduplicatedSkills, cwd)
+
     // Separate conditional skills (with paths frontmatter) from unconditional ones
     const unconditionalSkills: Command[] = []
     const newConditionalSkills: Command[] = []
-    for (const skill of deduplicatedSkills) {
+    for (const skill of offeredSkills) {
       if (
         skill.type === 'prompt' &&
         skill.paths &&
@@ -1161,7 +1542,7 @@ export const getSkillDirCommands = memoize(
     }
 
     logForDebugging(
-      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
+      `Loaded ${offeredSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
     )
 
     return unconditionalSkills

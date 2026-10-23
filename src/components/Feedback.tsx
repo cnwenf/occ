@@ -2,9 +2,11 @@ import axios from 'axios';
 import { readFile, stat } from 'fs/promises';
 import * as React from 'react';
 import { useCallback, useEffect, useState } from 'react';
+import { z } from 'zod';
 import { getLastAPIRequest } from 'src/bootstrap/state.js';
 import { logEventTo1P } from 'src/services/analytics/firstPartyEventLogger.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
+import { isPolicyAllowed } from 'src/services/policyLimits/index.js';
 import { getLastAssistantMessage, normalizeMessagesForAPI } from 'src/utils/messages.js';
 import type { CommandResultDisplay } from '../commands.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
@@ -17,6 +19,7 @@ import { checkAndRefreshOAuthTokenIfNeeded } from '../utils/auth.js';
 import { openBrowser } from '../utils/browser.js';
 import { logForDebugging } from '../utils/debug.js';
 import { env } from '../utils/env.js';
+import { isEnvTruthy } from '../utils/envUtils.js';
 import { type GitRepoState, getGitState, getIsGit } from '../utils/git.js';
 import { getAuthHeaders, getUserAgent } from '../utils/http.js';
 import { getInMemoryErrors, logError } from '../utils/log.js';
@@ -34,6 +37,286 @@ import TextInput from './TextInput.js';
 // This value was determined experimentally by testing the URL length limit
 const GITHUB_URL_LIMIT = 7250;
 const GITHUB_ISSUES_REPO_URL = ("external" as string) === 'ant' ? 'https://github.com/anthropics/claude-cli-internal/issues' : 'https://github.com/anthropics/claude-code/issues';
+
+// ---------------------------------------------------------------------------
+// CC 2.1.309 items 25/26/66 (OCC-131 WP-E) — feedback failure classifier +
+// refusal-reason plumbing + oversized-payload strip retry.
+//
+// Official symbol → OCC name map (BIN309 byte offsets; all user-facing
+// strings byte-verbatim):
+//   `Ur`  → ORG_NOT_ENABLED_MESSAGE          @~258326955
+//   `Dr`  → THIRD_PARTY_BLOCKED_MESSAGE      @~258326955
+//   `Br`  → ZDR_ORG_MESSAGE                  @~258326955
+//   `a$o` → POLICY_DISABLED_MESSAGE          @244459946
+//   `As`  → classifyFeedbackFailure          @~258326955
+//   `Or`  → FeedbackErrorBodySchema          @~258326955
+//   `ou`  → normalizeServerMessage           @247249784
+//   `yxe` → orgRefusalMessage                @~258326955
+//   `CYt` → orgRefusalDisplayMessage         @~258326955
+//   `RYt` → credentialRefusalDisplayMessage  @~258326955
+//   `cCt` → serverStatusSuffix               @~258326955
+//   `l$o` → appendBugReportPointer           @244460015
+//   `B3n` → GITHUB_ISSUES_REPO_URL (pre-existing OCC constant, same value)
+//   `zne` → getFeedbackDisabledReason        @~244460400
+//   `Ld`  → getEnvDisabledReason             @244460301
+//   `Qg`  → inline in getFeedbackDisabledReason
+//   `_xe` → FEEDBACK_PAYLOAD_BUDGET_BYTES    (8388608)
+//   `xYt` → postFeedback                     @258339024
+//   `Sxe` → submitFeedback (strip-retry)     @258341400
+//
+// Item 66 ([VSCode] feedback error showed only HTTP status): OCC ships no
+// VSCode extension and no SDK submitFeedback control path — the portable
+// delta is this shared refusal plumbing, which now surfaces the server's
+// reason in every OCC feedback error render (N-A-deduped for the VSCode
+// surface itself).
+// ---------------------------------------------------------------------------
+
+/** Official `_xe` = 8388608 (8 MiB feedback payload budget). */
+export const FEEDBACK_PAYLOAD_BUDGET_BYTES = 8388608;
+
+// Official UI/refusal strings (BIN309 byte-verbatim).
+export const ZDR_ORG_MESSAGE = 'Feedback collection is not available for organizations with custom data retention policies.';
+const ORG_NOT_ENABLED_MESSAGE = 'Feedback has not been enabled for your organization.';
+const THIRD_PARTY_BLOCKED_MESSAGE = 'Feedback containing third-party provider content cannot be submitted.';
+export const POLICY_DISABLED_MESSAGE = 'Feedback submission is disabled by your organization\'s policy.';
+const ORG_DOES_NOT_ACCEPT_MESSAGE = 'Your organization does not accept feedback.';
+
+/** Official `ou()` @247249784: `i=200, o=i*4` + invisible-char pattern. */
+const SERVER_MESSAGE_MAX_CHARS = 200;
+const INVISIBLE_CHARACTERS_PATTERN = /[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Variation_Selector}]+/gu;
+
+type FeedbackFailureReason = 'zdr_org' | 'org_refused' | 'scope_refused' | 'auth_refused' | 'http_error' | 'policy_blocked' | 'auth_error' | 'timeout' | 'network_error' | 'payload_too_large_precheck' | 'payload_too_large_413' | 'payload_too_large_range_error' | 'payload_too_large_timeout' | 'missing_feedback_id' | 'data_residency';
+type FeedbackRefusal = {
+  kind: 'org' | 'credential' | 'transient' | 'other';
+  serverMessage?: string;
+  reportContent?: true;
+};
+type PostFeedbackFailure = {
+  success: false;
+  payloadTooLarge?: boolean;
+  isZdrOrg?: boolean;
+  failureReason?: FeedbackFailureReason;
+  statusCode?: number;
+  refusal?: FeedbackRefusal;
+};
+type PostFeedbackResult = {
+  success: true;
+  feedbackId: string;
+} | PostFeedbackFailure;
+type SubmitFeedbackFailure = {
+  success: false;
+  isZdrOrg?: boolean;
+  failureReason?: FeedbackFailureReason;
+  statusCode?: number;
+  refusal?: FeedbackRefusal;
+};
+export type SubmitFeedbackResult = {
+  success: true;
+  feedbackId?: string;
+  retriedAfterTooLarge: boolean;
+} | SubmitFeedbackFailure;
+
+/**
+ * Official `ou()` @247249784 (byte-verified):
+ * `function ou(n){let e=n===void 0?"":Br(hn(n).replace(r," "));return e===""?void 0:pt(re(e,o),i)}`
+ * with i=200, o=800. Declared deviation: the chunk helpers `hn`/`Br`/`re`/`pt`
+ * are compiled into unextractable bun bytecode chunks — the input here is
+ * always a zod-narrowed `string | undefined` (so `hn`'s non-string stringify
+ * is unreachable), and `re(e,800)→pt(e,200)` is implemented as the equivalent
+ * single 200-char truncation (both steps are pure truncation; the composite
+ * can never exceed 200 chars). Whitespace collapse+trim mirrors `Br`.
+ */
+export function normalizeServerMessage(message: string | undefined): string | undefined {
+  const cleaned = (message ?? '').replace(INVISIBLE_CHARACTERS_PATTERN, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned === '' ? undefined : cleaned.slice(0, SERVER_MESSAGE_MAX_CHARS);
+}
+
+/** Official `Or()` @~258326955: error body schema, every field `.catch(undefined)`. */
+function feedbackErrorBodySchema() {
+  return z.object({
+    error: z.object({
+      type: z.string().optional().catch(undefined),
+      message: z.string().optional().catch(undefined),
+      details: z.object({
+        error_code: z.string().optional().catch(undefined)
+      }).nullish().catch(undefined)
+    }).catch(undefined)
+  }).catch(undefined);
+}
+
+/**
+ * Official `As(status, data)` @~258326955 — classifies a failed feedback
+ * POST into {failureReason, refusal} so the UI can show the server's actual
+ * reason instead of a generic "try again later" (items 25/66).
+ */
+export function classifyFeedbackFailure(statusCode: number, data: unknown): PostFeedbackFailure {
+  const parsed = feedbackErrorBodySchema().safeParse(data);
+  const error = parsed.success ? parsed.data?.error : undefined;
+  const errorCode = error?.details?.error_code;
+  const rawMessage = error?.message;
+  const serverMessage = normalizeServerMessage(rawMessage);
+  if (errorCode === 'feedback_retention_blocked' || errorCode === undefined && statusCode === 403 && error?.type === 'permission_error' && rawMessage?.includes('Custom data retention settings')) {
+    return {
+      success: false,
+      isZdrOrg: true,
+      failureReason: 'zdr_org',
+      statusCode,
+      refusal: {
+        kind: 'org',
+        serverMessage
+      }
+    };
+  }
+  if (errorCode === 'feedback_disabled' || errorCode === 'feedback_third_party_blocked' || errorCode === undefined && statusCode === 403 && (rawMessage === ORG_NOT_ENABLED_MESSAGE || rawMessage === POLICY_DISABLED_MESSAGE)) {
+    return {
+      success: false,
+      failureReason: 'org_refused',
+      statusCode,
+      refusal: {
+        kind: 'org',
+        serverMessage,
+        ...(errorCode === 'feedback_third_party_blocked' && rawMessage === THIRD_PARTY_BLOCKED_MESSAGE && {
+          reportContent: true as const
+        })
+      }
+    };
+  }
+  if (errorCode === 'oauth_scope_insufficient' || statusCode === 401) {
+    return {
+      success: false,
+      failureReason: errorCode === 'oauth_scope_insufficient' ? 'scope_refused' : 'auth_refused',
+      statusCode,
+      refusal: {
+        kind: 'credential',
+        serverMessage
+      }
+    };
+  }
+  const isTransient = errorCode === 'feedback_check_unavailable' || statusCode === 408 || statusCode === 429 || statusCode >= 500;
+  return {
+    success: false,
+    failureReason: 'http_error',
+    statusCode,
+    refusal: {
+      kind: isTransient ? 'transient' : 'other',
+      serverMessage
+    }
+  };
+}
+
+/**
+ * Official `l$o(message, refusalMessage)` @244460015 — appends the public
+ * bug-report pointer unless the refusal IS the org policy-disabled message.
+ * Declared deviation: the official also suppresses the pointer under HIPAA
+ * compliance taint (`Coe(N7()).length>0`); OCC has no compliance-taint store,
+ * so only the policy-message condition is checked.
+ */
+export function appendBugReportPointer(message: string, refusalMessage?: string): string {
+  const punctuated = /[.!?…]$/.test(message) ? message : `${message}.`;
+  if (refusalMessage === POLICY_DISABLED_MESSAGE) {
+    return punctuated;
+  }
+  return `${punctuated} To report a bug, open an issue at ${GITHUB_ISSUES_REPO_URL}. Issues are public, so leave out anything confidential.`;
+}
+
+/** Official `yxe(result)` — org-refusal reason (ZDR text, server message, or generic). */
+export function orgRefusalMessage(result: SubmitFeedbackFailure | PostFeedbackFailure): string | undefined {
+  if ('isZdrOrg' in result && result.isZdrOrg) {
+    return ZDR_ORG_MESSAGE;
+  }
+  if (result.refusal?.kind !== 'org') {
+    return undefined;
+  }
+  return result.refusal.serverMessage ?? ORG_DOES_NOT_ACCEPT_MESSAGE;
+}
+
+/** Official `CYt(result)` — org-refusal UI message with bug-report pointer. */
+export function orgRefusalDisplayMessage(result: SubmitFeedbackFailure | PostFeedbackFailure): string | undefined {
+  const reason = orgRefusalMessage(result);
+  return reason === undefined ? undefined : appendBugReportPointer(`Couldn't send feedback: ${reason}`, reason);
+}
+
+/** Official `cCt(result)` — ` (server returned NNN: msg)` suffix (msg trailing period stripped). */
+export function serverStatusSuffix(result: SubmitFeedbackFailure | PostFeedbackFailure): string | undefined {
+  if (!result.statusCode) {
+    return undefined;
+  }
+  const message = result.refusal?.serverMessage?.replace(/\.$/, '');
+  return ` (server returned ${result.statusCode}${message === undefined ? '' : `: ${message}`})`;
+}
+
+/** Official `RYt(result)` — credential-refusal UI message (scope vs credentials). */
+export function credentialRefusalDisplayMessage(result: SubmitFeedbackFailure | PostFeedbackFailure): string | undefined {
+  if (result.refusal?.kind !== 'credential') {
+    return undefined;
+  }
+  const suffix = serverStatusSuffix(result) ?? '';
+  return result.failureReason === 'scope_refused' ? `Couldn't send feedback: the sign-in this session uses is not allowed to send feedback${suffix}.` : `Couldn't send feedback: the server did not accept the credentials this session uses${suffix}.`;
+}
+
+/** Official `Ld(command)` @244460301 — env-var disable reasons (byte-verbatim). */
+export function getEnvDisabledReason(command = '/feedback'): string | null {
+  if (isEnvTruthy(process.env.DISABLE_FEEDBACK_COMMAND)) {
+    return `${command} has been disabled via the DISABLE_FEEDBACK_COMMAND environment variable`;
+  }
+  if (isEnvTruthy(process.env.DISABLE_BUG_COMMAND)) {
+    return `${command} has been disabled via the DISABLE_BUG_COMMAND environment variable`;
+  }
+  if (isEssentialTrafficOnly()) {
+    return `${command} has been disabled via the CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC environment variable`;
+  }
+  return null;
+}
+
+/**
+ * Official `zne(command)` @~244460400: `Ld(e) ?? fp("allow_product_feedback",e,"is",Qg(e))`.
+ * Declared deviation: the official `fp` walks a policy-message classification
+ * subsystem (route_missing/cache_miss/latched/org_denied builders) OCC's
+ * policyLimits does not have; OCC uses the org_denied fallback `Qg(e)` —
+ * `<command> is disabled by your organization's policy.` + bug-report pointer.
+ * `isEnvTruthy` (OCC convention, as in commands/feedback/index.ts) replaces the
+ * official's raw env truthiness.
+ */
+export function getFeedbackDisabledReason(command = '/feedback'): string | null {
+  return getEnvDisabledReason(command) ?? (isPolicyAllowed('allow_product_feedback') ? null : appendBugReportPointer(`${command} is disabled by your organization's policy.`));
+}
+
+/**
+ * Official panel failure-render chain @~284805457 — builds the error message
+ * for a failed submit, plus `isFinal` (official `Kt` flag): org refusals that
+ * are NOT reportContent disable retry (message stays, resubmit blocked,
+ * retry hint hidden) because resending identical content cannot succeed.
+ */
+export function buildFeedbackErrorMessage(result: SubmitFeedbackFailure): {
+  message: string;
+  isFinal: boolean;
+} {
+  const orgMessage = orgRefusalDisplayMessage(result);
+  const message = orgMessage ?? credentialRefusalDisplayMessage(result);
+  if (message !== undefined) {
+    return {
+      message,
+      isFinal: orgMessage !== undefined && result.refusal?.reportContent !== true
+    };
+  }
+  if (result.failureReason === 'auth_error') {
+    return {
+      message: 'Couldn\'t send feedback: not signed in. Run /login, then retry.',
+      isFinal: false
+    };
+  }
+  if (result.failureReason === 'policy_blocked') {
+    return {
+      message: getFeedbackDisabledReason('/feedback') ?? 'Feedback is disabled by your organization\'s policy.',
+      isFinal: false
+    };
+  }
+  const suffix = serverStatusSuffix(result) ?? (result.failureReason === 'timeout' ? ' (request timed out)' : result.failureReason === 'network_error' ? ' (couldn\'t reach the service)' : '');
+  return {
+    message: `Couldn't send feedback${suffix}. If it keeps failing, you can file at ${GITHUB_ISSUES_REPO_URL} instead.`,
+    isFinal: false
+  };
+}
 type Props = {
   abortSignal: AbortSignal;
   messages: Message[];
@@ -137,6 +420,10 @@ export function Feedback({
   const [description, setDescription] = useState(initialDescription ?? '');
   const [feedbackId, setFeedbackId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Official `Kt` flag @~284804104: true when the error is a permanent org
+  // refusal — the message survives edits, resubmission is blocked, and the
+  // "Edit and press Enter to retry" hint is hidden.
+  const [errorIsFinal, setErrorIsFinal] = useState(false);
   const [envInfo, setEnvInfo] = useState<{
     isGit: boolean;
     gitState: GitRepoState | null;
@@ -163,6 +450,7 @@ export function Feedback({
   const submitReport = useCallback(async () => {
     setStep('submitting');
     setError(null);
+    setErrorIsFinal(false);
     setFeedbackId(null);
 
     // Get sanitized errors for the report
@@ -201,10 +489,9 @@ export function Feedback({
     if (result.success) {
       if (result.feedbackId) {
         setFeedbackId(result.feedbackId);
-        logEvent('tengu_bug_report_submitted', {
-          feedback_id: result.feedbackId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          last_assistant_message_id: lastAssistantMessageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
-        });
+        // 2.1.309 items 25/26: tengu_bug_report_submitted (with the official
+        // retried_after_too_large/strip_level fields) is now logged inside
+        // submitFeedback — the official Sxe panel-submit wrapper owns it.
         // 1P-only: freeform text approved for BQ. Join on feedback_id.
         logEventTo1P('tengu_bug_report_description', {
           feedback_id: result.feedbackId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -213,11 +500,17 @@ export function Feedback({
       }
       setStep('done');
     } else {
-      if (result.isZdrOrg) {
-        setError('Feedback collection is not available for organizations with custom data retention policies.');
-      } else {
-        setError('Could not submit feedback. Please try again later.');
-      }
+      // 2.1.309 items 25/66: show the server's actual refusal reason (org /
+      // credential / policy / transient) instead of the generic "Could not
+      // submit feedback. Please try again later." isFinal (official `Kt`)
+      // marks permanent org refusals — retry is then disabled because
+      // resending identical content cannot succeed.
+      const {
+        message,
+        isFinal
+      } = buildFeedbackErrorMessage(result);
+      setError(message);
+      setErrorIsFinal(isFinal);
       // Stay on userInput step so user can retry with their content preserved
       setStep('userInput');
     }
@@ -294,18 +587,26 @@ export function Feedback({
           <Text>Describe the issue below:</Text>
           <TextInput value={description} onChange={value => {
         setDescription(value);
-        // Clear error when user starts editing to allow retry
-        if (error) {
+        // Clear error when user starts editing to allow retry — unless the
+        // error is final (permanent org refusal), which official `fe`/`Kt`
+        // keeps pinned so the user cannot edit around it.
+        if (error && !errorIsFinal) {
           setError(null);
         }
-      }} columns={textInputColumns} onSubmit={() => setStep('consent')} onExitMessage={() => onDone('Feedback cancelled', {
+      }} columns={textInputColumns} onSubmit={() => {
+        // Official `if(fe)return` — a final refusal blocks resubmission.
+        if (errorIsFinal) {
+          return;
+        }
+        setStep('consent');
+      }} onExitMessage={() => onDone('Feedback cancelled', {
         display: 'system'
       })} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} showCursor />
           {error && <Box flexDirection="column" gap={1}>
               <Text color="error">{error}</Text>
-              <Text dimColor>
+              {!errorIsFinal && <Text dimColor>
                 Edit and press Enter to retry, or Esc to cancel
-              </Text>
+              </Text>}
             </Box>}
         </Box>}
 
@@ -486,24 +787,55 @@ function sanitizeAndLogError(err: unknown): void {
     logError(new Error(errorString));
   }
 }
-async function submitFeedback(data: FeedbackData, signal?: AbortSignal): Promise<{
-  success: boolean;
-  feedbackId?: string;
-  isZdrOrg?: boolean;
-}> {
+/**
+ * Official `xYt(payload, signal, sessionId, credentials)` @258339024 — single
+ * feedback POST attempt with the 309 payload-budget precheck, 413 branch,
+ * `validateStatus:(s)=>s!==401`, and `As()` failure classification.
+ *
+ * Declared deviations (pre-existing OCC seams kept):
+ * - OCC posts the `{content: jsonStringify(data)}` envelope (the official
+ *   posts the serialized payload directly); the precheck measures the same
+ *   serialized string that goes into the envelope.
+ * - The official `gv` fetch wrapper's data-residency reason has no OCC
+ *   surface (`data_residency` stays in the reason union for parity); the
+ *   wrapper's `no-auth` reason maps to OCC's getAuthHeaders() error.
+ * - The official serializes with `dCt` (redaction-aware); OCC keeps its
+ *   existing jsonStringify path.
+ */
+export async function postFeedback(data: FeedbackData, signal?: AbortSignal): Promise<PostFeedbackResult> {
   if (isEssentialTrafficOnly()) {
     return {
       success: false
     };
   }
+  if (!isPolicyAllowed('allow_product_feedback')) {
+    return {
+      success: false,
+      failureReason: 'policy_blocked'
+    };
+  }
+  let serializedLength = 0;
   try {
     // Ensure OAuth token is fresh before getting auth headers
     // This prevents 401 errors from stale cached tokens
     await checkAndRefreshOAuthTokenIfNeeded();
     const authResult = getAuthHeaders();
     if (authResult.error) {
+      // Official `no-auth` wrapper reason → auth_error.
       return {
-        success: false
+        success: false,
+        failureReason: 'auth_error'
+      };
+    }
+    const serialized = jsonStringify(data);
+    serializedLength = serialized.length;
+    // Official 2.1.309 item 26 precheck: `if(n=k.length,n>_xe)return
+    // {success:!1,payloadTooLarge:!0,failureReason:"payload_too_large_precheck"}`
+    if (serializedLength > FEEDBACK_PAYLOAD_BUDGET_BYTES) {
+      return {
+        success: false,
+        payloadTooLarge: true,
+        failureReason: 'payload_too_large_precheck'
       };
     }
     const headers: Record<string, string> = {
@@ -512,12 +844,15 @@ async function submitFeedback(data: FeedbackData, signal?: AbortSignal): Promise
       ...authResult.headers
     };
     const response = await axios.post('https://api.anthropic.com/api/claude_cli_feedback', {
-      content: jsonStringify(data)
+      content: serialized
     }, {
       headers,
       timeout: 30000,
       // 30 second timeout to prevent hanging
-      signal
+      signal,
+      // Official 309: only 401 throws; every other status is classified from
+      // the response so the server's refusal reason survives.
+      validateStatus: (status: number) => status !== 401
     });
     if (response.status === 200) {
       const result = response.data;
@@ -529,13 +864,27 @@ async function submitFeedback(data: FeedbackData, signal?: AbortSignal): Promise
       }
       sanitizeAndLogError(new Error('Failed to submit feedback: request did not return feedback_id'));
       return {
-        success: false
+        success: false,
+        failureReason: 'missing_feedback_id'
       };
     }
-    sanitizeAndLogError(new Error('Failed to submit feedback:' + response.status));
-    return {
-      success: false
-    };
+    // Official 2.1.309 item 26: `if(w.status===413)return{success:!1,
+    // payloadTooLarge:!0,failureReason:"payload_too_large_413",statusCode:413}`
+    if (response.status === 413) {
+      return {
+        success: false,
+        payloadTooLarge: true,
+        failureReason: 'payload_too_large_413',
+        statusCode: 413
+      };
+    }
+    const debugMessage = 'Failed to submit feedback:' + response.status;
+    if (response.status === 401 || response.status === 403 || response.status === 429) {
+      logForDebugging(debugMessage);
+    } else {
+      sanitizeAndLogError(new Error(debugMessage));
+    }
+    return classifyFeedbackFailure(response.status, response.data);
   } catch (err) {
     // Handle cancellation/abort - don't log as error
     if (axios.isCancel(err)) {
@@ -543,20 +892,112 @@ async function submitFeedback(data: FeedbackData, signal?: AbortSignal): Promise
         success: false
       };
     }
-    if (axios.isAxiosError(err) && err.response?.status === 403) {
-      const errorData = err.response.data;
-      if (errorData?.error?.type === 'permission_error' && errorData?.error?.message?.includes('Custom data retention settings')) {
-        sanitizeAndLogError(new Error('Cannot submit feedback because custom data retention settings are enabled'));
-        return {
-          success: false,
-          isZdrOrg: true
-        };
-      }
+    // Official 309: a serializer RangeError means the payload was too large
+    // to even stringify.
+    if (err instanceof RangeError) {
+      return {
+        success: false,
+        payloadTooLarge: true,
+        failureReason: 'payload_too_large_range_error'
+      };
+    }
+    // Official 309: a timeout with a payload over budget/8 (1 MiB) is
+    // presumed to be size-induced → payload_too_large_timeout.
+    if (axios.isAxiosError(err) && (err as {
+    code?: string;
+  }).code === 'ECONNABORTED' && serializedLength > FEEDBACK_PAYLOAD_BUDGET_BYTES / 8) {
+      return {
+        success: false,
+        payloadTooLarge: true,
+        failureReason: 'payload_too_large_timeout'
+      };
     }
     // Use our safe error logging function to avoid leaking API keys
     sanitizeAndLogError(err);
+    if (axios.isAxiosError(err) && err.response) {
+      return classifyFeedbackFailure(err.response.status, err.response.data);
+    }
     return {
-      success: false
+      success: false,
+      failureReason: axios.isAxiosError(err) && (err as {
+      code?: string;
+    }).code === 'ECONNABORTED' ? 'timeout' : 'network_error'
     };
   }
+}
+
+/**
+ * Official `Sxe({…})` panel submit @258341400 — item 26. An oversized
+ * submission no longer fails outright: it is retried with the transcript
+ * stripped (level 1, keeping rawTranscriptJsonl when present), then with
+ * everything large dropped (level 2). Only `payloadTooLarge` failures
+ * trigger a retry; all other failures pass the classifier result straight
+ * through (items 25/66).
+ *
+ * Declared deviations: the official also destructures `recentSessionTranscripts`
+ * and `debugLog` out of the payload — OCC's FeedbackData has neither field.
+ * Telemetry keeps OCC's existing event surface plus the official retry
+ * observability fields (retried_after_too_large, strip_level, reason,
+ * status_code, first_attempt_too_large); official-only fields (surface,
+ * remote_workspace, third_party_transcripts_dropped, laptop_memory_rows_dropped)
+ * belong to subsystems OCC does not ship.
+ */
+export async function submitFeedback(data: FeedbackData, signal?: AbortSignal): Promise<SubmitFeedbackResult> {
+  const firstAttempt = await postFeedback(data, signal);
+  let attempt = firstAttempt;
+  let stripLevel = 0;
+  if (!attempt.success && attempt.payloadTooLarge) {
+    const {
+      transcript,
+      subagentTranscripts,
+      lastApiRequest,
+      rawTranscriptJsonl,
+      ...rest
+    } = data;
+    stripLevel = 1;
+    attempt = await postFeedback({
+      ...rest,
+      transcript: [],
+      ...(rawTranscriptJsonl && {
+        rawTranscriptJsonl
+      })
+    }, signal);
+    if (!attempt.success && attempt.payloadTooLarge) {
+      stripLevel = 2;
+      attempt = await postFeedback({
+        ...rest,
+        transcript: []
+      }, signal);
+    }
+  }
+  const firstAttemptTooLarge = !firstAttempt.success && firstAttempt.payloadTooLarge === true;
+  if (attempt.success) {
+    logEvent('tengu_bug_report_submitted', {
+      surface: 'cli' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      retried_after_too_large: firstAttemptTooLarge as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      strip_level: String(stripLevel) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      feedback_id: attempt.feedbackId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      last_assistant_message_id: (data.latestAssistantMessageId ?? '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+    return {
+      success: true,
+      feedbackId: attempt.feedbackId,
+      retriedAfterTooLarge: firstAttemptTooLarge
+    };
+  }
+  if (attempt.failureReason) {
+    logEvent('tengu_bug_report_failed', {
+      surface: 'cli' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      reason: attempt.failureReason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      status_code: (attempt.statusCode === undefined ? '' : String(attempt.statusCode)) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      first_attempt_too_large: firstAttemptTooLarge as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+  }
+  return {
+    success: false,
+    isZdrOrg: attempt.isZdrOrg,
+    failureReason: attempt.failureReason,
+    statusCode: attempt.statusCode,
+    refusal: attempt.refusal
+  };
 }

@@ -14,13 +14,11 @@ import { backgroundAll } from '../../tasks/LocalShellTask/LocalShellTask.js';
 import type { ProgressMessage } from '../../types/message.js';
 import { env } from '../../utils/env.js';
 import { areBackgroundTasksDisabled } from '../../utils/envUtils.js';
-import { getDisplayPath } from '../../utils/file.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { BashProgress, BashToolInput, Out } from './BashTool.js';
 import BashToolResultMessage from './BashToolResultMessage.js';
 import { extractBashCommentLabel } from './commentLabel.js';
-import { parseSedEditCommand } from './sedEditParser.js';
 
 // Constants for command display
 const MAX_COMMAND_DISPLAY_LINES = 2;
@@ -97,11 +95,9 @@ export function renderToolUseMessage(input: Partial<BashToolInput>, {
     return null;
   }
 
-  // Render sed in-place edits like file edits (show file path only)
-  const sedInfo = parseSedEditCommand(command);
-  if (sedInfo) {
-    return verbose ? sedInfo.filePath : getDisplayPath(sedInfo.filePath);
-  }
+  // CC 2.1.309 #52: the sed-in-place special case (rendering the target file
+  // path like a file edit) was removed upstream along with the simulated
+  // sed-edit preview — a sed command renders as the plain command text below.
   if (!verbose) {
     const lines = command.split('\n');
     if (isFullscreenEnvEnabled()) {

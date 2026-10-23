@@ -1,12 +1,12 @@
 import { c as _c } from "react/compiler-runtime";
 import type { ContentBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
-import { randomUUID, type UUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import figures from 'figures';
 import * as React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { useAppState } from 'src/state/AppState.js';
-import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from 'src/utils/fileHistory.js';
+import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats, fileHistoryGetTurnDiffStats, TURN_DIFF_ROW_COUNTING_MS, type TurnDiffStatsBudget } from 'src/utils/fileHistory.js';
 import { logError } from 'src/utils/log.js';
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../ink.js';
@@ -21,10 +21,7 @@ function isTextBlock(block: ContentBlockParam): block is TextBlockParam {
 }
 import * as path from 'path';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
-import type { FileEditOutput } from 'src/tools/FileEditTool/types.js';
-import type { Output as FileWriteToolOutput } from 'src/tools/FileWriteTool/FileWriteTool.js';
 import { BASH_STDERR_TAG, BASH_STDOUT_TAG, COMMAND_MESSAGE_TAG, LOCAL_COMMAND_STDERR_TAG, LOCAL_COMMAND_STDOUT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../constants/xml.js';
-import { count } from '../utils/array.js';
 import { formatRelativeTimeAgo, truncate } from '../utils/format.js';
 import type { Theme } from '../utils/theme.js';
 import { Divider } from './design-system/Divider.js';
@@ -41,6 +38,13 @@ type Props = {
   onClose: () => void;
   /** Skip pick-list, land on confirm. Caller ran skip-check first. Esc closes fully (no back-to-list). */
   preselectedMessage?: UserMessage;
+  /**
+   * CC 2.1.309 #23: pick-list row-counting budget in ms — official prop
+   * `rowCountingMs:Ke=Awo` (@BIN309 275204134, Awo=1000 @~250360470). After
+   * the deadline, remaining rows degrade to stats-unknown instead of reading
+   * more backups.
+   */
+  rowCountingMs?: number;
 };
 const MAX_VISIBLE_MESSAGES = 7;
 export function MessageSelector({
@@ -50,7 +54,8 @@ export function MessageSelector({
   onRestoreCode,
   onSummarize,
   onClose,
-  preselectedMessage
+  preselectedMessage,
+  rowCountingMs = TURN_DIFF_ROW_COUNTING_MS
 }: Props): React.ReactNode {
   const fileHistory = useAppState(s => s.fileHistory);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -283,33 +288,64 @@ export function MessageSelector({
     isActive: !isRestoring && !error && !messageToRestore && hasMessagesToSelect
   });
   const [fileHistoryMetadata, setFileHistoryMetadata] = useState<Record<number, DiffStats>>({});
+
+  // CC 2.1.309 #23: pick-list metadata loader — port of the official effect
+  // (@BIN309 ~275206800). The 308 shape (parallel Promise.all over rows +
+  // per-row setState, transcript structuredPatch scan) rendered "No code
+  // changes" for turns whose checkpointed files were changed via shell
+  // command, subagent, or /code-review --fix. The 309 loader walks the rows
+  // REVERSE-sequentially (nearest turns first), diffs the file-history
+  // snapshot store pairwise via fileHistoryGetTurnDiffStats (official `Cwo`)
+  // with a shared budget (pairCounts cache + countUntil deadline +
+  // AbortSignal), skips forward to the next restorable row for each row's
+  // to-message (official while-skip), and commits ONE final setState.
+  // Declared deviation: official also skips a `preClear` row uuid (`ao`) —
+  // OCC's pick list has no pre-clear row, so that guard has no counterpart.
+  const turnDiffPairCounts = useRef(new Map<string, {
+    insertions: number;
+    deletions: number;
+  }>());
   useEffect(() => {
-    async function loadFileHistoryMetadata() {
-      if (!isFileHistoryEnabled) {
-        return;
-      }
-      // Load file snapshot metadata
-      void Promise.all(messageOptions.map(async (userMessage, itemIndex) => {
-        if (userMessage.uuid !== currentUUID) {
-          const canRestore = fileHistoryCanRestore(fileHistory, userMessage.uuid);
-          const nextUserMessage = messageOptions.at(itemIndex + 1);
-          const diffStats_0 = canRestore ? computeDiffStatsBetweenMessages(messages, userMessage.uuid, nextUserMessage?.uuid !== currentUUID ? nextUserMessage?.uuid : undefined) : undefined;
-          if (diffStats_0 !== undefined) {
-            setFileHistoryMetadata(prev_1 => ({
-              ...prev_1,
-              [itemIndex]: diffStats_0
-            }));
-          } else {
-            setFileHistoryMetadata(prev_2 => ({
-              ...prev_2,
-              [itemIndex]: undefined
-            }));
-          }
-        }
-      }));
+    if (!isFileHistoryEnabled || preselectedMessage) {
+      return;
     }
-    void loadFileHistoryMetadata();
-  }, [messageOptions, messages, currentUUID, fileHistory, isFileHistoryEnabled]);
+    const controller = new AbortController();
+    async function loadFileHistoryMetadata() {
+      const nextMetadata: Record<number, DiffStats> = {};
+      const budget: TurnDiffStatsBudget = {
+        pairCounts: turnDiffPairCounts.current,
+        countUntil: performance.now() + rowCountingMs,
+        signal: controller.signal
+      };
+      for (let itemIndex = messageOptions.length - 1; itemIndex >= 0; itemIndex--) {
+        const userMessage = messageOptions[itemIndex];
+        if (userMessage.uuid === currentUUID) {
+          continue;
+        }
+        if (!fileHistoryCanRestore(fileHistory, userMessage.uuid)) {
+          nextMetadata[itemIndex] = undefined;
+          continue;
+        }
+        // Official while-skip: the row's turn ends at the NEXT restorable
+        // option (not merely the next row), bounded before the current-input
+        // virtual row.
+        let nextIndex = itemIndex + 1;
+        while (nextIndex < messageOptions.length - 1 && !fileHistoryCanRestore(fileHistory, messageOptions[nextIndex].uuid)) {
+          nextIndex++;
+        }
+        const nextUserMessage = messageOptions.at(nextIndex);
+        nextMetadata[itemIndex] = await fileHistoryGetTurnDiffStats(fileHistory, userMessage.uuid, nextUserMessage?.uuid !== currentUUID ? nextUserMessage?.uuid : undefined, budget);
+        if (controller.signal.aborted) {
+          return;
+        }
+      }
+      setFileHistoryMetadata(nextMetadata);
+    }
+    void loadFileHistoryMetadata().catch(logError);
+    return () => {
+      controller.abort();
+    };
+  }, [messageOptions, currentUUID, fileHistory, isFileHistoryEnabled, preselectedMessage, rowCountingMs]);
   const canRestoreCode_0 = isFileHistoryEnabled && diffStatsForRestore?.filesChanged && diffStatsForRestore.filesChanged.length > 0;
   const showPickList = !error && !messageToRestore && !preselectedMessage && hasMessagesToSelect;
   return <Box flexDirection="column" width="100%">
@@ -716,54 +752,10 @@ function UserMessageOption(t0) {
   return t8;
 }
 
-/**
- * Computes the diff stats for all the file edits in-between two messages.
- */
-function computeDiffStatsBetweenMessages(messages: Message[], fromMessageId: UUID, toMessageId: UUID | undefined): DiffStats | undefined {
-  const startIndex = messages.findIndex(msg => msg.uuid === fromMessageId);
-  if (startIndex === -1) {
-    return undefined;
-  }
-  let endIndex = toMessageId ? messages.findIndex(msg => msg.uuid === toMessageId) : messages.length;
-  if (endIndex === -1) {
-    endIndex = messages.length;
-  }
-  const filesChanged: string[] = [];
-  let insertions = 0;
-  let deletions = 0;
-  for (let i = startIndex + 1; i < endIndex; i++) {
-    const msg = messages[i];
-    if (!msg || !isToolUseResultMessage(msg)) {
-      continue;
-    }
-    const result = msg.toolUseResult as FileEditOutput | FileWriteToolOutput;
-    if (!result || !result.filePath || !result.structuredPatch) {
-      continue;
-    }
-    if (!filesChanged.includes(result.filePath)) {
-      filesChanged.push(result.filePath);
-    }
-    try {
-      if ('type' in result && result.type === 'create') {
-        insertions += result.content.split(/\r?\n/).length;
-      } else {
-        for (const hunk of result.structuredPatch) {
-          const additions = count(hunk.lines, line => line.startsWith('+'));
-          const removals = count(hunk.lines, line => line.startsWith('-'));
-          insertions += additions;
-          deletions += removals;
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-  return {
-    filesChanged,
-    insertions,
-    deletions
-  };
-}
+// CC 2.1.309 #23: `computeDiffStatsBetweenMessages` (the 2.1.308 `NNt`
+// transcript structuredPatch scan, @BIN308 274189515) was removed — official
+// 309 has no counterpart. Pick-list row stats now come from
+// fileHistoryGetTurnDiffStats (official `Cwo`, snapshot-store pairwise diff).
 export function selectableUserMessagesFilter(message: Message): message is UserMessage {
   if (message.type !== 'user') {
     return false;

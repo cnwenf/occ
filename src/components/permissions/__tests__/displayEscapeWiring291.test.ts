@@ -29,11 +29,13 @@ describe('G#9 permission components load with the display escaper wired', () => 
     expect(typeof mod.FileWritePermissionRequest).toBe('function')
   })
 
-  test('SedEditPermissionRequest exports a component function', async () => {
-    const mod = await import(
-      '../SedEditPermissionRequest/SedEditPermissionRequest.js'
-    )
-    expect(typeof mod.SedEditPermissionRequest).toBe('function')
+  // CC 2.1.309 #52: SedEditPermissionRequest was removed upstream (sed -i
+  // now gets the standard Bash prompt — no simulated file-edit preview), so
+  // the G#9 escaper smoke-load for it flips to a module-gone assertion.
+  test('SedEditPermissionRequest module was removed (CC 2.1.309 #52)', async () => {
+    await expect(
+      import('../SedEditPermissionRequest/SedEditPermissionRequest.js'),
+    ).rejects.toThrow()
   })
 
   test('ShowInIDEPrompt exports a component function', async () => {

@@ -525,6 +525,19 @@ export function createSubagentContext(
     pushApiMetricsEntry: overrides?.shareSetResponseLength
       ? parentContext.pushApiMetricsEntry
       : undefined,
+    // CC 2.1.309 #23 note: this stays a deliberate no-op. Binary forensics on
+    // BIN308/BIN309 show the official subagent file-history wiring is
+    // UNCHANGED across the release (shareFileHistory / "touch" /
+    // makeFileHistorySnapshot / preCheckpoint / trackSequence markers all
+    // have equal hit counts): regular Task subagents get NO file-history
+    // state access (only forked-skill spawns pass `shareFileHistory:!0`
+    // @BIN309 257647205/270895407). The official 309 fix for "subagent edits
+    // showed 'No code changes' in /rewind" does NOT add subagent
+    // checkpointing — the new pairwise turn diff (`Cwo`) compares the
+    // before-backup against LIVE DISK for the most recent turn, so any
+    // mutation of an already-tracked file (shell, subagent, /code-review
+    // --fix) is detected without new snapshots. See
+    // fileHistoryGetTurnDiffStats in src/utils/fileHistory.ts.
     updateFileHistoryState: () => {},
     // Attribution is scoped and functional (prev => next) — safe to share even
     // when setAppState is stubbed. Concurrent calls compose via React's state queue.

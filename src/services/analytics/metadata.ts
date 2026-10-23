@@ -268,8 +268,9 @@ function truncateToolInputValue(value: unknown, depth = 0): unknown {
   }
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)
-      // Skip internal marker keys (e.g. _simulatedSedEdit re-introduced by
-      // SedEditPermissionRequest) so they don't leak into telemetry.
+      // Skip internal marker keys (underscore-prefixed) so they don't leak
+      // into telemetry. (Historic example: the `_simulatedSedEdit` marker
+      // that the sed-edit preview re-introduced — removed in CC 2.1.309 #52.)
       .filter(([k]) => !k.startsWith('_'))
     const mapped = entries
       .slice(0, TOOL_INPUT_MAX_COLLECTION_ITEMS)
@@ -367,24 +368,19 @@ const WHITESPACE_REGEX = /\s+/
  * Extracts file extensions from a bash command for analytics.
  * Best-effort: splits on operators and whitespace, extracts extensions
  * from non-flag args of allowed commands. No heavy shell parsing needed
- * because grep patterns and sed scripts rarely resemble file extensions.
+ * because grep patterns rarely resemble file extensions.
+ *
+ * CC 2.1.309 #52: official BIN309 `Qei(e)` @243403911 is single-parameter —
+ * the BIN308 `DQs(e,n)` 2nd arg (the simulated sed-edit filePath) was
+ * removed together with the sed-edit simulation.
  */
 export function getFileExtensionsFromBashCommand(
   command: string,
-  simulatedSedEditFilePath?: string,
 ): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS | undefined {
-  if (!command.includes('.') && !simulatedSedEditFilePath) return undefined
+  if (!command.includes('.')) return undefined
 
   let result: string | undefined
   const seen = new Set<string>()
-
-  if (simulatedSedEditFilePath) {
-    const ext = getFileExtensionForAnalytics(simulatedSedEditFilePath)
-    if (ext) {
-      seen.add(ext)
-      result = ext
-    }
-  }
 
   for (const subcmd of command.split(COMPOUND_OPERATOR_REGEX)) {
     if (!subcmd) continue

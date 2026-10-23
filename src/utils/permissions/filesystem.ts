@@ -14,6 +14,7 @@ import {
 import type { z } from 'zod/v4'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { getFlagMcpConfigFilePaths } from '../../services/mcp/flagMcpConfigFilePaths.js'
 import type { AnyObject, Tool, ToolPermissionContext } from '../../Tool.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { GLOB_TOOL_NAME } from '../../tools/GlobTool/prompt.js'
@@ -270,10 +271,31 @@ function isClaudeConfigFilePath(filePath: string): boolean {
   const agentsDir = join(getOriginalCwd(), '.claude', 'agents')
   const skillsDir = join(getOriginalCwd(), '.claude', 'skills')
 
-  return (
+  if (
     pathInWorkingPath(filePath, commandsDir) ||
     pathInWorkingPath(filePath, agentsDir) ||
     pathInWorkingPath(filePath, skillsDir)
+  ) {
+    return true
+  }
+
+  // CC 2.1.309 (triage-T1-A item 3, security): --mcp-config files join the
+  // always-ask set. Official guard `Cf` (s2.txt @21164197, byte-verified):
+  //   `function Cf(e){if(Jhe(e))return!0;let n=[...rSe(),...oSe()];
+  //    if(n.length===0)return!1;let r=pw(ut(e));
+  //    return n.some((s)=>pw(s)===r)}`
+  // — Jhe = the pre-existing config-file check above, `oSe()` =
+  // flagMcpConfigFilePaths (ported store), `rSe()` = flagAgentsFilePaths
+  // (sub-gap: OCC has no --agents flag store, not ported), `pw` =
+  // settingsLinkFoldKey, `ut` = expandPath; `pw(ut(e))` is exactly
+  // settingsLinkLookupKey(e).
+  const flagFilePaths = getFlagMcpConfigFilePaths()
+  if (flagFilePaths.length === 0) {
+    return false
+  }
+  const lookupKey = settingsLinkLookupKey(filePath)
+  return flagFilePaths.some(
+    flagPath => settingsLinkFoldKey(flagPath) === lookupKey,
   )
 }
 

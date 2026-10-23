@@ -24,14 +24,27 @@
  *     and emits `tengu_safety_check_dialog_auto_denied` with
  *     `unansweredThisSession`; ANY answered dialog (allow, deny, or dismiss)
  *     resets the counter (`Qje()` @220028984/@220029626) — `timer.unref?.()`.
- *   - Deny-message builder `$0t` @204142297 — reproduced verbatim below.
+ *   - Deny-message builder `$0t` @204142297 (v2.1.281) — renamed `XOr` in
+ *     v2.1.309 (@254009969) with the parenthetical reworded to "…or none was
+ *     shown." — reproduced verbatim below.
+ *
+ * CC 2.1.309 #54 (dangerous rm/rmdir in bypass mode denies at once in the
+ * Desktop app / VS Code): the host-scoping half of the official change is
+ * N-A for OCC — OCC ships no Desktop/VSCode host (`prompt.ts`: `Pp()`/`jy()`
+ * entrypoint gates are constant-false) and OCC's live path already denies
+ * dangerous removals immediately and bypass-immune (`bashPermissions.ts`
+ * `findCatastrophicSubstitutionBlock` → this resolver with
+ * `canShowDialog:false`). The portable delta was the shared deny-message
+ * wording: BIN308 "this session cannot prompt" (2 hits) → BIN309 "none was
+ * shown" (2 hits @125537381/@254010415; old phrase 0 hits).
  *
  * OCC wiring note: OCC's catastrophic-substitution site (bashPermissions.ts,
  * `findCatastrophicSubstitutionBlock`) denies immediately instead of opening
  * a safety dialog, and OCC's dialog layer does not yet consume auto-deny
  * windows — so the live path takes the official's cannot-prompt deny branch
- * (the `$0t` text covers both cases: "the permission prompt timed out, or
- * this session cannot prompt"). `resolveDangerousRmSafetyCheck` +
+ * (the `XOr` text covers both cases: "the permission prompt timed out, or
+ * none was shown" — accurate for OCC's immediate-deny/headless path, where
+ * no prompt is shown). `resolveDangerousRmSafetyCheck` +
  * `startDangerousRmAutoDenyTimer` are the faithful, unit-tested mechanism
  * (official `b0t` + `oo` semantics) ready for dialog-layer adoption.
  */
@@ -96,17 +109,18 @@ export type DangerousRmSafetyCheckResolution =
     }
 
 /**
- * Official `$0t` @204142297 — verbatim deny message for dangerous removals
- * that no person approved (prompt timed out, session cannot prompt, or the
- * unanswered-dialog cap was reached). `unansweredCount` adds the official's
- * capped-dialog sentence (passed only on the capped path, mirroring `h(_)`).
+ * Official `$0t` @204142297 (2.1.281) → `XOr` @254009969 (2.1.309) —
+ * verbatim deny message for dangerous removals that no person approved
+ * (prompt timed out, no prompt was shown, or the unanswered-dialog cap was
+ * reached). `unansweredCount` adds the official's capped-dialog sentence
+ * (passed only on the capped path, mirroring `h(_)`).
  */
 export function buildDangerousRmAutoDenyMessage(
   flaggedText: string,
   unansweredCount?: number,
 ): string {
   return (
-    'Permission for this command was denied by a built-in Claude Code safety check, not by the user. The check stops removals that can delete far more than intended: a system, home or workspace directory, or a target it cannot resolve, such as a shell variable that, if unset or empty, turns this into `rm -rf /` or `rm -rf /*`. Only a person may approve such a removal, and no person did (the permission prompt timed out, or this session cannot prompt). ' +
+    'Permission for this command was denied by a built-in Claude Code safety check, not by the user. The check stops removals that can delete far more than intended: a system, home or workspace directory, or a target it cannot resolve, such as a shell variable that, if unset or empty, turns this into `rm -rf /` or `rm -rf /*`. Only a person may approve such a removal, and no person did (the permission prompt timed out, or none was shown). ' +
     (unansweredCount !== undefined
       ? `The prompt for such removals has already gone unanswered ${unansweredCount} times in this session, so it was not shown again. `
       : '') +

@@ -136,7 +136,10 @@ describe('CC 2.1.281 #137: dangerous-rm auto-deny window', () => {
     test('reproduces the official deny message byte-for-byte', () => {
       const message = buildDangerousRmAutoDenyMessage('rm -rf $HOME')
       expect(message).toBe(
-        'Permission for this command was denied by a built-in Claude Code safety check, not by the user. The check stops removals that can delete far more than intended: a system, home or workspace directory, or a target it cannot resolve, such as a shell variable that, if unset or empty, turns this into `rm -rf /` or `rm -rf /*`. Only a person may approve such a removal, and no person did (the permission prompt timed out, or this session cannot prompt). ' +
+        // CC 2.1.309 #54: official builder renamed `$0t`→`XOr` and reworded
+        // the parenthetical to "…or none was shown." (BIN309 @254009969;
+        // BIN308's "this session cannot prompt" has 0 hits in BIN309).
+        'Permission for this command was denied by a built-in Claude Code safety check, not by the user. The check stops removals that can delete far more than intended: a system, home or workspace directory, or a target it cannot resolve, such as a shell variable that, if unset or empty, turns this into `rm -rf /` or `rm -rf /*`. Only a person may approve such a removal, and no person did (the permission prompt timed out, or none was shown). ' +
           `The command was NOT run; do not claim it succeeded. Do not work around the check by splitting, scripting, or re-issuing the removal through another tool or shell: the check exists because a removal like this can destroy the user's data, and getting past it would not make it safe. If the text below suggests a safe rewrite, run that instead; it goes through the same check. Otherwise finish the rest of the task without this removal, tell the user what you wanted to delete and why, and leave the removal to them. What was flagged: rm -rf $HOME`,
       )
     })

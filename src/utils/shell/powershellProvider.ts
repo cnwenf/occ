@@ -29,6 +29,86 @@ function encodePowerShellCommand(psCommand: string): string {
   return Buffer.from(psCommand, 'utf16le').toString('base64')
 }
 
+/**
+ * CC 2.1.309 #32: exit-code-2 propagation wrapper for the PowerShell HOOK
+ * spawn path. `pwsh -Command "<native exe>"` does not reliably surface the
+ * inner program's exit code, so a blocking hook whose program exits 2 failed
+ * open on Windows. The official 309 appends this wrapper at hook spawn time
+ * (BIN309:126298081 & 252638083; ZERO hits in BIN308 — new in 2.1.309):
+ *
+ *   let vs=n==="PermissionRequest"||IWe(to)?to:to+`
+ *   ; if (-not $?) { if ($LASTEXITCODE -eq 2) { exit 2 } }`
+ *
+ * Byte-verbatim, including the LEADING REAL NEWLINE in the template literal.
+ *
+ * Structural note (deviation): the official applies the wrapper inline in the
+ * hook spawner; OCC applies it via buildHookPowerShellCommand() below, called
+ * from the hooks.ts PS spawn branch. It must NOT live inside
+ * buildPowerShellArgs() — that helper is shared with the provider path
+ * (buildExecCommand), which has its own $LASTEXITCODE capture + `exit $_ec`
+ * and would be corrupted by a second wrapper.
+ */
+export const POWERSHELL_HOOK_EXIT_WRAPPER =
+  '\n; if (-not $?) { if ($LASTEXITCODE -eq 2) { exit 2 } }'
+
+/**
+ * Port of the official `IWe` predicate (BIN309 @249832507, full source
+ * extracted). True when the command starts (after leading whitespace, `;`,
+ * `#` line comments and `<#...#>` block comments) with a PowerShell
+ * DECLARATION that the exit wrapper must not be appended after:
+ * `using namespace|module|assembly`, `param(`, a named block
+ * (`begin|process|end|clean|dynamicparam {`), or a leading `[Attribute`
+ * that is NOT a `[Type]::` static-method call.
+ *
+ * Official symbol → OCC name: `IWe` → startsWithPowerShellDeclaration.
+ */
+export function startsWithPowerShellDeclaration(command: string): boolean {
+  let i = 0
+  for (;;) {
+    while (i < command.length && /[\s;]/.test(command[i]!)) {
+      i++
+    }
+    if (command[i] === '#') {
+      while (i < command.length && command[i] !== '\n') {
+        i++
+      }
+      continue
+    }
+    if (command.startsWith('<#', i)) {
+      const end = command.indexOf('#>', i + 2)
+      i = end === -1 ? command.length : end + 2
+      continue
+    }
+    break
+  }
+  const rest = command.slice(i)
+  return (
+    /^using\s+(namespace|module|assembly)\b/i.test(rest) ||
+    /^param\s*\(/i.test(rest) ||
+    /^(begin|process|end|clean|dynamicparam)\s*\{/i.test(rest) ||
+    (/^\[\w/.test(rest) && !/^\[[\w.]+\]::/.test(rest))
+  )
+}
+
+/**
+ * CC 2.1.309 #32: build the `-Command` payload for a PowerShell HOOK spawn.
+ * Mirrors the official ternary exactly:
+ *   hookEvent === "PermissionRequest" || IWe(command) ? command : command + wrapper
+ * (BIN309 hook spawn @~252637500; `n` = hookEvent, `to` = finalCommand.)
+ */
+export function buildHookPowerShellCommand(
+  hookEvent: string,
+  command: string,
+): string {
+  if (
+    hookEvent === 'PermissionRequest' ||
+    startsWithPowerShellDeclaration(command)
+  ) {
+    return command
+  }
+  return command + POWERSHELL_HOOK_EXIT_WRAPPER
+}
+
 export function createPowerShellProvider(shellPath: string): ShellProvider {
   let currentSandboxTmpDir: string | undefined
 

@@ -27,6 +27,11 @@ const REAL_GROVE_SNAPSHOT = { ...REAL_GROVE_NS }
 
 const FALLBACK_MESSAGE =
   'Review and manage your privacy settings at https://claude.ai/settings/data-privacy-controls'
+// CC 2.1.309 item 24: fetch failures now report the new `d` message; the
+// review/manage fallback stays only for the not-qualified case. See
+// privacySettingsFetch309.test.ts for the full 309 suite.
+const CANNOT_FETCH_MESSAGE =
+  'Unable to fetch your privacy settings at this time. Check https://claude.ai/settings/data-privacy-controls'
 
 let mockQualified = true
 let mockSettingsResult: unknown = {
@@ -84,7 +89,7 @@ afterAll(() => {
   }))
 })
 
-test('config fetch fails while settings succeeds → FALLBACK_MESSAGE, dialog hidden (the #28 fix — pre-304 rendered with domainExcluded unknown)', async () => {
+test('config fetch fails while settings succeeds → CANNOT_FETCH_MESSAGE (309), dialog hidden (the #28 fix — pre-304 rendered with domainExcluded unknown)', async () => {
   // Arrange
   mockConfigResult = { success: false, errorStatus: 500 }
   const { calls: doneCalls, onDone } = collectDone()
@@ -94,10 +99,10 @@ test('config fetch fails while settings succeeds → FALLBACK_MESSAGE, dialog hi
 
   // Assert
   expect(node).toBeNull()
-  expect(doneCalls).toEqual([FALLBACK_MESSAGE])
+  expect(doneCalls).toEqual([CANNOT_FETCH_MESSAGE])
 })
 
-test('settings fetch fails while config succeeds → FALLBACK_MESSAGE, dialog hidden', async () => {
+test('settings fetch fails while config succeeds → CANNOT_FETCH_MESSAGE (309), dialog hidden', async () => {
   // Arrange
   mockSettingsResult = { success: false }
   const { calls: doneCalls, onDone } = collectDone()
@@ -107,7 +112,7 @@ test('settings fetch fails while config succeeds → FALLBACK_MESSAGE, dialog hi
 
   // Assert
   expect(node).toBeNull()
-  expect(doneCalls).toEqual([FALLBACK_MESSAGE])
+  expect(doneCalls).toEqual([CANNOT_FETCH_MESSAGE])
 })
 
 test('both fetches succeed + grove_enabled decided → PrivacySettingsDialog renders (no fallback)', async () => {

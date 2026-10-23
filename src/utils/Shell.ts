@@ -1,14 +1,22 @@
 import { type ChildProcess, execFileSync, spawn } from 'child_process'
+import { randomBytes } from 'crypto'
 import {
   constants as fsConstants,
   readFileSync,
   statSync,
   unlinkSync,
 } from 'fs'
-import { type FileHandle, mkdir, open, realpath } from 'fs/promises'
+import {
+  type FileHandle,
+  mkdir,
+  open,
+  realpath,
+  statfs,
+  unlink,
+} from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
-import { isAbsolute, join, resolve } from 'path'
+import { dirname, isAbsolute, join, resolve } from 'path'
 import { join as posixJoin } from 'path/posix'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
@@ -40,8 +48,12 @@ import { accessSync } from 'fs'
 import { onCwdChangedForHooks } from './hooks/fileChangedWatcher.js'
 import { getClaudeTempDirName } from './permissions/filesystem.js'
 import { getPlatform } from './platform.js'
-import { SandboxManager } from './sandbox/sandbox-adapter.js'
+import {
+  SandboxManager,
+  SandboxPolicyRefusalError,
+} from './sandbox/sandbox-adapter.js'
 import { invalidateSessionEnvCache } from './sessionEnvironment.js'
+import { getTmpRootDir } from './tmpDirBackstop.js'
 import { createBashShellProvider } from './shell/bashProvider.js'
 import {
   formatE2BigError,
@@ -79,13 +91,131 @@ export function isDiskFullError(error: unknown): boolean {
 }
 
 /**
- * CC 2.1.306 (#P5): official disk-full start-failure message (verbatim from
- * v306@249973898; `errName` is the errno name, e.g. `ENOSPC`). Returned when
- * the file that captures command output could not be created because the disk
- * is full — the command never started.
+ * CC 2.1.309 (triage-T3 item 46 / F-7): shared remedy sentence, verbatim from
+ * the official binary (`j9` @249266879):
+ *   `var j9="Free space on that volume, or restart Claude Code with
+ *    CLAUDE_CODE_TMPDIR set to a directory on another one, then retry. If this
+ *    is the user's own computer, tell them before deleting anything to make
+ *    room.",eco=5000;`
+ * (`eco=5000` is the official size-poll interval — no OCC counterpart site.)
+ */
+export const DISK_FULL_REMEDY =
+  "Free space on that volume, or restart Claude Code with CLAUDE_CODE_TMPDIR set to a directory on another one, then retry. If this is the user's own computer, tell them before deleting anything to make room."
+
+/**
+ * CC 2.1.306 (#P5) → CC 2.1.309 (item 46): official disk-full start-failure
+ * message. Rewritten in 309 — verbatim from @252265394 (306 text replaced):
+ *   `if($r===void 0&&Rst(vs)){let Ss=E(vs),ki=Ss==="EDQUOT"?`the user's disk
+ *    quota is used up (${Ss})`:`this computer's disk is full (${Ss})`;return
+ *    Gy(`The command was not started: ${ki} on the volume holding
+ *    ${xMr(bp(),jNe())} (Claude Code's temporary directory), so the file that
+ *    captures command output could not be created there and nothing ran.
+ *    ${j9}`)}`
+ * — `xMr(bp(),jNe())` is join(tmpRoot, claude-<uid>) via a local `join` alias
+ * (name-collision note: the module-level `xMr` @246828031 is a different
+ * function; this alias was confirmed from the calling module's own imports).
+ * Returned when the file that captures command output could not be created
+ * because the disk/quota is full — the command never started.
  */
 export function formatDiskFullStartError(errName: string): string {
-  return `The command was not started: this computer's disk is full (${errName}), so the file that captures command output could not be created. Nothing ran. If this is the user's own computer, tell them before deleting anything to make room.`
+  const cause =
+    errName === 'EDQUOT'
+      ? `the user's disk quota is used up (${errName})`
+      : `this computer's disk is full (${errName})`
+  const tempDir = join(getTmpRootDir(), getClaudeTempDirName())
+  return `The command was not started: ${cause} on the volume holding ${tempDir} (Claude Code's temporary directory), so the file that captures command output could not be created there and nothing ran. ${DISK_FULL_REMEDY}`
+}
+
+/**
+ * CC 2.1.309 (triage-T3 item 46 / F-7): probe-write beside a task-output file
+ * to classify a volume failure. Official `SFo` @245635768 (byte-verified):
+ *   `var Rt=new Uint8Array([10]);async function SFo(e){let n=`${e}.${Tt(6)
+ *    .toString("hex")}.probe`;try{let i;try{i=await N(n,{exclusive:!0,
+ *    windowsFlags:"wx"})}catch{return null}try{await i.write(Rt)}finally
+ *    {await i.close()}return null}catch(i){return E(i)??null}finally{await
+ *    Fun(n).catch((i)=>{t(`probeTaskOutputWrite: could not delete ${n}:
+ *    ${d(i)}`)})}}`
+ * Returns the errno name of a failed write, or null (open failure ALSO
+ * returns null per the official inner catch; unlink is best-effort with a
+ * debug log — the official debug string is reused verbatim).
+ */
+export async function probeTaskOutputWrite(
+  outputFilePath: string,
+): Promise<string | null> {
+  const probePath = `${outputFilePath}.${randomBytes(6).toString('hex')}.probe`
+  try {
+    let handle: FileHandle
+    try {
+      handle = await open(probePath, 'wx')
+    } catch {
+      return null
+    }
+    try {
+      await handle.write(new Uint8Array([10]))
+    } finally {
+      await handle.close()
+    }
+    return null
+  } catch (error) {
+    return getErrnoCode(error) ?? null
+  } finally {
+    await unlink(probePath).catch(error => {
+      logForDebugging(
+        `probeTaskOutputWrite: could not delete ${probePath}: ${errorMessage(error)}`,
+      )
+    })
+  }
+}
+
+/**
+ * CC 2.1.309 (triage-T3 item 46 / F-7): disk-full / inode-exhaustion
+ * diagnostic for a FAILED file-mode command whose output may be truncated or
+ * lost. Official `tco` @249267000+ (byte-verified; all four message templates
+ * verbatim). Flow: statfs(dirname(output), {bigint:true}) →
+ *   • plausible volume (`freeMb>=0n && blocks>0n`) with <10 MB free →
+ *     "Disk full: …has ${H} MB free…";
+ *   • plausible volume with files>0n and ffree<1000n → "Nearly out of inodes…";
+ *   • plausible volume, output NOT lost → null (no probe);
+ *   • otherwise probe-write beside the output file (SFo): EDQUOT → quota
+ *     message (own remedy text, not j9), ENOSPC → disk-full message, else null.
+ * `r` = join(bp(),jNe()) = join(getTmpRootDir(), getClaudeTempDirName());
+ * `s` = lost ? "whatever this command printed was lost" : "this command's
+ * output may be cut short". statfs errors are swallowed (official `catch{}`).
+ */
+export async function checkTaskOutputDiskFull(
+  outputFilePath: string,
+  outputWasLost: boolean,
+): Promise<string | null> {
+  const tempDir = join(getTmpRootDir(), getClaudeTempDirName())
+  const lostPhrase = outputWasLost
+    ? 'whatever this command printed was lost'
+    : "this command's output may be cut short"
+  const noSpaceClause = `so ${lostPhrase} and its own writes may have failed with "No space left on device".`
+  let volumeLookedPlausible = false
+  try {
+    const stats = await statfs(dirname(outputFilePath), { bigint: true })
+    const freeMb = stats.bavail * stats.bsize / (1024n * 1024n)
+    volumeLookedPlausible = freeMb >= 0n && stats.blocks > 0n
+    if (volumeLookedPlausible && freeMb < 10n) {
+      return `Disk full: this computer's volume holding ${tempDir} (Claude Code's temporary directory) has ${freeMb} MB free, ${noSpaceClause} ${DISK_FULL_REMEDY}`
+    }
+    if (volumeLookedPlausible && stats.files > 0n && stats.ffree < 1000n) {
+      return `Nearly out of inodes: this computer's volume holding ${tempDir} (Claude Code's temporary directory) has ${stats.ffree} free inodes, so creating files there may fail and the command may have failed for that reason. ${DISK_FULL_REMEDY}`
+    }
+  } catch {
+    // statfs unsupported/failed — fall through to the probe (official catch{})
+  }
+  if (volumeLookedPlausible && !outputWasLost) {
+    return null
+  }
+  const probeErrno = await probeTaskOutputWrite(outputFilePath)
+  if (probeErrno === 'EDQUOT') {
+    return `Disk quota used up: a test write beside this command's output file, on the volume holding ${tempDir} (Claude Code's temporary directory), failed with EDQUOT, so ${lostPhrase} and its own writes may have failed with "Disk quota exceeded". Delete files there that are no longer needed, or restart Claude Code with CLAUDE_CODE_TMPDIR set to a directory on another volume, then retry. If this is the user's own computer, tell them before deleting anything to make room.`
+  }
+  if (probeErrno === 'ENOSPC') {
+    return `Disk full: a test write beside this command's output file, on the volume holding ${tempDir} (Claude Code's temporary directory), failed with ENOSPC (the volume, or the user's quota on it, has no space left), ${noSpaceClause} ${DISK_FULL_REMEDY}`
+  }
+  return null
 }
 
 /**
@@ -335,13 +465,41 @@ export async function exec(
   const isSandboxedPowerShell = shouldUseSandbox && shellType === 'powershell'
   const sandboxBinShell = isSandboxedPowerShell ? '/bin/sh' : binShell
 
+  // CC 2.1.309 (triage-T1-A item 1, security): official `xo=(q??!1)&&!pn`
+  // (@252257156) — sandboxed && !Windows. On POSIX every sandboxed command
+  // spawns `/bin/sh -c <wrapped>` as the OUTER process (official
+  // `xo?[mEn,["-c",sn]]` @252260048, `mEn="/bin/sh"` @252248137) so the user's
+  // shell startup files no longer run OUTSIDE the sandbox (the 308 bug).
+  const isSandboxedPosix =
+    (shouldUseSandbox ?? false) && getPlatform() !== 'windows'
+
   if (shouldUseSandbox) {
+    // Official @252258300: `let ds=hKs(sn);Lr=ds;let Ta=await _En((Ua)=>
+    // ze.wrapWithSandbox(ds,fr,To,Ua,vs),n,co);sn=Ta??sn,Ui=Ta===void 0`.
+    // DEVIATIONS (declared): OCC has no seccomp pre-transform (`hKs` is
+    // identity without `p6n()`, so the baseline `Lr` is the plain command) and
+    // no abort-retry wrapper (`_En`) — OCC's wrapWithSandbox cannot return
+    // undefined, so the official `Ui` wrap-undefined abort
+    // (tengu_shell_abort_before_spawn) has no reachable OCC analogue.
+    const preWrapCommand = commandString
     commandString = await SandboxManager.wrapWithSandbox(
       commandString,
       sandboxBinShell,
       undefined,
       abortSignal,
     )
+    // Official unconfined guard @252260048 (byte-verbatim):
+    // `if(xo&&sn===Lr)throw m("sandbox_exec","sandbox_wrap_unconfined"),
+    //   new Dne("The sandbox produced no confinement for this command, so it
+    //   was not run.","sandbox_wrap_unconfined")`
+    // — the official topic logger m("sandbox_exec",…) maps to logForDebugging.
+    if (isSandboxedPosix && commandString === preWrapCommand) {
+      logForDebugging('sandbox_exec: sandbox_wrap_unconfined')
+      throw new SandboxPolicyRefusalError(
+        'The sandbox produced no confinement for this command, so it was not run.',
+        'sandbox_wrap_unconfined',
+      )
+    }
     // Create sandbox temp directory for sandboxed processes with secure permissions
     try {
       const fs = getFsImplementation()
@@ -351,8 +509,14 @@ export async function exec(
     }
   }
 
-  const spawnBinary = isSandboxedPowerShell ? '/bin/sh' : binShell
-  const shellArgs = isSandboxedPowerShell
+  // CC 2.1.309 item 1: official spawn selection @252260048 —
+  // `xo?[mEn,["-c",sn]]:[po,Kt.getSpawnArgs(sn)]`. DEVIATION: the official
+  // first arm (`Ko&&Er!==void 0?[Er,Ko.slice(1)]`) is the Windows
+  // wrapWithSandboxArgv path — OCC has no argv-based Windows wrap subsystem,
+  // so it is not ported (sandboxed PowerShell keeps its existing /bin/sh arm).
+  const usesShOuterSpawn = isSandboxedPosix || isSandboxedPowerShell
+  const spawnBinary = usesShOuterSpawn ? '/bin/sh' : binShell
+  const shellArgs = usesShOuterSpawn
     ? ['-c', commandString]
     : provider.getSpawnArgs(commandString)
   const envOverrides = await provider.getEnvironmentOverrides(command)
@@ -508,6 +672,40 @@ export async function exec(
         // File may not exist if command failed before pwd -P ran
       }
     })
+
+    // CC 2.1.309 (triage-T3 item 46 / F-7): disk-full cut-off diagnostic.
+    // Official caller @249271400 sits in the ShellCommand exit path (#M):
+    //   `else if(this.taskOutput.stdoutToFile&&e!==0&&!(n&&e===H9)){let w=await
+    //    tco(this.taskOutput.path,r==="");if(w)s.stdout=r?`${w}\n${r}`:w}`
+    // (H9=137; n = status was "killed"; r = accumulated stdout).
+    // STRUCTURAL DEVIATION (declared): ShellCommand.ts is outside this work
+    // package's file list, so OCC wires the identical gate here by augmenting
+    // `shellCommand.result` AFTER the cwd-tracking .then above (preserving its
+    // sync-microtask contract). The killed-with-137 skip reads
+    // shellCommand.status (OCC keeps 'killed' sticky through #handleExit);
+    // official `s.stdout=` mutation becomes an immutable spread.
+    if (taskOutput.stdoutToFile) {
+      const baseResult = shellCommand.result
+      shellCommand.result = baseResult.then(async result => {
+        if (result.code === 0) {
+          return result
+        }
+        if (shellCommand.status === 'killed' && result.code === 137) {
+          return result
+        }
+        const diagnostic = await checkTaskOutputDiskFull(
+          taskOutput.path,
+          result.stdout === '',
+        )
+        if (diagnostic === null) {
+          return result
+        }
+        return {
+          ...result,
+          stdout: result.stdout ? `${diagnostic}\n${result.stdout}` : diagnostic,
+        }
+      })
+    }
 
     return shellCommand
   } catch (error) {

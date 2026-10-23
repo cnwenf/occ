@@ -524,6 +524,41 @@ type SubCommandInfo = {
 }
 
 /**
+ * CC 2.1.309 #41: true when the element is a Set-Location/cd that TARGETS the
+ * current directory (some non-dash operand resolves to cwd) AND carries extra
+ * arguments beyond that sole operand — `Set-Location . -PassThru`,
+ * `Set-Location -Path:/etc .`, `cd . extra`. Changelog 2.1.309: "Fixed
+ * PowerShell permission checks auto-approving some Set-Location or cd commands
+ * that target the current directory and carry extra arguments; these now
+ * prompt for approval." Mirrors the official V0o bail shape
+ * (`w.startsWith("-")||pqe.test(w) → bail`).
+ *
+ * Used in TWO places that must agree:
+ * 1. the step-5 safe-cd filter — such commands stay in the approval list
+ *    (only a SOLE cwd-resolving operand is auto-approved), and
+ * 2. the step-5 built-in allowlist shortcut — `-PassThru` is a
+ *    readOnlyValidation safeFlag for set-location, so without this gate a
+ *    single-command `Set-Location . -PassThru` (hasCdSubCommand=false, which
+ *    requires length>1) would be re-allowed by isAllowlistedCommand.
+ *
+ * SECURITY: use PS_TOKENIZER_DASH_CHARS, not ASCII-only startsWith('-') — a
+ * Unicode-dash parameter must never be mistaken for the positional target.
+ */
+function isCwdSetLocationWithExtraArgs(element: ParsedCommandElement): boolean {
+  if (resolveToCanonical(element.name) !== 'set-location') {
+    return false
+  }
+  if (element.args.length < 2) {
+    return false
+  }
+  return element.args.some(
+    a =>
+      a.length === 0 ||
+      (!PS_TOKENIZER_DASH_CHARS.has(a[0]!) && resolve(getCwd(), a) === getCwd()),
+  )
+}
+
+/**
  * Extract sub-commands that need independent permission checking from a parsed command.
  * Safe output cmdlets (Format-Table, Select-Object, etc.) are flagged but NOT
  * filtered out — step 4.4 still checks deny rules against them (deny always
@@ -1389,19 +1424,31 @@ export async function powershellToolHasPermission(
       return true
     }
     const canonical = resolveToCanonical(element.name)
-    if (canonical === 'set-location' && element.args.length > 0) {
-      // SECURITY: use PS_TOKENIZER_DASH_CHARS, not ASCII-only startsWith('-').
-      // `Set-Location –Path .` (en-dash) would otherwise treat `–Path` as the
-      // target, resolve it against cwd (mismatch), and keep the command in the
-      // approval list — correct. But `Set-Location –LiteralPath evil` with
-      // en-dash would find `–LiteralPath` as "target", mismatch cwd, stay in
-      // list — also correct. The risk is the inverse: a Unicode-dash parameter
-      // being treated as the positional target. Use the tokenizer dash set.
-      const target = element.args.find(
-        a => a.length === 0 || !PS_TOKENIZER_DASH_CHARS.has(a[0]!),
-      )
-      if (target && resolve(getCwd(), target) === getCwd()) {
-        return false
+    // CC 2.1.309 #41: auto-approve a cwd-targeting Set-Location ONLY when the
+    // resolved-cwd target is the SOLE argument. The previous shape (find the
+    // first non-dash arg, ignore everything else) silently auto-approved
+    // commands carrying extra arguments — `Set-Location . -PassThru`,
+    // `Set-Location -Path:/etc .` (colon-bound param smuggled past the
+    // target check), `cd . extra`. These now stay in the approval list and
+    // prompt (see isCwdSetLocationWithExtraArgs for the changelog quote and
+    // the matching allowlist-shortcut gate below).
+    if (canonical === 'set-location') {
+      if (isCwdSetLocationWithExtraArgs(element)) {
+        return true
+      }
+      if (element.args.length === 1) {
+        // SECURITY: PS_TOKENIZER_DASH_CHARS, not ASCII-only startsWith('-') —
+        // a Unicode-dash parameter must never be treated as the positional
+        // target. A lone dash-param (`Set-Location -PassThru`) is not
+        // cwd-targeting and stays in the list for the allowlist path.
+        const target = element.args[0]!
+        if (
+          target.length === 0 ||
+          (!PS_TOKENIZER_DASH_CHARS.has(target[0]!) &&
+            resolve(getCwd(), target) === getCwd())
+        ) {
+          return false
+        }
       }
     }
     return true
@@ -1524,6 +1571,12 @@ export async function powershellToolHasPermission(
       statement !== null &&
       !hasCdSubCommand &&
       !hasSymlinkCreate &&
+      // CC 2.1.309 #41: the step-5 filter keeps cwd-targeting Set-Location
+      // with extra args in the approval list, but a SINGLE-command compound
+      // has hasCdSubCommand=false (needs length>1) — without this gate
+      // `Set-Location . -PassThru` would be re-allowed here because
+      // -PassThru is a readOnlyValidation safeFlag for set-location.
+      !isCwdSetLocationWithExtraArgs(element) &&
       isProvablySafeStatement(statement) &&
       isAllowlistedCommand(element, subCmd)
     ) {

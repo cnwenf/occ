@@ -51,7 +51,7 @@ import {
   type InProcessSpawnConfig,
   spawnInProcessTeammate,
 } from '../../utils/swarm/spawnInProcess.js'
-import { buildInheritedEnvVars } from '../../utils/swarm/spawnUtils.js'
+import { buildInheritedEnvVars, buildInheritedToolFlags } from '../../utils/swarm/spawnUtils.js'
 import {
   readTeamFileAsync,
   sanitizeAgentName,
@@ -274,6 +274,12 @@ export function buildInheritedCliFlags(options?: {
     // GrowthBook gate checks and setAutoModeActive(true) independently.
     flags.push('--permission-mode auto')
   }
+
+  // claude-code 2.1.309 (item 21): replay the leader's command-line tool deny
+  // rules and --tools narrowing so split-pane/separate-window teammates
+  // enforce the same tool restrictions (official te() order: permission flags
+  // → deny rules → --tools → --model; shared helper in swarm/spawnUtils.ts).
+  flags.push(...buildInheritedToolFlags())
 
   // Propagate --model if explicitly set via CLI
   const modelOverride = getMainLoopModelOverride()

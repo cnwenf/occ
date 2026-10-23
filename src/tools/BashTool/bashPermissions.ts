@@ -2949,9 +2949,10 @@ export async function bashToolHasPermission(
       // safety check…") with the capped/unanswered-count semantics driven by
       // the session counters in denialTracking.ts. OCC's dialog layer does
       // not yet consume auto-deny windows, so canShowDialog is false and the
-      // official cannot-prompt deny branch applies — the `$0t` text already
-      // covers this case ("…the permission prompt timed out, or this session
-      // cannot prompt"). When the tengu_splendid_horizon remote config or the
+      // official cannot-prompt deny branch applies — the `$0t`/`XOr` text
+      // already covers this case ("…the permission prompt timed out, or none
+      // was shown", CC 2.1.309 wording). When the tengu_splendid_horizon
+      // remote config or the
       // CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT kill-switch disables the
       // feature, the legacy deny is returned unchanged — carrying the
       // OCC-136 rich `subBlock.message` wording when present. `flaggedText`
