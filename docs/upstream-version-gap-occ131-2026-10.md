@@ -177,9 +177,12 @@ Consistency-vs-official-2.1.309 axis, verified by the orchestrator (OCC 程序�
 
 ## §6 Release record
 
-**PENDING — not yet released.** Per the OCC-131 discipline chain, the release happens only after
-the 安全审核员 backdoor audit and the 验收员 acceptance pass, and the programmer is notified to cut it.
+**RELEASED — v2.1.402 (2026-10-24).** Cut after the discipline chain completed: 安全审核员 backdoor
+audit PASS (comment `b035a90a`, no CRITICAL/HIGH/MEDIUM) → 验收员 E2E acceptance
+**PASS-with-WARN, 发布不被阻塞** (comment `de33e1d4`: no P0/P1 confirmed findings; dataflow-01 is a
+documented deliberate deviation, SEC-03 informational; all pr-base..HEAD candidates re-adjudicated
+RESOLVED/FALSIFIED by real-bun probes on exact HEAD `9d2ee917e`) → programmer notified to release.
 
-- **Planned version**: `2.1.402` (monotonic above v2.1.401). At merge-to-main time `package.json` is still `2.1.401` and `CHANGELOG.md` has no `## 2.1.402` section — both belong to the post-acceptance `chore(release): 2.1.402` commit. A drafted CHANGELOG section is preserved at `/tmp/cc-diff-309/changelog-2.1.402-draft.md` for that commit.
+- **Release commit**: `chore(release): 2.1.402` on top of `9d2ee917` — `package.json` bumped `2.1.401`→`2.1.402`, `CHANGELOG.md` gained the `## 2.1.402 - 2026-10-24` section (draft adopted verbatim; rest-of-file byte-identical to the live CHANGELOG before adoption). Build re-verified post-bump: `dist/cli.js` 30.49 MB, `MACRO.VERSION=2.1.402` injected, `occ --version` → `OCC 2.1.402`. Tag `v2.1.402` pushed → publish.yml. npm E404 external blocker (expired NPM_TOKEN, `@cnwenf/occ` npm stuck at 2.1.367) expected — v2.1.401 precedent applies: manual `gh release create v2.1.402 --generate-notes` to keep /releases ↔ /tags symmetric.
 - **Incident note (2026-10-24 ~06:20)**: a concurrent work stream prematurely created a local `chore(release): 2.1.402` commit + local tag `v2.1.402` before acceptance. The tag pointed at a tree whose `package.json` still read `2.1.401` with no CHANGELOG section (a broken release — CI would have published 2.1.401 under tag v2.1.402). It was rolled back locally (tag deleted, commit soft-reset into this docs commit) **before anything was pushed** — `origin/main` never moved from `c4d4165f` and no tag ever reached the remote (verified `git ls-remote` at rollback time).
 - **Merge to main**: this round (implementation `204d2d1b` + docs/badge commit) is merged to `main` and pushed; the tag/publish step stays deferred as above.
