@@ -2,6 +2,25 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.401 - 2026-10-23 (OCC-130 — 官方 2.1.306→2.1.308 追齐轮：44 条 changelog 逐条对官方 ELF 三方取证 triage，2.1.308 证实为 no-op 重打包 → 追齐目标 = 2.1.307 语义；15 个 PORT 项全部落地（9 个并行工作包）+ 验收轮 6 处 must-fix 全部修复；README Tracks 徽章 → 2.1.308 partial)
+
+- OTel `safety_event` 遥测发射器上线（`src/hooks/toolPermission/safetyEvent.ts`，官方 `TYr` 9 值 category allowlist + `EYr` 7 值 decision_source + `CYr`/`HMn` 前缀映射逐字节复原；tool_name 不在 allowlist 收敛为 `other_tool`；`tengu_snoopy_creek` 门控默认 true），在 `tool_decision` 之后发射
+- `[1m]` 上下文别名修复：alias 解析前无条件剥离尾部 `[1m]` 后缀（官方 `h=Mt(r).trim()` 形状），`opus[1m]` 不再落入 unknown-model 分支
+- `prompt-caching-scope` beta 请求头新增 D8 门控 `shouldIncludePromptCachingScopeBeta()`（`src/utils/betas.ts`，filedoc 记录 3 处刻意 deviation：faithful-D8 归约、无 hipaa arm、anthropicGoogleCloud 折叠进 firstParty）
+- WebSearch 用量上限提示语对齐官方 2.1.307 session-no-refill 变体（browser/computer-use 与 third-party-reader 子句逐字，`plural()` + `BASH_TOOL_NAME`）
+- CCR 模式 403 响应新增 reason 提取（`CCR_AUTH_REASON_MAX_CONTENT_LENGTH=1000` 预算，`error.error.message` → `error.message` → HTML `<title>` 提取链），报错不再吞掉网关侧原因
+- MCP 三件套（官方 v307 字节取证）：① keychain-locked 凭据库错误 `McpCredentialStoreUnavailableError`（两种 verbatim 文案 + 严格 keychain probe：backend=keychain ∧ 401-challenged ∧ 无缓存凭据，30s/1s 缓存）；② `CONNECT_SUSPENDED` 挂起检测 + sleep-gap 判定 + 失败缓存跳过 + ≤10 次 suspend-redial（epoch guard + `tengu_mcp_connect_suspend_redial` 遥测）；③ session-expiry 4 kind 分类 + `mayHaveRun` 幂等门控重试（`Qt<1 ∧ (!mayHaveRun ∨ isConcurrencySafe ∨ idempotentHint)`）
+- MCP 会话恢复提示渲染器 `z_`（em-dash 官方文案）经新增 `McpSessionRecoveryTextError` 在 non-retried rethrow 处**生产接线**，恢复提示不再是死代码（CCR relay 调用点属未移植面，gap doc §5 已如实声明 partial）
+- SDK MCP 工具 relist turn-start join：`sdkToolRelistJoin` 竞争等待（预算 `MCP_CONNECT_TIMEOUT_MS`>0 ? min(env, 2^31−1) : 5000ms，超时发 `sdk_mcp_relist_wait` 诊断），官方 `Ki`/`Vi` 两集合语义——`gave_up` 后 gate 保持 armed
+- `/permissions` 拒绝记录增强：denied-command 内容按焦点行 reveal（`RecentDenialsTab` 358 行重写：maxRows 8、ctrl+o 展开、`(retry)`/`(approved)` 后缀）、approve 后 `$n` exit-meta 消息（`metaMessagesOrigin:{kind:"auto-continuation"}`）、denial store 官方忠实**无去重**（无条件 prepend、cap 20，官方 `uee`/`L` 字节核实无 inputKey 去重）
+- malformed tool_use 2× 重试：`stop_reason==="tool_use"` 但 0 个 tool_use block 且非 API 错误消息时，tombstone + `turnCompanion` meta user message（官方逐字）+ `{reason:"malformed_tool_use_retry"}` 状态迁移，`au` 分类器 5 outcomes + 双遥测事件
+- fork 子代理 own-launch 逐 block 识别（官方 `Kbo`，移除 TODO(smoosh) 占位）；bundled skills 全量补 `menuDescription`（含 claude-api verbatim）+ 命令建议 `p1e` 端口；OAuth success redirect 提前到 profile fetch 之前（官方顺序）
+- `axScreenReader` 设置改为 source-gated：仅读 `policySettings`/`flagSettings`/`userSettings`（project/local 忽略，settings describe 补 `Ignored in project and local settings.`），启动警告短/长变体逐字对齐
+- 验收轮 6 处 must-fix 修复（官方 ELF 仅 strings/grep -aboF/dd 取证、从未执行）：F-01 渲染器生产接线（上条）、F-02 relist 两集合语义、F-03 no-dedup store 字节证实并 4 测试钉死、F-04 `useCanUseTool` record 站点真实 hook 路径 8 测试覆盖、F-10 suspend-redial 尾部 cache-eviction 按官方 `X0n` 移除（无 delete）+ 竞态回归测试、F-11 `RecentDenialsTab` 10 条组件测试（fake-TTY 渲染，可杀死 `focusedIdx+1` 变异）
+- 修复轮附带：4 个既有 Bun `mock.module` 跨文件泄漏测试以 victim 侧 cache-busted query specifier 修复（mcp+cli suite 759/4 → 771/0）
+- Tests: 21 个 `*307` suite 412 pass / 0 fail（928 expect）；受影响范围 sweep 1412 pass / 0 fail / 1 env-skip（124 files）；全量 A/B 对照 12239 pass、零回归（fail-name 集合与 baseline 逐组一致）；biome 0 error；build 绿（dist/cli.js 30.46 MB）；headless `-p` PONG + tmux REPL 真实模型往返 + `/status` 版本注入 e2e 全绿；5 个真实模型 e2e suite 23 pass / 0 fail
+- 追踪状态：README Tracks 徽章/段落/表格/页脚 2.1.306 → **2.1.308 (partial)**（2.1.308 = no-op rebuild，实追 2.1.307 语义）；完整台账 `docs/upstream-version-gap-occ130-2026-10.md`；复验新增 9 条 follow-up（1×P2 降级 + 8×P3）不阻断本版，列入下一轮必须清零清单
+
 ## 2.1.400 - 2026-10-22 (OCC-128 — OCC-126 验收 code-review 确认的 3 项发现修复：/resume catastrophic strip 覆盖两个 legacy seed 家族 + 渲染路径 guard 测试 + WP3 文档 deviation #6 修正)
 
 - `/resume` 的 legacy seeded security-warning 清除谓词加宽为完整模板形状：同时覆盖 **first-loop**（`collectPermissionRuleSecurityWarnings` → `never matches[ · use X(…)]` / `matches no tool · check for typos`）和 **validator-loop**（`collectPermissionRuleSecurityNotices` → `allows any option at its * · use an exact value` / `reads its * literally[ · use X]` / `reads its :* as a wildcard · use an exact value`）两个 producer 家族，且含 `X(:*)` 无尾形态与真实 rule content 尾；round-1 只锚 first-loop 家族导致 validator-loop 行在 /resume 重新浮现的 P2 已修复（`LEGACY_SEEDED_SECURITY_ROW_PATTERN` @ `src/utils/conversationRecovery.ts:224`）；非 seeded 合法警告（如 `Deny rule X will be enforced from next run`）仍然存活
