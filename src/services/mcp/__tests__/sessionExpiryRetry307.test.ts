@@ -30,6 +30,7 @@ import {
 } from '../sendTracking.js'
 import type { ToolCallWatchdog } from '../sendTracking.js'
 import {
+  renderSessionRecoveryDispatchText,
   renderSessionRecoveryResultText,
   sanitizeSessionRecoveryText,
 } from '../sessionRecoveryText.js'
@@ -503,6 +504,77 @@ describe('2.1.307 B3 renderSessionRecoveryResultText', () => {
         'MCP session expired for srv — send mcp_reconnect and retry mcp_call: detail',
       )
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2.1.308 F-03 — the SECOND official ky render site (mcp_call dispatch shape):
+// namesMcpCall:true, then `.slice(0,2000).replace(/[\uD800-\uDBFF]$/,"")`
+// (BIN309 @277915112 region). renderSessionRecoveryDispatchText ports that
+// post-render cap; renderSessionRecoveryResultText stays the uncapped site-1
+// shape (@277912985 region).
+// ---------------------------------------------------------------------------
+
+describe('2.1.308 F-03 renderSessionRecoveryDispatchText (official site-2 shape)', () => {
+  test('renders namesMcpCall:true with the mcp_call suffix, uncapped when short', () => {
+    // Arrange / Act
+    const rendered = renderSessionRecoveryDispatchText({
+      serverName: 'srv',
+      error: { mayHaveRun: true, expiryKind: 'connection_closed_http' },
+      detail: 'boom',
+    })
+
+    // Assert
+    expect(rendered).toBe(
+      'MCP connection to srv closed during the call — send mcp_reconnect, and check whether the tool ran before retrying mcp_call: boom',
+    )
+  })
+
+  test('caps the rendered text at 2000 chars (slice bites before the detail ends)', () => {
+    // Arrange — name and detail both sanitize to the full 1024 display cap,
+    // so the raw render exceeds the official 2000-char dispatch cap.
+    const name = 'n'.repeat(2000)
+    const detail = 'd'.repeat(2000)
+
+    // Act
+    const rendered = renderSessionRecoveryDispatchText({
+      serverName: name,
+      error: { mayHaveRun: false, expiryKind: 'session_expired_404' },
+      detail,
+    })
+    const raw = renderSessionRecoveryResultText({
+      serverName: name,
+      error: { mayHaveRun: false, expiryKind: 'session_expired_404' },
+      namesMcpCall: true,
+      detail,
+    })
+
+    // Assert
+    expect(raw.length).toBeGreaterThan(2000)
+    expect(rendered.length).toBe(2000)
+    expect(rendered).toBe(raw.slice(0, 2000))
+  })
+
+  test('strips a lone high surrogate left at the tail by the 2000-char slice', () => {
+    // Arrange — position an emoji so the slice cuts BETWEEN its UTF-16 units,
+    // leaving a trailing lone high surrogate the official regex removes.
+    const name = 'n'.repeat(1024)
+    const prefix = `MCP session expired for ${name} — send mcp_reconnect and retry mcp_call: `
+    const fill = 'd'.repeat(2000 - prefix.length - 1)
+    const detail = `${fill}\u{1F600}tail`
+
+    // Act
+    const rendered = renderSessionRecoveryDispatchText({
+      serverName: name,
+      error: { mayHaveRun: false, expiryKind: 'session_expired_404' },
+      detail,
+    })
+
+    // Assert — the cut landed mid-emoji; the trailing lone high surrogate is
+    // stripped, leaving exactly prefix+fill (1999 chars).
+    expect(rendered).toBe(prefix + fill)
+    expect(rendered.length).toBe(1999)
+    expect(/[\uD800-\uDBFF]$/.test(rendered)).toBe(false)
   })
 })
 

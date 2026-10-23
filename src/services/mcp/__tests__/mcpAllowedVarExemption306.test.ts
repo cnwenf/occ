@@ -102,11 +102,13 @@ mock.module('../../../utils/settings/settings.js', () => ({
 // cache-busted query specifier pulls a genuine config.js instance no sibling
 // mock intercepts (same remedy mcpGetDynamicScope285 uses); its internal
 // settings.js import still resolves to THIS file's settings mock below.
-const { getClaudeCodeMcpConfigs, isMcpServerAllowedByPolicy } = await import(
-  '../config.js?occ-p9-real'
-)
+const {
+  doesEnterpriseMcpConfigExist,
+  getClaudeCodeMcpConfigs,
+  isMcpServerAllowedByPolicy,
+} = await import('../config.js?occ-p9-real')
 
-afterAll(() => {
+afterAll(async () => {
   mock.module('../../../utils/settings/settings.js', () => ({
     ...actualSettings,
   }))
@@ -121,6 +123,18 @@ afterAll(() => {
   // so later files re-memoize under the restored env.
   getManagedFilePath.cache.clear()
   getManagedSettingsDropInDir.cache.clear()
+  // OCC-97 half-close (2.1.308 follow-up): doesEnterpriseMcpConfigExist is
+  // ALSO memoized (config.ts) — this suite seeds it `true` under the temp
+  // managedDir it then rmSyncs. Clear the cache-busted instance's memo, and
+  // also clear whatever '../config.js' resolves to at teardown time (the
+  // shared instance, or a sibling's mock-registered fake that spread the
+  // real config exports) so no later file in the same worker inherits a memo
+  // pinned to a now-deleted directory.
+  doesEnterpriseMcpConfigExist.cache.clear()
+  const sharedConfig = (await import('../config.js')) as {
+    doesEnterpriseMcpConfigExist?: { cache?: { clear?: () => void } }
+  }
+  sharedConfig.doesEnterpriseMcpConfigExist?.cache?.clear?.()
   rmSync(managedDir, { recursive: true, force: true })
   rmSync(configDir, { recursive: true, force: true })
 })

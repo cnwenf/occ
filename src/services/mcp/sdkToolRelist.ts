@@ -8,25 +8,47 @@ import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
  * CC 2.1.307 (B4): "Fixed a turn sometimes starting without an SDK MCP
  * server's latest tools when a background task was running."
  *
- * Module-level port of the official minified SDK tool-relist state:
- * - `inFlightSdkRefreshes` = official `Ge` counter (incremented around every
- *   updateSdkMcp body and around each kept-previous relist attempt).
- * - `keptPreviousServers` = official `vs` — the PENDING set that `qs()`
- *   iterates (@276495245 region). The official `Vi` relist loop consumes it
- *   per cycle (`for(let mt of[...vs]){...vs.delete(mt),Ge++;try{await Ki(qt)...}`
- *   @276501515); OCC has no `Vi` loop, so `sdkToolRelistSuccess` performs the
- *   consumption (mirroring the official disable path's `vs.delete(I),ka.delete(I)`
- *   @276504004).
- * - `keptAttemptServers` = official `ka` — the per-cycle consumption set the
- *   kept-previous branch probes (@276495801 region):
- *   `if(ka.delete(I.name)){f("mcp_sdk_tools_refresh","gave_up");return}
- *    f("mcp_sdk_tools_refresh","kept_previous"),ka.add(I.name),vs.add(I.name)`.
- *   gave_up consumes ONLY `ka`; the name STAYS in `vs`, so the pending gate
- *   remains ARMED and successive failures alternate kept_previous/gave_up.
- *   (F-02: an earlier single-set collapse wrongly disarmed the gate on
- *   gave_up — a server that failed its list_changed relist twice was never
- *   re-checked at later turn starts.)
- * - `sdkToolRelistPending()` = official `qs` (@45784973):
+ * Module-level port of the official minified SDK tool-relist state (v2.1.309
+ * ELF offsets, byte-verified, never executed; v309 symbol renames vs v307 in
+ * parens — `vs`→`wo`, `ka`→`Is`, `Ge`→`$s`, `qs`→`vc`, `Ki`→`wt`,
+ * `Vi`→`ia`):
+ * - `inFlightSdkRefreshes` = official `Ge`/`$s` counter (incremented around
+ *   every updateSdkMcp body and around each kept-previous relist attempt).
+ * - `keptPreviousServers` = official `vs`/`wo` — the PENDING set the gate
+ *   `vc` iterates (@277789337). OFFICIAL SEMANTICS (v309): the `Vi` relist
+ *   loop (@277795447) CONSUMES the set per cycle BEFORE each relist attempt —
+ *   `for(let pt of[...wo]){if(!Object.hasOwn(C,pt)){wo.delete(pt);continue}
+ *   let Kt=Sn.find((cr)=>cr.name===pt);if(Kt?.type!=="connected")continue;
+ *   wo.delete(pt),$s++;try{let cr=await wt(Kt);...}finally{$s--}}` — and the
+ *   `wt` kept-previous branch (@277789550 region) re-adds ONLY on
+ *   kept_previous: `f("mcp_sdk_tools_refresh","kept_previous"),Is.add(I.name),
+ *   wo.add(I.name)`. On gave_up (`if(Is.delete(I.name)){f("mcp_sdk_tools_refresh",
+ *   "gave_up");return}`, strings @277789748–277789897) the name is NOT
+ *   re-added to `wo`, so after two consecutive kept-previous failures the
+ *   official gate DISARMS until a new list_changed notification re-adds the
+ *   name (@277884463: `Is.delete(ie.server_name),wo.add(ie.server_name)`
+ *   then `ia("skip")`). The official disable path clears both sets
+ *   (@277798076: `wo.delete(I),Is.delete(I)`).
+ * - `keptAttemptServers` = official `ka`/`Is` — the per-cycle consumption set
+ *   the kept-previous branch probes (@277789748 region, quoted above).
+ *
+ *   DELIBERATE DEVIATION (F-02, v309-verified): OCC's gave_up consumes ONLY
+ *   `ka` (keptAttemptServers) and the name STAYS in `vs`
+ *   (keptPreviousServers), so OCC's pending gate remains ARMED after gave_up
+ *   and successive failures alternate kept_previous/gave_up indefinitely.
+ *   This is NOT what the official does — the official `Vi` loop's per-cycle
+ *   `wo.delete(pt)` plus the gave_up branch's missing `wo.add` disarm the
+ *   official gate until the next list_changed notification. OCC keeps the
+ *   gate armed because OCC has NO `Vi` relist runner: nothing re-attempts
+ *   the relist between turn starts, so disarming on gave_up would leave a
+ *   twice-failed server serving STALE tools with a SILENT gate — the exact
+ *   bug class B4 fixed ("a turn sometimes starting without an SDK MCP
+ *   server's latest tools"). The conservative cost of staying armed is one
+ *   no-op updateSdkMcp + one sdk_mcp_relist_wait diag log per turn start
+ *   while the failure persists. (An earlier single-set collapse wrongly
+ *   disarmed OCC's gate on gave_up — regression-pinned by
+ *   sdkToolRelist307.test.ts.)
+ * - `sdkToolRelistPending()` = official `qs`/`vc` (@45784973 / @277789337):
  *   `Ge>0 || [...vs].some(name => configured && connected)`.
  * - `sdkUpdateWaitBudgetMs()` = official `dWe` (@19314170):
  *   `MCP_CONNECT_TIMEOUT_MS > 0 ? Math.min(env, 2147483647) : 5000`.
@@ -55,9 +77,11 @@ let inFlightSdkRefreshes = 0
 const keptPreviousServers = new Set<string>()
 
 /**
- * Official `ka`: servers whose CURRENT kept-previous cycle has been consumed.
- * gave_up deletes from here ONLY — `vs` retains the name so the gate stays
- * armed for the next cycle.
+ * Official `ka`/`Is`: servers whose CURRENT kept-previous cycle has been
+ * consumed. OCC DELIBERATE DEVIATION (see module header): gave_up deletes
+ * from here ONLY — `vs` retains the name so the gate stays armed for the
+ * next cycle, whereas the official `Vi` loop's per-cycle `wo.delete`
+ * disarms the gate on gave_up until a new list_changed notification.
  */
 const keptAttemptServers = new Set<string>()
 
@@ -90,7 +114,7 @@ export function endSdkRefresh(): void {
 }
 
 /**
- * Official `qs` (@45784973, verbatim semantics):
+ * Official `vc` (v307 `qs`) (@45784973 / @277789337, verbatim semantics):
  * `()=>{if(Ge>0)return!0;for(let I of vs)if(Object.hasOwn(P,I)&&hn.some(
  * (Q)=>Q.name===I&&Q.type==="connected"))return!0;return!1}`
  */
@@ -107,14 +131,21 @@ export function sdkToolRelistPending(): boolean {
 }
 
 /**
- * Official `Ki` kept-previous branch (@45785250 / @276495801):
- * `if(ka.delete(I.name)){f("mcp_sdk_tools_refresh","gave_up");return}
- *  f("mcp_sdk_tools_refresh","kept_previous"),ka.add(I.name),vs.add(I.name)`
+ * Official `wt` (v307 `Ki`) kept-previous branch (@277789550 region;
+ * strings @277789748–277789897, byte-verified in the v2.1.309 ELF):
+ * `if(Is.delete(I.name)){f("mcp_sdk_tools_refresh","gave_up");return}
+ *  f("mcp_sdk_tools_refresh","kept_previous"),Is.add(I.name),wo.add(I.name)`
  *
- * F-02: gave_up consumes ONLY `ka` (keptAttemptServers). The name STAYS in
- * `vs` (keptPreviousServers), so `qs()`/sdkToolRelistPending() remains armed
- * and successive failures alternate kept_previous/gave_up until a success
- * (sdkToolRelistSuccess) clears both sets.
+ * F-02 (DELIBERATE DEVIATION — see module header for the official disarm
+ * semantics and OCC's rationale): gave_up consumes ONLY `ka`
+ * (keptAttemptServers). The name STAYS in `vs` (keptPreviousServers), so
+ * `vc()`/sdkToolRelistPending() remains armed and successive failures
+ * alternate kept_previous/gave_up until a success (sdkToolRelistSuccess)
+ * clears both sets. Officially the `Vi` loop's per-cycle `wo.delete(pt)`
+ * (@277795447) plus the gave_up branch's missing `wo.add` instead DISARM
+ * the gate until a new list_changed notification re-adds the name
+ * (@277884463). OCC has no `Vi` runner, so it keeps the gate armed —
+ * conservative superset; regression-pinned by sdkToolRelist307.test.ts.
  */
 export function sdkToolRelistKeptFailure(serverName: string): void {
   // Fixed protocol strings from the official counter allowlist — never user
@@ -135,13 +166,15 @@ export function sdkToolRelistKeptFailure(serverName: string): void {
 }
 
 /**
- * Official `Ki` success path: `ka.delete(I.name), g("mcp_sdk_tools_refresh")`
- * (@276496000 region) — clears the per-cycle kept mark (the counter-clear
- * `g()` has no OCC equivalent; see module header). Because OCC has no `Vi`
- * relist loop, this ALSO folds in the official `vs` consumption that `Vi`
- * performs per cycle (`vs.delete(mt)` @276501515) and that the disable path
- * pairs with ka (`vs.delete(I),ka.delete(I)` @276504004) — a successful
- * relist disarms the pending gate.
+ * Official `wt` (v307 `Ki`) success path: `Is.delete(I.name),
+ * g("mcp_sdk_tools_refresh")` (@277789900 region) — clears the per-cycle
+ * kept mark (the counter-clear `g()` has no OCC equivalent; see module
+ * header). Because OCC has no `Vi` relist loop, this ALSO folds in the
+ * official `wo` consumption that `Vi` performs per cycle (`wo.delete(pt)`
+ * @277795447) and that the disable path pairs with `Is`
+ * (`wo.delete(I),Is.delete(I)` @277798076) — a successful relist disarms
+ * the pending gate (official AND OCC agree here; the gave_up branch is the
+ * deliberate deviation, see sdkToolRelistKeptFailure).
  */
 export function sdkToolRelistSuccess(serverName: string): void {
   keptAttemptServers.delete(serverName)

@@ -18,18 +18,23 @@
  *    display length (official `re` = displaySanitize.ts
  *    `truncateToDisplayLength`).
  *
- * WIRING (F-01): the official's two `z_` call sites both live in the CCR
- * mcp_call / staged-SDK relay subsystem (@276618538 + @276620665), which OCC
- * has NOT ported. OCC wires the renderer at its live equivalent — the
+ * WIRING (F-01 + 2.1.308 F-03): the official's two `z_`/`ky` call sites
+ * both live in the CCR mcp_call / staged-SDK relay subsystem (v309
+ * @277912896 + @277915059; v307 @276618538 + @276620665), which OCC has NOT
+ * ported. OCC wires BOTH render shapes at its live equivalent — the
  * fetchToolsForClient tool wrapper's NON-retried McpSessionExpiredError
  * rethrow (client.ts `McpSessionRecoveryTextError`), which toolExecution.ts
  * surfaces verbatim as the isError tool_result text via `formatError`
- * (= error.message). `namesMcpCall:false` mirrors official site 1 (no
- * `.slice(0,2000)` cap — the `Jt` sanitizer bounds length internally). The
- * official `session_expired_no_retry` counter stays unwired with the unported
- * relay (the wrapper keeps its own may_have_run_no_retry /
- * session_retry_exhausted events). The `Jt` sanitizer is LIVE through the
- * renderer. (Documented deviation.)
+ * (= error.message). The wrapper's non-retry REASON picks the shape:
+ * `may_have_run_no_retry` → `renderSessionRecoveryResultText` (site-1,
+ * `namesMcpCall:false`, no `.slice(0,2000)` cap — the `Jt`/`Qt` sanitizer
+ * bounds length internally); `session_retry_exhausted` →
+ * `renderSessionRecoveryDispatchText` (site-2, `namesMcpCall:true` +
+ * 2000-char cap + trailing lone-high-surrogate strip).
+ * The official `session_expired_no_retry` counter stays unwired with the
+ * unported relay (the wrapper keeps its own may_have_run_no_retry /
+ * session_retry_exhausted events). The `Jt`/`Qt` sanitizer is LIVE through
+ * both renderers. (Documented deviation — see renderSessionRecoveryDispatchText.)
  */
 import { truncateToDisplayLength } from './displaySanitize.js'
 
@@ -126,4 +131,63 @@ export function renderSessionRecoveryResultText({
             : 'session expired for'
         } ${safeName} — send mcp_reconnect and retry${callSuffix}`
   }: ${sanitizeSessionRecoveryText(detail)}`
+}
+
+/** Official site-2 dispatch cap (`At.slice(0,2000)`). */
+const SESSION_TEXT_DISPATCH_CAP = 2000
+
+/**
+ * Official site-2 tail strip — the 2000-char slice can cut a well-formed
+ * surrogate pair in half, leaving a trailing lone HIGH surrogate
+ * (`.replace(/[\uD800-\uDBFF]$/,"")`).
+ */
+const SESSION_TEXT_TRAILING_HIGH_SURROGATE = /[\uD800-\uDBFF]$/
+
+/**
+ * 2.1.308 F-03 — the SECOND official `ky` render site (mcp_call dispatch),
+ * byte-verified in the v2.1.309 ELF (never executed; v307 `z_` equivalents
+ * in parens):
+ *  - site 1 (staged-SDK relay, `mcp_session_recovery` @277912896 /
+ *    @276618538): `ky({serverName:Se.serverName,error:ir,namesMcpCall:!1,
+ *    detail:ir.message})` — UNCAPPED, no mcp_call suffix. That shape is
+ *    `renderSessionRecoveryResultText` above.
+ *  - site 2 (mcp_call dispatch, `mcp_session_recovery` @277915059 /
+ *    @276620665): `At=ky({serverName:Se.serverName,error:ft,namesMcpCall:!0,
+ *    detail:At}),ct(q,At.slice(0,2000).replace(/[\uD800-\uDBFF]$/,""))` —
+ *    the rendered text is dispatched through this cap + trailing lone-high-
+ *    surrogate strip. This helper is that post-render tail.
+ *  - `ky` definition @277681825 (@276388222) — the template lives in
+ *    `renderSessionRecoveryResultText`; only the flag/cap differ per site.
+ *
+ * Official site-2 detail is `At=wne(e,ft.message,"(detail withheld)")` with
+ * `wne(r,e,s){return xf(r)?s:e}` — `xf` gates on the hosted-worker/remote-
+ * bridge context (`Grr({hostedWorker:hln(r),transportPersists:...})`), which
+ * OCC does not have, so the detail is always the raw message (documented
+ * trim, same as F-01's site-1 wiring).
+ *
+ * WIRING: OCC maps its two non-retried telemetry reasons onto the two
+ * official shapes at the single live rethrow point
+ * (`McpSessionRecoveryTextError` in client.ts): `may_have_run_no_retry` →
+ * site-1 shape, `session_retry_exhausted` → this site-2 shape. Officially
+ * the site choice is by calling SUBSYSTEM (both sites catch every non-retried
+ * `UO` reason), not by reason; OCC's single-point mapping is the closest
+ * live equivalent and is a documented deviation.
+ */
+export function renderSessionRecoveryDispatchText({
+  serverName,
+  error,
+  detail,
+}: {
+  serverName: string
+  error: SessionRecoveryError
+  detail: string
+}): string {
+  return renderSessionRecoveryResultText({
+    serverName,
+    error,
+    namesMcpCall: true,
+    detail,
+  })
+    .slice(0, SESSION_TEXT_DISPATCH_CAP)
+    .replace(SESSION_TEXT_TRAILING_HIGH_SURROGATE, '')
 }

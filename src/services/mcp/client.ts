@@ -6,7 +6,11 @@ import {
   makeAppStateTaskRegistry,
   mcpBackgroundedMessage,
 } from './autoBackground.js'
-import { renderSessionRecoveryResultText } from './sessionRecoveryText.js'
+import {
+  renderSessionRecoveryDispatchText,
+  renderSessionRecoveryResultText,
+  sanitizeSessionRecoveryText,
+} from './sessionRecoveryText.js'
 import { createCappedStderrAccumulator } from './stderrCap.js'
 import type {
   Base64ImageSource,
@@ -262,32 +266,69 @@ export class McpSessionExpiredError extends TelemetrySafeError_I_VERIFIED_THIS_I
 }
 
 /**
- * 2.1.307 F-01 — the wrapper's live substitute for the official `z_` render
- * sites. Officially, `z_({serverName,error,namesMcpCall,detail})` is invoked
- * at exactly two places (linux ELF @276618538 staged-SDK relay + @276620665
- * mcp_call dispatch), both inside the CCR mcp_call / staged-SDK relay
- * subsystem, which OCC has NOT ported. OCC's live equivalent of the relay's
- * `{isError:!0,content:[{type:"text",text:z_({...})}]}` production point is
+ * The wrapper's non-retry reasons (the official `mcp_session_recovery`
+ * named-counter pair emitted on the non-retried path — `Mt<1?
+ * "may_have_run_no_retry":"session_retry_exhausted"` in the retry loop
+ * catch, BIN309 @280496355 region).
+ */
+export type SessionRecoveryNonRetryReason =
+  | 'may_have_run_no_retry'
+  | 'session_retry_exhausted'
+
+/**
+ * 2.1.307 F-01 / 2.1.308 F-03 — the wrapper's live substitute for the
+ * official `z_` (v309: `ky`) render sites. Officially, the renderer is
+ * invoked at exactly two places (v2.1.309 linux ELF, byte-verified, never
+ * executed; v307 equivalents in parens):
+ *  - site 1, staged-SDK relay — `mcp_session_recovery` @277912896
+ *    (@276618538): `ky({serverName:Se.serverName,error:ir,namesMcpCall:!1,
+ *    detail:ir.message})` — UNCAPPED, no mcp_call suffix.
+ *  - site 2, mcp_call dispatch — `mcp_session_recovery` @277915059
+ *    (@276620665): `At=ky({serverName:Se.serverName,error:ft,
+ *    namesMcpCall:!0,detail:At}),ct(q,At.slice(0,2000).replace(
+ *    /[\uD800-\uDBFF]$/,""))` — mcp_call suffix + 2000-char cap + trailing
+ *    lone-high-surrogate strip.
+ *  - `ky` definition @277681825 (@276388222).
+ * Both sites live in the CCR mcp_call / staged-SDK relay subsystem, which
+ * OCC has NOT ported. OCC's live equivalent of the relay's
+ * `{isError:!0,content:[{type:"text",text:ky({...})}]}` production point is
  * the tool wrapper's NON-retried session-expiry rethrow: toolExecution.ts
  * catches it and surfaces `formatError(error)` (= error.message) verbatim as
  * the isError tool_result text.
  *
- * This subclass rewrites `message` to the rendered `z_` text while
- * preserving `instanceof McpSessionExpiredError`, `expiryKind`, `mayHaveRun`
- * and the 'MCP session expired' telemetryMessage. The raw per-kind class
- * messages above stay byte-pinned and untouched. Shape mirrors official
- * site 1 (`namesMcpCall:!1`, no `.slice(0,2000)` cap — the `Jt` sanitizer
- * inside `z_` bounds length at 4096/1024).
+ * F-03: the non-retry REASON picks the render shape —
+ * `may_have_run_no_retry` → site-1 shape (renderSessionRecoveryResultText),
+ * `session_retry_exhausted` → site-2 shape (renderSessionRecoveryDispatchText).
+ * Officially the site choice is by calling subsystem (both sites catch every
+ * non-retried `UO` reason), not by reason; OCC's single-rethrow-point mapping
+ * is the closest live equivalent (documented deviation — see
+ * sessionRecoveryText.ts).
+ *
+ * This subclass rewrites `message` to the rendered text while preserving
+ * `instanceof McpSessionExpiredError`, `expiryKind`, `mayHaveRun` and the
+ * 'MCP session expired' telemetryMessage. The raw per-kind class messages
+ * above stay byte-pinned and untouched.
  */
 export class McpSessionRecoveryTextError extends McpSessionExpiredError {
-  constructor(serverName: string, original: McpSessionExpiredError) {
+  constructor(
+    serverName: string,
+    original: McpSessionExpiredError,
+    reason: SessionRecoveryNonRetryReason,
+  ) {
     super(serverName, original.expiryKind)
-    this.message = renderSessionRecoveryResultText({
-      serverName,
-      error: original,
-      namesMcpCall: false,
-      detail: original.message,
-    })
+    this.message =
+      reason === 'session_retry_exhausted'
+        ? renderSessionRecoveryDispatchText({
+            serverName,
+            error: original,
+            detail: original.message,
+          })
+        : renderSessionRecoveryResultText({
+            serverName,
+            error: original,
+            namesMcpCall: false,
+            detail: original.message,
+          })
   }
 }
 
@@ -1444,10 +1485,15 @@ export function detectSuspendedConnect(
   return `MCP server "${name}" connection timed out. Your computer went to sleep or its clock changed while connecting.`
 }
 
-// Official `Dr()` — module-level reconnect epoch. Bumped wherever OCC clears
-// the memoized server cache (clearServerCache, client onclose) so in-flight
-// suspend-redial loops abandon (`Dr()===s` loop guard): the cache was cleared
-// underneath them, so their result is no longer the cache's problem.
+// Official `Dr()` — module-level reconnect epoch. Bumped where OCC clears
+// the memoized server cache out from under a POSSIBLY in-flight suspend-
+// redial loop (clearServerCache, client onclose) so those loops abandon
+// (`Dr()===s` loop guard): the cache was cleared underneath them, so their
+// result is no longer the cache's problem. NOTE: not every
+// `connectToServer.cache.delete` pairs with a bump — scheduleHeadlessRemoteRedial's
+// failed-redial/catch deletes evict the redial's OWN settled failure with no
+// loop still in flight, so they bump nothing (see dialWithSuspendRedial's
+// F-10 note for the full eviction-site inventory).
 let mcpReconnectEpoch = 0
 
 export function getMcpReconnectEpoch(): number {
@@ -2816,9 +2862,21 @@ async function dialMcpServer(
  * when the dial was ABANDONED (generation superseded or epoch bumped mid-
  * loop) — i.e. precisely when a NEWER dial may already be memoized under the
  * same key, which the delete would wrongly evict. Abandoned suspended
- * failures now resolve only inside their orphaned promise; cached failures
- * are evicted solely by the explicit clearServerCache / onclose paths (both
- * pair `cache.delete(key)` with `bumpMcpReconnectEpoch()`).
+ * failures now resolve only inside their orphaned promise. The FULL
+ * inventory of `connectToServer.cache.delete` sites that evict a cached
+ * (including failed) dial result:
+ *  - `clearServerCache` — pairs its delete with `bumpMcpReconnectEpoch()`
+ *    (an explicit clear abandons any in-flight suspend-redial loop).
+ *  - the shared `client.onclose` handler — same delete+bump pairing (the
+ *    cache was cleared under any in-flight loop, whose result must not be
+ *    re-persisted).
+ *  - `scheduleHeadlessRemoteRedial`'s failed-redial delete and its catch-
+ *    path delete — NO epoch bump. Deliberate: each evicts only the background
+ *    redial's OWN already-settled failure (so the next use dials fresh); no
+ *    suspend-redial loop is still in flight for that result, and no newer
+ *    dial can be wrongly evicted because a concurrent connectToServer call
+ *    for the same key shares this redial's memoized promise rather than
+ *    starting a second dial.
  */
 async function dialWithSuspendRedial(
   name: string,
@@ -2906,8 +2964,14 @@ export async function ensureConnectedClient(
 
   const connectedClient = await connectToServer(client.name, client.config)
   if (connectedClient.type !== 'connected') {
+    // 2.1.308 SEC-F1: sanitize the interpolated server name, matching the
+    // official Qt-sanitizer precedent on the equivalent not-connected path —
+    // `MCP server not connected: ${Qt(Se.serverName)}` (BIN309 @277912512;
+    // `Qt` @240114090 = sanitizeSessionRecoveryText). A hostile server name
+    // (lone surrogates, invisibles) must not reach the surfaced message or
+    // telemetry verbatim.
     throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-      `MCP server "${client.name}" is not connected`,
+      `MCP server "${sanitizeSessionRecoveryText(client.name)}" is not connected`,
       'MCP server not connected',
     )
   }
@@ -3419,17 +3483,25 @@ export const fetchToolsForClient = memoizeWithLRU(
                       )
                     }
                   }
-                  // 2.1.307 F-01: a NON-retried session expiry surfaces as the
-                  // official `z_` rendered text (relay-site substitute — see
-                  // McpSessionRecoveryTextError). The may_have_run_no_retry /
-                  // session_retry_exhausted events above already fired; the
+                  // 2.1.307 F-01 / 2.1.308 F-03: a NON-retried session expiry
+                  // surfaces as the official `ky` rendered text (relay-site
+                  // substitute — see McpSessionRecoveryTextError), with the
+                  // render shape chosen by the SAME reason expression as the
+                  // telemetry above: may_have_run_no_retry → site-1 shape,
+                  // session_retry_exhausted → site-2 dispatch shape. The
                   // official session_expired_no_retry counter belongs to the
                   // unported CCR relay sites and is deliberately NOT emitted
                   // here (no double telemetry). McpSessionExpiredError extends
                   // TelemetrySafeError, so the wrap branch above never runs
                   // for it — this is the only transform on the rethrow path.
                   if (error instanceof McpSessionExpiredError) {
-                    throw new McpSessionRecoveryTextError(client.name, error)
+                    throw new McpSessionRecoveryTextError(
+                      client.name,
+                      error,
+                      attempt < MAX_SESSION_RETRIES
+                        ? 'may_have_run_no_retry'
+                        : 'session_retry_exhausted',
+                    )
                   }
                   throw error
                 }

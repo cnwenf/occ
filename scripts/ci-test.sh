@@ -155,6 +155,24 @@ done
 # pattern (by-value pre-mock capture; afterAll only flips the flag so the
 # permanent mocks pass through), both orders guarded here because the original
 # leak reproduced in both.
+#
+# Pair 4 (2.1.308 follow-up ⑤, OCC-97 backstop extension): the cli-handlers →
+# services/mcp direction for the `?occ-*-real` query-specifier isolation.
+# src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts mock.module's
+# ../../../services/mcp/config.js AND client.js at its top level; bun
+# evaluates every test file's top level before any afterAll restore, so
+# WITHOUT the cache-busted real-instance specifiers the three services/mcp
+# victims below would bind the leaked fakes (no `.cache`, empty
+# getClaudeCodeMcpConfigs) and fail — sessionRecoveryWiring307 crashes on
+# `connectToServer.cache` (`../client.js?occ-f01-real`),
+# mcpAllowedVarExemption306 sees zero servers (`../config.js?occ-p9-real`),
+# reconnectBackoff295 loses the dial internals (`../client?occ-rb295-real`).
+# These pairs fail loudly if a future edit drops any query specifier. The
+# reverse direction is NOT registered: the victims mock nothing that the
+# polluter consumes (mcpAllowedVarExemption306's settings.js mock restores in
+# its afterAll and mcpGetDynamicScope285 reads settings through its own
+# mocked config surface). Verified green in one process at registration
+# (13/13, 20/20, 20/20).
 echo "Same-worker mock-leak regressions (polluter -> victim pairs, single process)..."
 LEAK_PAIRS=(
   "src/tools/shared/__tests__/settingSourcesPropagation281.test.ts|src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts"
@@ -162,6 +180,9 @@ LEAK_PAIRS=(
   "src/services/api/__tests__/withRetryIntegration286.test.ts|src/bridge/__tests__/attachBridgePolicyWatcher286.test.ts"
   "src/utils/permissions/__tests__/autoDefaultNudge296.test.ts|src/utils/permissions/__tests__/autoDefaultNudge296Merge.test.ts"
   "src/utils/permissions/__tests__/autoDefaultNudge296Merge.test.ts|src/utils/permissions/__tests__/autoDefaultNudge296.test.ts"
+  "src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts|src/services/mcp/__tests__/sessionRecoveryWiring307.test.ts"
+  "src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts|src/services/mcp/__tests__/mcpAllowedVarExemption306.test.ts"
+  "src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts|src/services/mcp/__tests__/reconnectBackoff295.test.ts"
 )
 for pair in "${LEAK_PAIRS[@]}"; do
   LEAK_PAIR_POLLUTER="${pair%%|*}"
