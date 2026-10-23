@@ -46,6 +46,10 @@ import { sleep } from '../../utils/sleep.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { logEvent } from '../analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../analytics/metadata.js'
+import {
+  McpCredentialStoreUnavailableError,
+  readCredentialStoreStrict,
+} from './credentialStoreErrors.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import type { McpHTTPServerConfig, McpSSEServerConfig } from './types.js'
@@ -616,6 +620,7 @@ function mergeWriteSecureStorage(
 export function hasMcpDiscoveryButNoToken(
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
+  mcpOAuth?: SecureStorageData,
 ): boolean {
   // XAA servers can silently re-auth via cached id_token even without an
   // access/refresh token — tokens() fires the xaaRefresh path. Skipping the
@@ -625,7 +630,14 @@ export function hasMcpDiscoveryButNoToken(
     return false
   }
   const serverKey = getServerKey(serverName, serverConfig)
-  const entry = getSecureStorage().read()?.mcpOAuth?.[serverKey]
+  // 2.1.307 B1: the official `BAe` takes the already-read mcpOAuth map as a
+  // third argument so the strict-read probe can gate on the PROBED blob
+  // instead of re-reading (a plain read would report "absent" for a locked
+  // keychain). Falls back to the plain read when no map is supplied.
+  const entry =
+    mcpOAuth !== undefined
+      ? mcpOAuth?.[serverKey]
+      : getSecureStorage().read()?.mcpOAuth?.[serverKey]
   return entry !== undefined && !entry.accessToken && !entry.refreshToken
 }
 
@@ -1764,8 +1776,22 @@ export function wrapFetchWithStepUpDetection(
 ): FetchLike {
   return async (url, init) => {
     const response = await baseFetch(url, init)
+    // 2.1.307 B1 (official `QIn` fetch wrapper): track auth challenges so the
+    // strict-read probe knows the server rejected a credential-less request.
+    const wwwAuth =
+      response.status === 403 ? response.headers.get('WWW-Authenticate') : null
+    if (response.status === 401 || response.status === 403) {
+      provider.sawAuthChallenge = true
+    }
+    // Official classifies a 403 challenge by parsing the error body
+    // (`PPe(l).error==="insufficient_scope"`); OCC reads the same signal from
+    // the WWW-Authenticate header it already inspects for step-up detection.
+    provider.noteServerAnswer(
+      url,
+      response.status === 401 ||
+        (response.status === 403 && !!wwwAuth?.includes('insufficient_scope')),
+    )
     if (response.status === 403) {
-      const wwwAuth = response.headers.get('WWW-Authenticate')
       if (wwwAuth?.includes('insufficient_scope')) {
         // Match both quoted and unquoted values (RFC 6750 §3 allows either).
         // Same pattern as the SDK's extractFieldFromWwwAuth.
@@ -1796,6 +1822,14 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   private _pendingStepUpScope?: string
   private onAuthorizationUrlCallback?: (url: string) => void
   private skipBrowserOpen: boolean
+  /** 2.1.307 B1 (official `sawAuthChallenge`): any 401/403 seen this session. */
+  sawAuthChallenge = false
+  /**
+   * 2.1.307 B1 (official `authChallengeOpen`): true while the SERVER ITSELF
+   * is answering with an auth challenge (401, or 403 insufficient_scope) —
+   * gates the per-server keychain strict-read probe.
+   */
+  authChallengeOpen = false
 
   constructor(
     serverName: string,
@@ -1877,6 +1911,49 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     logMCPDebug(this.serverName, `Marked step-up pending: ${scope}`)
   }
 
+  /**
+   * 2.1.307 B1 (official `noteServerAnswer`, verbatim semantics): track
+   * whether the SERVER ITSELF (URL-normalized via `new URL(...).href` when
+   * parseable) is currently answering with an auth challenge. Answers from
+   * other URLs (token endpoint, IdP) never touch the flag.
+   */
+  noteServerAnswer(url: unknown, isChallenge: boolean): void {
+    const serverUrl = this.serverConfig.url
+    if (String(url) === (URL.canParse(serverUrl) ? new URL(serverUrl).href : serverUrl)) {
+      this.authChallengeOpen = isChallenge
+    }
+  }
+
+  /**
+   * 2.1.307 B1 (official `readCredentialStore`, verbatim log + throw): read
+   * the credential blob through the strict-read probe. When the store is
+   * INACCESSIBLE (locked keychain), THROW
+   * {@link McpCredentialStoreUnavailableError} instead of reporting
+   * credentials as absent — a request must not go out unauthenticated just
+   * because the keychain was momentarily unreadable. Redirection-handling
+   * instances (the interactive OAuth browser flow) skip the per-server probe
+   * and read the plain blob.
+   */
+  async readCredentialStore(): Promise<SecureStorageData> {
+    const data = await readCredentialStoreStrict(
+      this.handleRedirection
+        ? undefined
+        : {
+            serverName: this.serverName,
+            serverConfig: this.serverConfig,
+            challenged: this.authChallengeOpen,
+          },
+    )
+    if (isTransientReadFailure(data)) {
+      logMCPDebug(
+        this.serverName,
+        'Credential store could not be read (the login keychain may be locked); not reporting credentials as absent',
+      )
+      throw new McpCredentialStoreUnavailableError(this.serverName)
+    }
+    return data
+  }
+
   async state(): Promise<string> {
     // Generate state if not already generated for this instance
     if (!this._state) {
@@ -1887,8 +1964,10 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
-    const storage = getSecureStorage()
-    const data = storage.read()
+    // 2.1.307 B1: read through the strict probe (throws
+    // McpCredentialStoreUnavailableError on an inaccessible store instead of
+    // reporting client info as absent).
+    const data = await this.readCredentialStore()
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     // Check session credentials first (from DCR or previous auth)
@@ -1949,8 +2028,11 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     // _commonHeaders on every request, and forcing a cache miss would trigger
     // a blocking spawnSync(`security find-generic-password`) 30-40x/sec.
     // See CPU profile: spawnSync was 7.2% of total CPU after PR #19436.
-    const storage = getSecureStorage()
-    const data = await storage.readAsync()
+    // 2.1.307 B1: read through the strict probe — an inaccessible store
+    // (locked keychain) throws McpCredentialStoreUnavailableError instead of
+    // reporting tokens as absent, so a challenged request is failed (and
+    // retried with credentials) rather than sent unauthenticated.
+    const data = await this.readCredentialStore()
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     const tokenData = data?.mcpOAuth?.[serverKey]
@@ -2750,7 +2832,14 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           error instanceof ServerError ||
           error instanceof TemporarilyUnavailableError ||
           error instanceof TooManyRequestsError
-        const isRetryable = isTimeoutError || isTransientServerError
+        // 2.1.307 B1 (official `S=s instanceof JDe`): an inaccessible
+        // credential store is transient by nature (the keychain may unlock).
+        const isCredentialStoreUnavailable =
+          error instanceof McpCredentialStoreUnavailableError
+        const isRetryable =
+          isTimeoutError ||
+          isTransientServerError ||
+          isCredentialStoreUnavailable
 
         if (!isRetryable || attempt >= MAX_ATTEMPTS) {
           logMCPDebug(

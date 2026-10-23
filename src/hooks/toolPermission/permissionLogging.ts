@@ -32,6 +32,7 @@ import type {
   PermissionApprovalSource,
   PermissionRejectionSource,
 } from './PermissionContext.js'
+import { logSafetyEvent } from './safetyEvent.js'
 
 type PermissionLogContext = {
   tool: ToolType
@@ -452,6 +453,22 @@ function logPermissionDecision(
     ...classifierFields,
     permission_mode: permissionModeToExternal(modeForTelemetry),
   })
+
+  // CC 2.1.307 A2 — the official Pfs dispatch fans each recorded permission
+  // decision out to BOTH the tool_decision emit above AND the new
+  // claude_code.safety_event emitter (LMn @36240106). safety_event carries the
+  // RAW decision ('reject', never the abort-mapped 'abort' label) and the raw
+  // source object (buildSafetyRecord derives the EYr decision_source itself).
+  logSafetyEvent(
+    {
+      decision: args.decision,
+      source: args.source,
+      sourceString,
+      decisionReason: args.decisionReason,
+      permissionMode: modeForTelemetry,
+    },
+    { tool, toolUseID, toolUseContext },
+  )
 }
 
 export {

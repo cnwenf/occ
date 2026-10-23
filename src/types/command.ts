@@ -31,6 +31,14 @@ export type PromptCommand = {
   type: 'prompt'
   progressMessage: string
   contentLength: number // Length of command content in characters (used for token estimation)
+  /**
+   * CC 2.1.307 (B7): SHORT description shown in /help and the slash-command
+   * menu instead of the (long, model-facing) `description`. Official v307
+   * resolver `p1e`: `e.type!=="prompt"?e.description:e.menuDescription||
+   * e.description`. Only bundled skills set this; model-facing surfaces
+   * (SkillTool prompt, SDK tables in src/cli/print.ts) keep raw `description`.
+   */
+  menuDescription?: string
   argNames?: string[]
   allowedTools?: string[]
   // 2.1.152: tools blocked while this skill/command is active.

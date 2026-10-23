@@ -548,7 +548,9 @@ export const AgentTool = buildTool({
     // Fork path: child inherits the PARENT's system prompt (not FORK_AGENT's)
     // for cache-identical API request prefixes. Prompt messages are built via
     // buildForkedMessages() which clones the parent's full assistant message
-    // (all tool_use blocks) + placeholder tool_results + per-child directive.
+    // (all tool_use blocks) + per-block tool_results (CC 2.1.307 B13: each
+    // child is told which launch is its own — this passes the spawning
+    // tool_use id) + per-child directive.
     //
     // Normal path: build the selected agent's own system prompt with env
     // details, and use a simple user message for the prompt.
@@ -572,7 +574,7 @@ export const AgentTool = buildTool({
           appendSystemPrompt: toolUseContext.options.appendSystemPrompt
         });
       }
-      promptMessages = buildForkedMessages(prompt, assistantMessage);
+      promptMessages = buildForkedMessages(prompt, assistantMessage, toolUseContext.toolUseId);
     } else {
       try {
         const additionalWorkingDirectories = Array.from(appState.toolPermissionContext.additionalWorkingDirectories.keys());

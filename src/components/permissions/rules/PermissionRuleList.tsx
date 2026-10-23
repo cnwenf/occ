@@ -13,7 +13,7 @@ import { useSearchInput } from '../../../hooks/useSearchInput.js';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text, useTerminalFocus } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
-import { type AutoModeDenial, getAutoModeDenials } from '../../../utils/autoModeDenials.js';
+import { type AutoModeDenial, getAutoModeDenials, removeAutoModeDenial } from '../../../utils/autoModeDenials.js';
 import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../utils/permissions/PermissionRule.js';
 import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js';
 import { deletePermissionRule, getAllowRules, getAskRules, getDenyRules, permissionRuleSourceDisplayString } from '../../../utils/permissions/permissions.js';
@@ -25,6 +25,7 @@ import { SearchBox } from '../../SearchBox.js';
 import type { Option } from '../../ui/option.js';
 import { AddPermissionRules } from './AddPermissionRules.js';
 import { AddWorkspaceDirectory } from './AddWorkspaceDirectory.js';
+import { MAX_LABEL_UNITS, denialsMetaMessage, sanitizeDenialLabels } from './denialDisplay.js';
 import { PermissionRuleDescription } from './PermissionRuleDescription.js';
 import { PermissionRuleInput } from './PermissionRuleInput.js';
 import { RecentDenialsTab } from './RecentDenialsTab.js';
@@ -471,6 +472,16 @@ type Props = {
     display?: CommandResultDisplay;
     shouldQuery?: boolean;
     metaMessages?: string[];
+    /**
+     * CC 2.1.307 B6 (official `su`): denial meta messages carry
+     * `metaMessagesOrigin:{kind:"auto-continuation"}`. The shared
+     * LocalJSXCommandOnDone options type (src/types/command.ts — do-not-touch
+     * for this port) has no such field yet, so it is declared locally; the
+     * current OCC onExit consumer ignores unknown option fields.
+     */
+    metaMessagesOrigin?: {
+      kind: 'auto-continuation';
+    };
   }) => void;
   initialTab?: TabType;
   onRetryDenials?: (commands: string[]) => void;
@@ -802,22 +813,45 @@ export function PermissionRuleList(t0) {
   let t18;
   if ($[30] !== changes || $[31] !== onExit || $[32] !== onRetryDenials) {
     t18 = () => {
+      // CC 2.1.307 B6 — official `su` exit handler (v307 ELF @283212151):
+      // `let hi=iu(en.retry);if(hi.length>0){c(sbt(hi.map(lh),{maxUnits:AS})
+      // .map(ah)),i(void 0,{shouldQuery:!0,metaMessages:[$n(hi,en.denials)],
+      // metaMessagesOrigin:{kind:"auto-continuation"}});return}let lr=iu(en.
+      // approved);if(lr.length>0||k.length>0){for(const xh of lr)b(xh);let
+      // yi=lr.map(uh);let wh=sbt(yi,{maxUnits:AS});let Sh=yi.length>0?
+      // [`Approved ${wh.map(dh).join(", ")}`]:[];i([...Sh,...k].join("\n"),
+      // yi.length>0?{metaMessages:[$n(lr,en.denials)],metaMessagesOrigin:
+      // {kind:"auto-continuation"}}:void 0)}else i("Permissions dialog
+      // dismissed",{display:"system"})`
       const s_1 = denialStateRef.current;
       const denialsFor = (set: Set<number>) => Array.from(set).map(idx => s_1.denials[idx]).filter(_temp2);
       const retryDenials = denialsFor(s_1.retry);
       if (retryDenials.length > 0) {
-        const commands = retryDenials.map(_temp3);
+        const commands = sanitizeDenialLabels(retryDenials.map(_temp3), MAX_LABEL_UNITS).map(l => l.text);
         onRetryDenials?.(commands);
         onExit(undefined, {
           shouldQuery: true,
-          metaMessages: [`Permission granted for: ${commands.join(", ")}. You may now retry ${commands.length === 1 ? "this command" : "these commands"} if you would like.`]
+          metaMessages: [denialsMetaMessage(retryDenials, s_1.denials)],
+          metaMessagesOrigin: {
+            kind: "auto-continuation"
+          }
         });
         return;
       }
       const approvedDenials = denialsFor(s_1.approved);
       if (approvedDenials.length > 0 || changes.length > 0) {
-        const approvedMsg = approvedDenials.length > 0 ? [`Approved ${approvedDenials.map(_temp4).join(", ")}`] : [];
-        onExit([...approvedMsg, ...changes].join("\n"));
+        // Official `for(const xh of lr)b(xh)` — approved denials leave the
+        // store so the classifier no longer treats them as denied.
+        for (const d_0 of approvedDenials) removeAutoModeDenial(d_0);
+        const approvedDisplays = approvedDenials.map(_temp3);
+        const approvedLabels = sanitizeDenialLabels(approvedDisplays, MAX_LABEL_UNITS);
+        const approvedMsg = approvedDisplays.length > 0 ? [`Approved ${approvedLabels.map(l => chalk.bold(l.text)).join(", ")}`] : [];
+        onExit([...approvedMsg, ...changes].join("\n"), approvedDisplays.length > 0 ? {
+          metaMessages: [denialsMetaMessage(approvedDenials, s_1.denials)],
+          metaMessagesOrigin: {
+            kind: "auto-continuation"
+          }
+        } : undefined);
       } else {
         onExit("Permissions dialog dismissed", {
           display: "system"
@@ -1171,9 +1205,6 @@ function _temp6(opt_0) {
 }
 function _temp5(opt) {
   return opt.value !== "add-new-rule";
-}
-function _temp4(d_1) {
-  return chalk.bold(d_1.display);
 }
 function _temp3(d_0) {
   return d_0.display;

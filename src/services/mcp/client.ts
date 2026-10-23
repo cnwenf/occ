@@ -157,8 +157,18 @@ import {
 } from './auth.js'
 import { markClaudeAiMcpConnected } from './claudeai.js'
 import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
+import {
+  McpCredentialStoreUnavailableError,
+  isCredentialStoreUnavailableError,
+} from './credentialStoreErrors.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'
+import {
+  allSendsRanNothing,
+  trackToolCallSends,
+  type McpConnectionState,
+  type ToolCallWatchdog,
+} from './sendTracking.js'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
@@ -184,14 +194,121 @@ export class McpAuthError extends Error {
 }
 
 /**
- * Thrown when an MCP session has expired and the connection cache has been cleared.
- * The caller should get a fresh client via ensureConnectedClient and retry.
+ * claude-code 2.1.307 PORT B3 — session-expiry kinds (official `SO`
+ * `expiryKind` values, linux ELF @241629553, byte-verified):
+ *  - `session_expired_404` — server answered 404 + JSON-RPC -32001 for a
+ *    session it no longer knows (the call definitively did not run).
+ *  - `connection_closed_call_refused` — the connection closed before the
+ *    call ran because the server refused it (malformed frame right after an
+ *    auth challenge, or a session-expiry close where every send rejected
+ *    pre-delivery).
+ *  - `connection_closed_call_not_run` — the connection closed before the
+ *    call ran (send tracking proves every tools/call send since the call's
+ *    baseline rejected with a transport-level code).
+ *  - `connection_closed_http` — the connection closed while the call was in
+ *    flight; the tool MAY have run server-side.
  */
-class McpSessionExpiredError extends Error {
-  constructor(serverName: string) {
-    super(`MCP server "${serverName}" session expired`)
+export type SessionExpiryKind =
+  | 'session_expired_404'
+  | 'connection_closed_call_refused'
+  | 'connection_closed_call_not_run'
+  | 'connection_closed_http'
+
+/**
+ * Thrown when an MCP session has expired / the connection closed mid-call and
+ * the connection cache has been cleared. The caller should get a fresh client
+ * via ensureConnectedClient and retry — but ONLY when the call provably did
+ * not run, or the tool is safe to run twice (see
+ * `shouldRetryAfterSessionRecovery`).
+ *
+ * 2.1.307 B3: official `SO extends R` (R = TelemetrySafeError base) with
+ * verbatim per-kind messages and the `mayHaveRun` getter — true ONLY for
+ * `connection_closed_http`:
+ * `get mayHaveRun(){switch(this.expiryKind){case"session_expired_404":case"connection_closed_call_refused":case"connection_closed_call_not_run":return!1;case"connection_closed_http":return!0}}`
+ */
+export class McpSessionExpiredError extends TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
+  expiryKind: SessionExpiryKind
+
+  constructor(
+    serverName: string,
+    expiryKind: SessionExpiryKind = 'session_expired_404',
+  ) {
+    super(
+      expiryKind === 'connection_closed_http'
+        ? `MCP server "${serverName}" connection closed before the tool call was answered. The tool may have run: check whether it did before running it again.`
+        : expiryKind === 'connection_closed_call_not_run'
+          ? `MCP server "${serverName}" connection closed before the tool call ran`
+          : `MCP server "${serverName}" session expired`,
+      'MCP session expired',
+    )
+    this.expiryKind = expiryKind
     this.name = 'McpSessionExpiredError'
   }
+
+  get mayHaveRun(): boolean {
+    switch (this.expiryKind) {
+      case 'session_expired_404':
+      case 'connection_closed_call_refused':
+      case 'connection_closed_call_not_run':
+        return false
+      case 'connection_closed_http':
+        return true
+    }
+    // Unreachable (the switch is exhaustive over SessionExpiryKind) —
+    // lint-satisfying tail return; the official getter has no default.
+    return false
+  }
+}
+
+/**
+ * 2.1.307 B3 — the official throw-site kind chain, extracted verbatim for
+ * testability (linux ELF @279157850):
+ * `ee?"session_expired_404":mZn(ue?.closeReason)||ue?.closeReason==="session expired"&&te?
+ *  "connection_closed_call_refused":!K&&te?"connection_closed_call_not_run":"connection_closed_http"`
+ * with `mZn(e){return e==="malformed message after an auth challenge"}`,
+ * `te` = allSendsRanNothing(...), `K` = sessionId was undefined at call entry.
+ */
+export function classifySessionExpiryKind({
+  isStaleSession,
+  closeReason,
+  ranNothing,
+  sessionIdWasUndefined,
+}: {
+  isStaleSession: boolean
+  closeReason: string | undefined
+  ranNothing: boolean
+  sessionIdWasUndefined: boolean
+}): SessionExpiryKind {
+  if (isStaleSession) {
+    return 'session_expired_404'
+  }
+  if (
+    closeReason === 'malformed message after an auth challenge' ||
+    (closeReason === 'session expired' && ranNothing)
+  ) {
+    return 'connection_closed_call_refused'
+  }
+  if (!sessionIdWasUndefined && ranNothing) {
+    return 'connection_closed_call_not_run'
+  }
+  return 'connection_closed_http'
+}
+
+/**
+ * 2.1.307 B3 — the official retry-gate fragment, extracted verbatim for
+ * testability (linux ELF @279114404):
+ * `!ze.mayHaveRun||ee.isConcurrencySafe(te)||x.annotations?.idempotentHint===!0`
+ * (`isConcurrencySafe` for an MCP tool is `annotations.readOnlyHint ?? false`).
+ */
+export function shouldRetryAfterSessionRecovery(
+  annotations: { readOnlyHint?: boolean; idempotentHint?: boolean } | undefined,
+  mayHaveRun: boolean,
+): boolean {
+  return (
+    !mayHaveRun ||
+    (annotations?.readOnlyHint ?? false) ||
+    annotations?.idempotentHint === true
+  )
 }
 
 /**
@@ -1212,6 +1329,174 @@ export const _activeHeadlessRedialsForTesting = activeHeadlessRedials
  */
 export const _scheduleHeadlessRemoteRedialForTesting = scheduleHeadlessRemoteRedial
 
+// ---------------------------------------------------------------------------
+// claude-code 2.1.307 PORT B2 — MCP sleep-recovery (CONNECT_SUSPENDED redial).
+// Official sources (linux ELF @278908635 + @279090513, byte-verified, never
+// executed): `Hie="CONNECT_SUSPENDED"`, `z=10` (max redials), `aZs=1000`
+// (suspend gap threshold), `CIt` timing capture, `RIt` awake-ms formatter,
+// `Y0n` suspended classifier, `X0n` redial loop. The official timeout
+// rejection carries `Object.assign(err,{code:"CONNECT_TIMEOUT"})` behind gate
+// `tengu_mcp_connect_timeout_retry` (default true); the classifier is behind
+// gate `tengu_mcp_connect_suspend_redial` (default true). OCC has no gate
+// infra — both are default-true helpers/constants with the gate names noted.
+// ---------------------------------------------------------------------------
+
+/** Official `Hie` — errorCode for a sleep/clock-jump collapsed connect. */
+export const CONNECT_SUSPENDED = 'CONNECT_SUSPENDED'
+
+/** Code the official timeout rejection carries (`Object.assign(r,{code:...})`). */
+export const CONNECT_TIMEOUT = 'CONNECT_TIMEOUT'
+
+/** Official `aZs` — wall-vs-awake gap (ms) that indicates a suspend. */
+export const SUSPEND_GAP_THRESHOLD_MS = 1000
+
+/** Official `z` — suspended-connect redial cap. */
+export const MAX_CONNECT_SUSPEND_REDIALS = 10
+
+/**
+ * Official `CIt` — connect-entry timing record: wall clock (`now()`) plus
+ * monotonic (`monotonicNow()`, which does NOT advance while the machine
+ * sleeps). `performance.now()` is OCC's monotonic clock.
+ */
+export interface ConnectTiming {
+  wallStart: number
+  awakeStart: number
+}
+
+export function captureConnectTiming(): ConnectTiming {
+  return { wallStart: Date.now(), awakeStart: performance.now() }
+}
+
+/**
+ * Official `RIt` — `${Math.round(now-wallStart)}ms, ${Math.round(monotonic-
+ * awakeStart)}ms of it awake`.
+ */
+export function formatConnectTiming(
+  timing: ConnectTiming,
+  nowMs: number = Date.now(),
+  awakeNowMs: number = performance.now(),
+): string {
+  return `${Math.round(nowMs - timing.wallStart)}ms, ${Math.round(
+    awakeNowMs - timing.awakeStart,
+  )}ms of it awake`
+}
+
+/**
+ * Official gate `k("tengu_mcp_connect_suspend_redial",!0)`. OCC has no
+ * Statsig/gate infra — default-true per the official default.
+ */
+function isMcpConnectSuspendRedialEnabled(): boolean {
+  return true
+}
+
+/**
+ * Official `Y0n` — classify a CONNECT_TIMEOUT as sleep-collapsed: when the
+ * wall-elapsed minus awake-elapsed gap exceeds `SUSPEND_GAP_THRESHOLD_MS`
+ * (strict `>`), the machine slept (or its clock jumped) mid-connect. Returns
+ * the verbatim official suspended message, or undefined when not suspended.
+ */
+export function detectSuspendedConnect(
+  name: string,
+  timing: ConnectTiming,
+  nowMs: number = Date.now(),
+  awakeNowMs: number = performance.now(),
+): string | undefined {
+  if (
+    !(
+      nowMs - timing.wallStart - (awakeNowMs - timing.awakeStart) >
+      SUSPEND_GAP_THRESHOLD_MS
+    ) ||
+    !isMcpConnectSuspendRedialEnabled()
+  ) {
+    return undefined
+  }
+  return `MCP server "${name}" connection timed out. Your computer went to sleep or its clock changed while connecting.`
+}
+
+// Official `Dr()` — module-level reconnect epoch. Bumped wherever OCC clears
+// the memoized server cache (clearServerCache, client onclose) so in-flight
+// suspend-redial loops abandon (`Dr()===s` loop guard): the cache was cleared
+// underneath them, so their result is no longer the cache's problem.
+let mcpReconnectEpoch = 0
+
+export function getMcpReconnectEpoch(): number {
+  return mcpReconnectEpoch
+}
+
+export function bumpMcpReconnectEpoch(): void {
+  mcpReconnectEpoch++
+}
+
+/** Per-server-key dial generation — the redial loop's currency check `n()`. */
+const dialGenerations = new Map<string, number>()
+
+/**
+ * Official `X0n` — the suspend-redial loop. Runs `dial()` once, then redials
+ * while the result is a failed CONNECT_SUSPENDED, under the cap of
+ * `MAX_CONNECT_SUSPEND_REDIALS`, the dial is still current, and the reconnect
+ * epoch has not changed. At the cap with the dial still current, calls
+ * `onFinalSuspendedFailure` (official `r()` → `$o` failure-cache write).
+ * Counters g/f("mcp_connect_suspend_redial", …) map to logEvent (OCC has no
+ * counter infra).
+ */
+export async function connectWithSuspendRedial<
+  T extends { type: string; name?: string; errorCode?: string },
+>(
+  dial: () => Promise<T>,
+  isCurrentDial: () => boolean,
+  onFinalSuspendedFailure: () => void,
+): Promise<T> {
+  // Official `let s=Dr()` — captured synchronously at entry, before the first
+  // await, so a bump racing the call is already visible to the loop check.
+  const startEpoch = getMcpReconnectEpoch()
+  let result = await dial()
+  let redials = 0
+  while (
+    redials < MAX_CONNECT_SUSPEND_REDIALS &&
+    result.type === 'failed' &&
+    result.errorCode === CONNECT_SUSPENDED &&
+    isCurrentDial() &&
+    getMcpReconnectEpoch() === startEpoch
+  ) {
+    redials++
+    logMCPDebug(
+      result.name ?? '',
+      `Connecting again after a sleep or a clock change (${redials} of at most ${MAX_CONNECT_SUSPEND_REDIALS})`,
+    )
+    result = await dial()
+  }
+  if (redials === 0) return result
+  if (result.type !== 'failed') {
+    // Official g("mcp_connect_suspend_redial") success counter.
+    logEvent('mcp_connect_suspend_redial', {})
+  } else if (result.errorCode !== CONNECT_SUSPENDED) {
+    // Official f("mcp_connect_suspend_redial","failed").
+    logEvent('mcp_connect_suspend_redial', {
+      reason: 'failed' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+  } else {
+    // Official f("mcp_connect_suspend_redial","slept_again"), then
+    // `c===z&&n()` → r() (persist the final failure at the cap).
+    logEvent('mcp_connect_suspend_redial', {
+      reason:
+        'slept_again' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+    if (redials === MAX_CONNECT_SUSPEND_REDIALS && isCurrentDial()) {
+      onFinalSuspendedFailure()
+    }
+  }
+  return result
+}
+
+interface ConnectServerStats {
+  totalServers: number
+  stdioCount: number
+  sseCount: number
+  httpCount: number
+  sseIdeCount: number
+  wsIdeCount: number
+}
+
 /**
  * TODO (ollie): The memoization here increases complexity by a lot, and im not sure it really improves performance
  * Attempts to connect to a single MCP server
@@ -1219,25 +1504,34 @@ export const _scheduleHeadlessRemoteRedialForTesting = scheduleHeadlessRemoteRed
  * @param serverRef Scoped server configuration
  * @returns A wrapped client (either connected or failed)
  */
-export const connectToServer = memoize(
-  async (
-    name: string,
-    serverRef: ScopedMcpServerConfig,
-    serverStats?: {
-      totalServers: number
-      stdioCount: number
-      sseCount: number
-      httpCount: number
-      sseIdeCount: number
-      wsIdeCount: number
-    },
-  ): Promise<MCPServerConnection> => {
-    const connectStartTime = Date.now()
+async function dialMcpServer(
+  name: string,
+  serverRef: ScopedMcpServerConfig,
+  serverStats?: ConnectServerStats,
+): Promise<MCPServerConnection> {
+  // 2.1.307 B2: capture wall + monotonic starts (official `P=CIt(...)`) so
+  // a connect timeout can distinguish an awake-server stall from a
+  // sleep/clock-jump collapse.
+  const connectTiming = captureConnectTiming()
+  const connectStartTime = connectTiming.wallStart
     let inProcessServer:
       | { connect(t: Transport): Promise<void>; close(): Promise<void> }
       | undefined
     try {
       let transport
+
+      // 2.1.307 B3: per-connection state (official `fe`) — records the
+      // transport close reason, the tools/call send tracker (wired at connect
+      // success for http/claudeai-proxy), and the in-flight call watchdogs.
+      // Read by the tool-call session-expiry classifier to pick the
+      // `expiryKind` (and thus whether the call may be retried).
+      const connectionState: McpConnectionState = {
+        activeCallWatchdogs: new Set<ToolCallWatchdog>(),
+      }
+      // The official onerror SyntaxError branch reads
+      // `K?.authChallengeOpen===!0` off the server's auth provider; OCC
+      // creates providers inside the sse/http branches, so hoist a reference.
+      let authProviderRef: ClaudeAuthProvider | undefined
 
       // G12 (2.1.196): a project-scoped (.mcp.json) server that the user has
       // not trust-approved must NOT be spawned — `claude mcp list` / `claude
@@ -1276,6 +1570,7 @@ export const connectToServer = memoize(
       if (serverRef.type === 'sse') {
         // Create an auth provider for this server
         const authProvider = new ClaudeAuthProvider(name, serverRef)
+        authProviderRef = authProvider
 
         // Get combined headers (static + dynamic)
         const combinedHeaders = await getMcpServerHeaders(name, serverRef)
@@ -1461,6 +1756,7 @@ export const connectToServer = memoize(
 
         // Create an auth provider for this server
         const authProvider = new ClaudeAuthProvider(name, serverRef)
+        authProviderRef = authProvider
 
         // Get combined headers (static + dynamic)
         const combinedHeaders = await getMcpServerHeaders(name, serverRef)
@@ -1736,19 +2032,28 @@ export const connectToServer = memoize(
       const connectPromise = client.connect(transport)
       const timeoutPromise = new Promise<never>((_, reject) => {
         const timeoutId = setTimeout(() => {
-          const elapsed = Date.now() - connectStartTime
+          // 2.1.307 B2: official trigger log uses the awake-ms formatter —
+          // `Connection timeout triggered after ${RIt(P)} (limit: ${B}ms)`.
           logMCPDebug(
             name,
-            `Connection timeout triggered after ${elapsed}ms (limit: ${getConnectionTimeoutMs()}ms)`,
+            `Connection timeout triggered after ${formatConnectTiming(connectTiming)} (limit: ${getConnectionTimeoutMs()}ms)`,
           )
           if (inProcessServer) {
             inProcessServer.close().catch(() => {})
           }
           transport.close().catch(() => {})
+          // 2.1.307 B2: the official rejection carries
+          // `Object.assign(err,{code:"CONNECT_TIMEOUT"})` behind gate
+          // `tengu_mcp_connect_timeout_retry` (default true — OCC has no gate
+          // infra, so the code is always assigned). The outer catch keys the
+          // suspended-connect classification off it.
           reject(
-            new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-              `MCP server "${name}" connection timed out after ${getConnectionTimeoutMs()}ms`,
-              'MCP connection timeout',
+            Object.assign(
+              new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+                `MCP server "${name}" connection timed out after ${getConnectionTimeoutMs()}ms`,
+                'MCP connection timeout',
+              ),
+              { code: CONNECT_TIMEOUT },
             ),
           )
         }, getConnectionTimeoutMs())
@@ -1787,6 +2092,16 @@ export const connectToServer = memoize(
         )
       } catch (error) {
         const elapsed = Date.now() - connectStartTime
+        // 2.1.307 B1: a credential-store-unavailable failure is its own
+        // error class (code CREDENTIAL_STORE_UNAVAILABLE) — surface it
+        // directly instead of routing through needs-auth handling.
+        if (isCredentialStoreUnavailableError(error)) {
+          if (inProcessServer) {
+            inProcessServer.close().catch(() => {})
+          }
+          transport.close().catch(() => {})
+          throw error
+        }
         // SSE-specific error logging
         if (serverRef.type === 'sse' && error instanceof Error) {
           logMCPDebug(
@@ -1933,6 +2248,10 @@ export const connectToServer = memoize(
       const closeTransportAndRejectPending = (reason: string) => {
         if (hasTriggeredClose) return
         hasTriggeredClose = true
+        // 2.1.307 B3: official close fn records `closeReason=E` before the
+        // verbatim `Closing transport (${E})` log — the session-expiry
+        // classifier reads it back off the connection state.
+        connectionState.closeReason = reason
         logMCPDebug(name, `Closing transport (${reason})`)
         void client.close().catch(e => {
           logMCPDebug(name, `Error during close: ${errorMessage(e)}`)
@@ -1998,15 +2317,51 @@ export const connectToServer = memoize(
         // For HTTP transports, detect session expiry (404 + JSON-RPC -32001)
         // and close the transport so pending tool calls reject and the next
         // call reconnects with a fresh session ID.
+        // 2.1.307 B3: official branch additionally guards on
+        // `Z.transport?.sessionId!==void 0` (a 404 on a connection that never
+        // established a session is not a session expiry) and logs the verbatim
+        // "server no longer recognizes session ID" text.
         if (
           (transportType === 'http' || transportType === 'claudeai-proxy') &&
+          (transport as { sessionId?: unknown } | undefined)?.sessionId !==
+            undefined &&
           isMcpSessionExpiredError(error)
         ) {
           logMCPDebug(
             name,
-            `MCP session expired (server returned 404 with session-not-found), triggering reconnection`,
+            `MCP session expired (server no longer recognizes session ID), triggering reconnection`,
           )
           closeTransportAndRejectPending('session expired')
+          if (originalOnerror) {
+            originalOnerror(error)
+          }
+          return
+        }
+
+        // 2.1.307 B3: official onerror branch (byte-verified, new307.txt):
+        // `(U==="sse"||U==="http"||U==="claudeai-proxy")&&E instanceof SyntaxError`
+        // → close with a reason the session-expiry classifier reads back:
+        // `K?.authChallengeOpen===!0 && fe.activeCallWatchdogs.size<=1` →
+        // "malformed message after an auth challenge" (the server sent an
+        // HTML/non-JSON body right after a 401 challenge — the pending call
+        // was refused), else "malformed JSON-RPC message (response
+        // truncated)". The official also runs `je=!0` (OCC sets
+        // hasErrorOccurred at the top of this handler) and `Ae()` (an
+        // internal pending-request reset with no OCC counterpart — the
+        // client.close() inside closeTransportAndRejectPending rejects all
+        // pending SDK requests).
+        if (
+          (transportType === 'sse' ||
+            transportType === 'http' ||
+            transportType === 'claudeai-proxy') &&
+          error instanceof SyntaxError
+        ) {
+          closeTransportAndRejectPending(
+            authProviderRef?.authChallengeOpen === true &&
+              connectionState.activeCallWatchdogs.size <= 1
+              ? 'malformed message after an auth challenge'
+              : 'malformed JSON-RPC message (response truncated)',
+          )
           if (originalOnerror) {
             originalOnerror(error)
           }
@@ -2079,6 +2434,10 @@ export const connectToServer = memoize(
         }
 
         connectToServer.cache.delete(key)
+        // 2.1.307 B2: bump the reconnect epoch (official `Dr()`) — the cache
+        // was just cleared under any in-flight suspend-redial loop, so its
+        // result must no longer be re-persisted; the loop abandons.
+        bumpMcpReconnectEpoch()
         logMCPDebug(name, `Cleared connection cache for reconnection`)
 
         // CC 2.1.295 (item 3): redial remote transports with rapid-drop
@@ -2292,6 +2651,19 @@ export const connectToServer = memoize(
         wsIdeCount: serverStats?.wsIdeCount,
         ...mcpBaseUrlAnalytics(serverRef),
       })
+      // 2.1.307 B3: official connect-success wiring (byte-verified):
+      // `if((r.type==="http"||r.type==="claudeai-proxy")&&Z.transport)
+      //   fe.toolCallSends=rNn(Z.transport,so,fe.activeCallWatchdogs)`
+      if (
+        (serverRef.type === 'http' || serverRef.type === 'claudeai-proxy') &&
+        transport
+      ) {
+        connectionState.toolCallSends = trackToolCallSends(
+          transport,
+          isMcpSessionExpiredError,
+          connectionState.activeCallWatchdogs,
+        )
+      }
       return {
         name,
         client,
@@ -2301,8 +2673,27 @@ export const connectToServer = memoize(
         instructions,
         config: serverRef,
         cleanup: wrappedCleanup,
+        transport: transport as (Transport & { sessionId?: string }) | undefined,
+        connectionState,
       }
     } catch (error) {
+      // 2.1.307 B2: classify the failure code. The official timeout rejection
+      // carries `code:"CONNECT_TIMEOUT"`; when the wall-vs-awake gap shows the
+      // machine slept mid-connect, the official reclassifies
+      // (`let M=le==="CONNECT_TIMEOUT"&&w!==void 0?Y0n(e,w):void 0;
+      //   if(M!==void 0)le=Hie,ae=M`).
+      let failureErrorCode: string | undefined =
+        (error as { code?: unknown } | undefined)?.code === CONNECT_TIMEOUT
+          ? CONNECT_TIMEOUT
+          : extractMcpFailureErrorCode(error)
+      let failureMessage = errorMessage(error)
+      if (failureErrorCode === CONNECT_TIMEOUT) {
+        const suspendedMessage = detectSuspendedConnect(name, connectTiming)
+        if (suspendedMessage !== undefined) {
+          failureErrorCode = CONNECT_SUSPENDED
+          failureMessage = suspendedMessage
+        }
+      }
       const connectionDurationMs = Date.now() - connectStartTime
       logEvent('tengu_mcp_server_connection_failed', {
         connectionDurationMs,
@@ -2319,12 +2710,44 @@ export const connectToServer = memoize(
         transportType: (serverRef.type ??
           'stdio') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         ...mcpBaseUrlAnalytics(serverRef),
+        // Official: `...le==="CONNECT_TIMEOUT"&&{reason:"timeout"},
+        //            ...le===Hie&&{reason:"suspended"}`
+        ...(failureErrorCode === CONNECT_TIMEOUT && { reason: 'timeout' }),
+        ...(failureErrorCode === CONNECT_SUSPENDED && { reason: 'suspended' }),
       })
+      // Official failure counter:
+      // `f("mcp_connect",`${pe}_${r.type??"stdio"}`)` with pe =
+      // ECONNREFUSED→mcp_connect_refused / CONNECT_SUSPENDED→
+      // mcp_connect_suspended / message includes "timed out"→
+      // mcp_connect_timeout / else mcp_connect_failed. OCC has no counter
+      // infra — recorded via logEvent. (The ECONNREFUSED branch is kept for
+      // fidelity even though OCC's extractor never emits it.)
+      const connectFailureCounter =
+        failureErrorCode === 'ECONNREFUSED'
+          ? 'mcp_connect_refused'
+          : failureErrorCode === CONNECT_SUSPENDED
+            ? 'mcp_connect_suspended'
+            : failureMessage.includes('timed out')
+              ? 'mcp_connect_timeout'
+              : 'mcp_connect_failed'
+      logEvent('mcp_connect', {
+        reason:
+          `${connectFailureCounter}_${serverRef.type ?? 'stdio'}` as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+      // Official awake-ms failure logs:
+      // `Connection failed after ${RIt(P)}${le!==void 0?` (${le})`:""}: ${ae}`
       logMCPDebug(
         name,
-        `Connection failed after ${connectionDurationMs}ms: ${errorMessage(error)}`,
+        `Connection failed after ${formatConnectTiming(connectTiming)}${
+          failureErrorCode !== undefined ? ` (${failureErrorCode})` : ''
+        }: ${failureMessage}`,
       )
-      logMCPError(name, `Connection failed: ${errorMessage(error)}`)
+      logMCPError(
+        name,
+        `Connection failed${
+          failureErrorCode !== undefined ? ` (${failureErrorCode})` : ''
+        }: ${failureMessage}`,
+      )
 
       if (inProcessServer) {
         inProcessServer.close().catch(() => {})
@@ -2333,15 +2756,63 @@ export const connectToServer = memoize(
         name,
         type: 'failed' as const,
         config: serverRef,
-        error: errorMessage(error),
+        error: failureMessage,
         // CC 2.1.218 #5: surface HTTP status / named failure code so
         // `mcp list`, `/mcp`, and the "configured MCP servers failed to
         // connect" warning can show HTTP status + error text. Mirrors the
         // binary's failed-client `errorCode` field consumed by `TQo`/`kbo`.
-        errorCode: extractMcpFailureErrorCode(error),
+        // 2.1.307 B2 adds CONNECT_TIMEOUT / CONNECT_SUSPENDED to the surface.
+        errorCode: failureErrorCode,
       }
     }
-  },
+}
+
+/**
+ * 2.1.307 B2 — dial with the official suspend-redial wrapper (`X0n` via the
+ * official memoize wrap `(e,r,[n,s,,h])=>X0n(e,r,()=>$o(n,s,h))`).
+ *
+ * The official failure-cache write `$o` is SKIPPED for CONNECT_SUSPENDED
+ * (`if(le!==Hie)$o(e,r,s)`) unless the redial cap was reached (X0n's `r()`
+ * callback). OCC adaptation: lodash `memoize` caches the promise
+ * synchronously at call time, so a suspended failure that did not reach the
+ * cap is evicted from the memo cache here — the next caller dials fresh —
+ * while a cap-reached failure stays cached (onFinalSuspendedFailure = `$o`).
+ */
+async function dialWithSuspendRedial(
+  name: string,
+  serverRef: ScopedMcpServerConfig,
+  serverStats?: ConnectServerStats,
+): Promise<MCPServerConnection> {
+  const key = getServerCacheKey(name, serverRef)
+  const generation = (dialGenerations.get(key) ?? 0) + 1
+  dialGenerations.set(key, generation)
+  let persistedFinalFailure = false
+  const result = await connectWithSuspendRedial(
+    () => dialMcpServer(name, serverRef, serverStats),
+    // Official currency check `n()` — this dial is current until a newer dial
+    // for the same server key supersedes it.
+    () => dialGenerations.get(key) === generation,
+    () => {
+      persistedFinalFailure = true
+    },
+  )
+  if (
+    !persistedFinalFailure &&
+    result.type === 'failed' &&
+    result.errorCode === CONNECT_SUSPENDED
+  ) {
+    connectToServer.cache.delete(key)
+  }
+  return result
+}
+
+export const connectToServer = memoize(
+  (
+    name: string,
+    serverRef: ScopedMcpServerConfig,
+    serverStats?: ConnectServerStats,
+  ): Promise<MCPServerConnection> =>
+    dialWithSuspendRedial(name, serverRef, serverStats),
   getServerCacheKey,
 )
 
@@ -2369,6 +2840,9 @@ export async function clearServerCache(
   // Clear from cache (both connection and fetch caches so reconnect
   // fetches fresh tools/resources/commands instead of stale ones)
   connectToServer.cache.delete(key)
+  // 2.1.307 B2: bump the reconnect epoch (official `Dr()`) — an explicit
+  // cache clear abandons any in-flight suspend-redial loop for this server.
+  bumpMcpReconnectEpoch()
   fetchToolsForClient.cache.delete(name)
   fetchResourcesForClient.cache.delete(name)
   fetchCommandsForClient.cache.delete(name)
@@ -2763,6 +3237,13 @@ export const fetchToolsForClient = memoizeWithLRU(
                         }),
                       }
 
+                  // 2.1.307 B3: official success-after-retry counter —
+                  // `if(Et>0)g("mcp_session_recovery")` once the retried call
+                  // settles without throwing.
+                  if (attempt > 0) {
+                    logEvent('mcp_session_recovery', {})
+                  }
+
                   // Tool was moved to the background — return a backgrounded
                   // result so the model knows the task id and that the result
                   // will arrive later.
@@ -2818,17 +3299,48 @@ export const fetchToolsForClient = memoizeWithLRU(
                     }),
                   }
                 } catch (error) {
-                  // Session expired — the connection cache has been
-                  // cleared, so retry with a fresh client.
+                  // 2.1.307 B3: official retry gate (byte-verified @279114404):
+                  // `ze instanceof SO&&Et<1&&(!ze.mayHaveRun||
+                  //   ee.isConcurrencySafe(te)||x.annotations?.idempotentHint===!0)`
+                  // — a may-have-run expiry is retried ONLY when the tool is
+                  // concurrency-safe (readOnlyHint) or explicitly idempotent;
+                  // otherwise the error surfaces with its per-kind message.
                   if (
                     error instanceof McpSessionExpiredError &&
-                    attempt < MAX_SESSION_RETRIES
+                    attempt < MAX_SESSION_RETRIES &&
+                    shouldRetryAfterSessionRecovery(
+                      tool.annotations,
+                      error.mayHaveRun,
+                    )
                   ) {
+                    // Official f("mcp_session_recovery", ze.expiryKind).
+                    logEvent('mcp_session_recovery', {
+                      reason:
+                        error.expiryKind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
                     logMCPDebug(
                       client.name,
                       `Retrying tool '${tool.name}' after session recovery`,
                     )
                     continue
+                  }
+                  if (error instanceof McpSessionExpiredError) {
+                    // Official m("mcp_session_recovery",
+                    //   Et<1?"may_have_run_no_retry":"session_retry_exhausted").
+                    logEvent('mcp_session_recovery', {
+                      reason: (attempt < MAX_SESSION_RETRIES
+                        ? 'may_have_run_no_retry'
+                        : 'session_retry_exhausted') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
+                  } else if (
+                    attempt > 0 &&
+                    !context.abortController.signal.aborted
+                  ) {
+                    // Official m("mcp_session_recovery","retry_failed_other").
+                    logEvent('mcp_session_recovery', {
+                      reason:
+                        'retry_failed_other' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
                   }
 
                   // Emit progress when tool fails
@@ -3930,6 +4442,10 @@ export async function transformMCPResult(
  */
 export function extractMcpFailureErrorCode(error: unknown): string | undefined {
   if (!error) return undefined
+  // 2.1.307 B1: the credential-store error carries its own stable string
+  // code (official `FMt` transient classifier allowlists
+  // "CREDENTIAL_STORE_UNAVAILABLE").
+  if (error instanceof McpCredentialStoreUnavailableError) return error.code
   // StreamableHTTPError / fetch errors carry an HTTP status on `.code`.
   if (typeof error === 'object' && 'code' in error) {
     const code = (error as { code?: unknown }).code
@@ -4333,7 +4849,7 @@ export async function callMCPToolWithUrlElicitationRetry({
 }
 
 async function callMCPTool({
-  client: { client, name, config },
+  client: { client, name, config, connectionState, transport },
   tool,
   args,
   meta,
@@ -4353,6 +4869,23 @@ async function callMCPTool({
 }> {
   const toolStartTime = Date.now()
   let progressInterval: NodeJS.Timeout | undefined
+
+  // 2.1.307 B3: official call-entry capture (`zt`, byte-verified):
+  // `Pe=ae.transport?.sessionId===void 0` (staleness probe), watchdog
+  // `Z={armedAt:0,offCriticalPath:C,toolUseId:...,ownSends:{started:0,
+  // ranNothing:0}}` added to `fe.activeCallWatchdogs`, and the send-tracker
+  // baseline `xe=ue?.toolCallSends?.started`. (OCC has no watchdog timer /
+  // off-critical-path concept — armedAt stays 0, offCriticalPath false.)
+  const sessionIdWasUndefined = transport?.sessionId === undefined
+  const toolUseIdMeta = meta?.['claudecode/toolUseId']
+  const callWatchdog: ToolCallWatchdog = {
+    armedAt: 0,
+    offCriticalPath: false,
+    toolUseId: typeof toolUseIdMeta === 'string' ? toolUseIdMeta : undefined,
+    ownSends: { started: 0, ranNothing: 0 },
+  }
+  connectionState?.activeCallWatchdogs.add(callWatchdog)
+  const baselineSendsStarted = connectionState?.toolCallSends?.started
 
   try {
     logMCPDebug(name, `Calling MCP tool: ${tool}`)
@@ -4524,20 +5057,50 @@ async function callMCPTool({
       //    with this derived error instead of the original 404.
       // In both cases, clear the connection cache so the next tool call
       // creates a fresh session.
-      const isSessionExpired = isMcpSessionExpiredError(e)
+      // 2.1.307 B3: official stale-session gate —
+      // `ee=!(H.type==="http"&&_e===404&&Pe)&&so(G)`: a 404 session-not-found
+      // on an http connection that NEVER had a session id is the server
+      // refusing a fresh session (classified via closeReason below), not a
+      // stale session.
+      const httpErrorCode =
+        'code' in e ? (e as Error & { code?: number }).code : undefined
+      const isStaleSession =
+        !(
+          config.type === 'http' &&
+          httpErrorCode === 404 &&
+          sessionIdWasUndefined
+        ) && isMcpSessionExpiredError(e)
       const isConnectionClosedOnHttp =
         'code' in e &&
         (e as Error & { code?: number }).code === -32000 &&
         e.message.includes('Connection closed') &&
         (config.type === 'http' || config.type === 'claudeai-proxy')
-      if (isSessionExpired || isConnectionClosedOnHttp) {
+      if (isStaleSession || isConnectionClosedOnHttp) {
+        // Official log — `(${ee?"stale session":"connection closed"})`.
         logMCPDebug(
           name,
-          `MCP session expired during tool call (${isSessionExpired ? '404/-32001' : 'connection closed'}), clearing connection cache for re-initialization`,
+          `MCP session expired during tool call (${isStaleSession ? 'stale session' : 'connection closed'}), clearing connection cache for re-initialization`,
         )
         logEvent('tengu_mcp_session_expired', {})
         await clearServerCache(name, config)
-        throw new McpSessionExpiredError(name)
+        // Official: `let te=oNn(ue?.toolCallSends,xe,Z.ownSends);
+        //   throw new SO(q,<kind chain>)` — the send-tracking verdict picks
+        // between call-refused / call-not-run / may-have-run kinds, which
+        // decide whether the retry gate may re-run the tool.
+        const ranNothing = allSendsRanNothing(
+          connectionState?.toolCallSends,
+          baselineSendsStarted,
+          callWatchdog.ownSends,
+        )
+        throw new McpSessionExpiredError(
+          name,
+          classifySessionExpiryKind({
+            isStaleSession,
+            closeReason: connectionState?.closeReason,
+            ranNothing,
+            sessionIdWasUndefined,
+          }),
+        )
       }
     }
 
@@ -4551,6 +5114,9 @@ async function callMCPTool({
     if (progressInterval !== undefined) {
       clearInterval(progressInterval)
     }
+    // 2.1.307 B3: disarm the call watchdog so the send tracker no longer
+    // attributes sends to this (finished) call.
+    connectionState?.activeCallWatchdogs.delete(callWatchdog)
   }
 }
 

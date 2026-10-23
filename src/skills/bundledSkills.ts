@@ -15,6 +15,14 @@ import type { HooksSettings } from '../utils/settings/types.js'
 export type BundledSkillDefinition = {
   name: string
   description: string
+  /**
+   * CC 2.1.307 (B7): SHORT description for /help + the slash-command menu
+   * (official `Ri({name:"claude-api",menuDescription:"Build and debug apps
+   * that use the Claude API",...})`). The model-facing `description` is
+   * unchanged. Function-valued definitions are dropped by the converter
+   * (official: `typeof e.menuDescription==="function"?void 0:...`).
+   */
+  menuDescription?: string
   aliases?: string[]
   whenToUse?: string
   argumentHint?: string
@@ -83,6 +91,12 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     type: 'prompt',
     name: definition.name,
     description: definition.description,
+    // CC 2.1.307 (B7): official converter (byte-verified ×2 regions):
+    // `menuDescription:typeof e.menuDescription==="function"?void 0:e.menuDescription`
+    menuDescription:
+      typeof definition.menuDescription === 'function'
+        ? undefined
+        : definition.menuDescription,
     aliases: definition.aliases,
     hasUserSpecifiedDescription: true,
     allowedTools: definition.allowedTools ?? [],

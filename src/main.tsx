@@ -19,7 +19,7 @@ import { ensureKeychainPrefetchCompleted, startKeychainPrefetch } from './utils/
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 startKeychainPrefetch();
 import { feature } from 'src/utils/featureFlags.js';
-import { getScreenReaderAnnouncement, isScreenReaderEnabled } from 'src/utils/screenReader.js';
+import { getScreenReaderAnnouncement, getScreenReaderProjectSettingsWarning } from 'src/utils/screenReader.js';
 import { emitStartupSrAnnouncement } from 'src/utils/srA11y.js';
 import { Command as CommanderCommand, InvalidArgumentError, Option } from '@commander-js/extra-typings';
 import chalk from 'chalk';
@@ -1418,16 +1418,31 @@ async function run(): Promise<CommanderCommand> {
     const initOnly = options.initOnly ?? false;
     const maintenance = options.maintenance ?? false;
 
-    // 2.1.208 / 2.1.217 #8(a): screen reader startup announce (binary:
-    // `if(!B&&process.stdout.isTTY&&K2()){let Kr=Ghc();if(Kr!==null)console.log(Kr)}`).
-    // `B = a.print` (print-mode flag) — announce only in INTERACTIVE sessions,
-    // not `-p` pipe mode. 2.1.217 #8: the standalone `console.log` was cut off
-    // by the first prompt render overwriting the line; route the announce
-    // through the SR announce queue so the SR flat-render emits it as part of
-    // the render stream (not a standalone stdout write that gets cut off).
-    if (!print && process.stdout.isTTY && isScreenReaderEnabled()) {
+    // 2.1.208 / 2.1.217 #8(a) / 2.1.307: screen reader startup announce
+    // (binary `S7s` @241431432, call site @258318961:
+    //   `S7s(!St&&process.stdout.isTTY===!0,(s)=>{console.log(s)})` where
+    //   `S7s(e,n){{if(!e)return null;let t=X();if(t!==null)return n(t),k(),t;
+    //   let r=U();if(r!==null)n(r);return r}}`).
+    // `St = a.print` (print-mode flag) — interactive sessions only, not `-p`
+    // pipe mode. Announcement (`X()` = getScreenReaderAnnouncement) wins;
+    // when there is none, the project-settings warning (`U()` =
+    // getScreenReaderProjectSettingsWarning) is surfaced through the same
+    // callback. 2.1.217 #8: route the announcement through the SR announce
+    // queue so the SR flat-render emits it as part of the render stream (not
+    // a standalone stdout write that gets cut off by the first prompt
+    // render). The warning fires only when SR is OFF — the queue never
+    // drains in that state — so it goes to console.log, matching the
+    // official `(s)=>{console.log(s)}` callback.
+    if (!print && process.stdout.isTTY === true) {
       const announce = getScreenReaderAnnouncement();
-      emitStartupSrAnnouncement(announce);
+      if (announce !== null) {
+        emitStartupSrAnnouncement(announce);
+      } else {
+        const warning = getScreenReaderProjectSettingsWarning();
+        if (warning !== null) {
+          console.log(warning);
+        }
+      }
     }
 
     // CC 2.1.304 #41: CLAUDE_CODE_AUTO_COMPACT_WINDOW env startup warning

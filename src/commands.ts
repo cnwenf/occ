@@ -864,3 +864,24 @@ export function formatDescriptionWithSource(cmd: Command): string {
 
   return `${cmd.description} (${getSettingSourceName(cmd.source)})`
 }
+
+/**
+ * CC 2.1.307 (B7): resolve the SHORT menu description for /help and the
+ * slash-command menu — port of the official v307 `p1e` (byte-verified):
+ *   function p1e(e){if(e.type!=="prompt"||!yDt(e))return e.description;
+ *                   return e.menuDescription||e.description}
+ * `yDt` restricts the substitution to builtin/bundled-source prompt commands;
+ * OCC only ever sets `menuDescription` on bundled prompt commands, so the
+ * plain prompt-type check is data-equivalent (documented simplification).
+ *
+ * Menu surfaces pair this with formatDescriptionWithSource (the OCC analogue
+ * of the official `ift` decorator), mirroring the official menu builder
+ * `{...S,description:S.menuDescription}` substitution-before-decoration.
+ * Model-facing surfaces (SkillTool prompt) and the SDK tables in
+ * src/cli/print.ts keep the RAW `cmd.description`.
+ */
+export function menuDescriptionFor(cmd: Command): string {
+  return cmd.type === 'prompt'
+    ? cmd.menuDescription || cmd.description
+    : cmd.description
+}

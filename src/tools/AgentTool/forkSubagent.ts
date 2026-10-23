@@ -24,6 +24,7 @@ import {
   type BuiltInAgentDefinition,
   isBuiltInAgent,
 } from './loadAgentsDir.js'
+import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 
 /**
  * Fork subagent feature gate.
@@ -274,25 +275,56 @@ export function isInForkChild(messages: MessageType[]): boolean {
   })
 }
 
-/** Placeholder text used for all tool_result blocks in the fork prefix.
- * Must be identical across all fork children for prompt cache sharing. */
-const FORK_PLACEHOLDER_RESULT = 'Fork started — processing in background'
+/**
+ * CC 2.1.307 (B13): per-block tool_result strings for the fork prefix —
+ * verbatim from the official v307 binary (byte-verified @3476793:
+ * `Far` / `$ar` / `Bar`). When the parent launches several fork children in
+ * one assistant turn, every child sees the SAME parent assistant message;
+ * these strings tell each child which launch is its own and which belong to
+ * the parent. Replaces the uniform v302 placeholder ("Fork started —
+ * processing in background") — official v307 keeps no uniform placeholder.
+ */
+/** Official `Far` — the child's own launch, made by a fork-launcher tool (Agent/Task). */
+export const FORK_RESULT_OWN_LAUNCH = 'Fork started — that fork is you.'
+/** Official `$ar` — the child's own launch, made by some other tool. */
+export const FORK_RESULT_OWN_OTHER_WORK =
+  "This call started a fork, and that fork is you. The call's other work and its result belong to the parent."
+/** Official `Bar` — any launch that is not this child's own. */
+export const FORK_RESULT_PARENT_CALL =
+  "This is the parent's call, not yours. It may not have run yet, and its result goes to the parent."
 
 /**
  * Build the forked conversation messages for the child agent.
  *
- * For prompt cache sharing, all fork children must produce byte-identical
- * API request prefixes. This function:
- * 1. Keeps the full parent assistant message (all tool_use blocks, thinking, text)
- * 2. Builds a single user message with tool_results for every tool_use block
- *    using an identical placeholder, then appends a per-child directive text block
+ * Official v307 `Kbo(e,n,r)` (byte-verified):
+ *   let y=h.length===1?h[0]?.id:r,
+ *       S=h.map((H)=>({type:"tool_result",tool_use_id:H.id,
+ *         content:[{type:"text",
+ *           text:H.id!==y?Bar:H.name===ht||H.name===wf?Far:$ar}]}))
+ * with ht="Agent" / wf="Task" — OCC's AGENT_TOOL_NAME / LEGACY_AGENT_TOOL_NAME.
  *
- * Result: [...history, assistant(all_tool_uses), user(placeholder_results..., directive)]
- * Only the final text block differs per child, maximizing cache hits.
+ * This function:
+ * 1. Keeps the full parent assistant message (all tool_use blocks, thinking, text)
+ * 2. Builds a single user message with one tool_result per tool_use block —
+ *    each child gets ITS OWN selection: the parent's other calls are marked as
+ *    not-yours (Bar), the child's own fork launch is identified (Far), and an
+ *    own launch by a non-launcher tool gets the other-work note ($ar) — then
+ *    appends the per-child directive text block.
+ *
+ * Result: [...history, assistant(all_tool_uses), user(per_block_results..., directive)]
+ * The assistant clone is identical across children of the same launch turn;
+ * the tool_results intentionally differ per child (official B13 semantics —
+ * each fork must know which launch is its own).
+ *
+ * @param ownToolUseId the tool_use id of the launch that spawned THIS child
+ *   (official call site: `Kbo(G,h,z??e.toolUseId)`). Only consulted when the
+ *   assistant message carries more than one tool_use block; with exactly one
+ *   block that block is the child's own launch (official `h.length===1?h[0]?.id:r`).
  */
 export function buildForkedMessages(
   directive: string,
   assistantMessage: AssistantMessage,
+  ownToolUseId?: string,
 ): MessageType[] {
   // Clone the assistant message to avoid mutating the original, keeping all
   // content blocks (thinking, text, and every tool_use)
@@ -324,23 +356,33 @@ export function buildForkedMessages(
     ]
   }
 
-  // Build tool_result blocks for every tool_use, all with identical placeholder text
+  // Official Kbo: with exactly one tool_use block that block is this child's
+  // own launch; otherwise the caller-supplied spawning tool_use id decides.
+  const ownId =
+    toolUseBlocks.length === 1 ? toolUseBlocks[0]?.id : ownToolUseId
+
+  // Per-block selection (official `H.id!==y?Bar:H.name===ht||H.name===wf?Far:$ar`)
   const toolResultBlocks = toolUseBlocks.map(block => ({
     type: 'tool_result' as const,
     tool_use_id: block.id,
     content: [
       {
         type: 'text' as const,
-        text: FORK_PLACEHOLDER_RESULT,
+        text:
+          block.id !== ownId
+            ? FORK_RESULT_PARENT_CALL
+            : block.name === AGENT_TOOL_NAME ||
+                block.name === LEGACY_AGENT_TOOL_NAME
+              ? FORK_RESULT_OWN_LAUNCH
+              : FORK_RESULT_OWN_OTHER_WORK,
       },
     ],
   }))
 
-  // Build a single user message: all placeholder tool_results + the per-child directive
-  // TODO(smoosh): this text sibling creates a [tool_result, text] pattern on the wire
-  // (renders as </function_results>\n\nHuman:<text>). One-off per-child construction,
-  // not a repeated teacher, so low-priority. If we ever care, use smooshIntoToolResult
-  // from src/utils/messages.ts to fold the directive into the last tool_result.content.
+  // Build a single user message: per-block tool_results + the per-child directive.
+  // The former TODO(smoosh) about the [tool_result, text] sibling pattern is
+  // RESOLVED by alignment: official v307 Kbo keeps the exact same shape
+  // (`content:[...S,{type:"text",text:XBn(e)}]`), so OCC keeps it too.
   const toolResultMessage = createUserMessage({
     content: [
       ...toolResultBlocks,

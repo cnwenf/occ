@@ -142,6 +142,13 @@ import {
   isTextlessQuerySource,
   THINKING_ONLY_NUDGE_TEXT,
 } from './query/thinkingOnlyNudge.js'
+import {
+  canRetryMalformedToolUse,
+  classifyMalformedToolUseRetryOutcome,
+  MALFORMED_TOOL_USE_EXHAUSTED_TEXT,
+  MALFORMED_TOOL_USE_RETRY_TEXT,
+  textHasLeakedInvoke,
+} from './query/malformedToolUseRetry.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
 import { feature } from 'src/utils/featureFlags.js'
@@ -288,6 +295,12 @@ type State = {
   // (official `Kr` reset set @211098289); carried across all other
   // transitions (official spreads `...Me`).
   thinkingOnlyNudged?: boolean
+  // B12 (official 2.1.307 `guards.malformedToolUseRetryCount`): how many
+  // times the malformed-tool-call retry fired this segment (cap 2, official
+  // `cf=2`). Reset to 0 on next_turn and stop_hook_blocking (official `zs`
+  // reset set @6747889 / stop-hook site); carried across all other
+  // transitions (official spreads `...vt`).
+  malformedToolUseRetryCount: number
   turnCount: number
   // Why the previous iteration continued. Undefined on first iteration.
   // Lets tests assert recovery paths fired without inspecting message contents.
@@ -353,6 +366,7 @@ async function* queryLoop(
     stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
     thinkingOnlyNudged: false,
+    malformedToolUseRetryCount: 0,
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
     turnCount: 1,
@@ -411,6 +425,7 @@ async function* queryLoop(
       stopHookActive,
       turnCount,
       thinkingOnlyNudged,
+      malformedToolUseRetryCount,
     } = state
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
@@ -1288,6 +1303,29 @@ async function* queryLoop(
       }
     }
 
+    // B12 (official 2.1.307 @44475072): outcome telemetry for the response
+    // that FOLLOWED a malformed-tool-use retry. Official:
+    // `if(K.transition?.reason==="malformed_tool_use_retry"){let C=ne.at(-1);
+    //  i("tengu_malformed_tool_use_retry_outcome",{model:wt(Re),
+    //  retry_count:On,outcome:c(au(jt.length,C?.message.stop_reason??Nn,
+    //  C?.isApiErrorMessage,On))})}` — C ≡ last outcome assistant message,
+    // jt ≡ toolUseBlocks, Nn ≡ null, On ≡ malformedToolUseRetryCount (the
+    // count already incremented by the retry transition).
+    if (state.transition?.reason === 'malformed_tool_use_retry') {
+      const outcomeMessage = assistantMessages.at(-1)
+      logEvent('tengu_malformed_tool_use_retry_outcome', {
+        model:
+          currentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        retry_count: malformedToolUseRetryCount,
+        outcome: classifyMalformedToolUseRetryOutcome(
+          toolUseBlocks.length,
+          (outcomeMessage?.message?.stop_reason as string | undefined) ?? null,
+          outcomeMessage?.isApiErrorMessage,
+          malformedToolUseRetryCount,
+        ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+    }
+
     if (!needsFollowUp) {
       const lastMessage = assistantMessages.at(-1)
 
@@ -1336,6 +1374,7 @@ async function* queryLoop(
               stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
               thinkingOnlyNudged,
+              malformedToolUseRetryCount,
               turnCount,
               transition: {
                 reason: 'collapse_drain_retry',
@@ -1404,6 +1443,7 @@ async function* queryLoop(
     consecutiveStopHookBlocks: 0,
             turnCount,
             thinkingOnlyNudged,
+            malformedToolUseRetryCount,
             transition: { reason: 'reactive_compact_retry' },
           }
           state = next
@@ -1461,6 +1501,7 @@ async function* queryLoop(
     consecutiveStopHookBlocks: 0,
             turnCount,
             thinkingOnlyNudged,
+            malformedToolUseRetryCount,
             transition: { reason: 'max_output_tokens_escalate' },
           }
           state = next
@@ -1491,6 +1532,7 @@ async function* queryLoop(
     consecutiveStopHookBlocks: 0,
             turnCount,
             thinkingOnlyNudged,
+            malformedToolUseRetryCount,
             transition: {
               reason: 'max_output_tokens_recovery',
               attempt: maxOutputTokensRecoveryCount + 1,
@@ -1502,6 +1544,84 @@ async function* queryLoop(
 
         // Recovery exhausted — surface the withheld error now.
         yield lastMessage
+      }
+
+      // B12 (official 2.1.307 @44483254): malformed tool-call retry — the
+      // model ended with stop_reason "tool_use" but zero tool_use blocks
+      // parsed (and it is not an API error). Retry up to twice (official
+      // `cf=2`) before ending the turn with an error. Byte-verified details:
+      //   - every assistant message of this turn is tombstoned (official
+      //     `for(let lt of ne)yield{type:"tombstone",message:lt}`) and
+      //     EXCLUDED from the retry context (`messages:[...j,Ne]`);
+      //   - the meta retry message carries `isMeta:!0,turnCompanion:!0`
+      //     (official `Pe`; turnCompanion is applied via object spread —
+      //     OCC's createUserMessage takes no such param, but the Message
+      //     index signature carries it and isResumeCompanionUserRow reads
+      //     the flag);
+      //   - the retry transition applies the official `Ur` reset set
+      //     (maxOutputTokensRecoveryCount 0, hasAttemptedReactiveCompact
+      //     false) plus `malformedToolUseRetryCount:On+1` (official
+      //     `{...vt,...Ur,malformedToolUseRetryCount:On+1}`);
+      //   - exhausted path yields the error as an API-error assistant
+      //     message and runs the stop-failure hooks (official `S1e(te,S)`)
+      //     before returning `{reason:"malformed_tool_use_exhausted"}`. The
+      //     official's trailing `So(S,T,te)` is MCP-server-unload
+      //     bookkeeping with no OCC counterpart at OCC's sibling
+      //     error-yield sites (see the isApiErrorMessage branch below) —
+      //     skipped as a documented deviation.
+      const malformedStopReason =
+        lastMessage?.type === 'assistant'
+          ? ((lastMessage.message?.stop_reason as string | undefined) ?? null)
+          : null
+      if (
+        malformedStopReason === 'tool_use' &&
+        toolUseBlocks.length === 0 &&
+        !lastMessage?.isApiErrorMessage
+      ) {
+        const willRetry = canRetryMalformedToolUse(malformedToolUseRetryCount)
+        logEvent('tengu_malformed_tool_use_response', {
+          will_retry: willRetry,
+          retry_count: malformedToolUseRetryCount,
+          model:
+            currentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          text_has_leaked_invoke: textHasLeakedInvoke(assistantMessages),
+        })
+        if (willRetry) {
+          for (const msg of assistantMessages) {
+            yield { type: 'tombstone' as const, message: msg }
+          }
+          const retryMessage: Message = {
+            ...createUserMessage({
+              content: MALFORMED_TOOL_USE_RETRY_TEXT,
+              isMeta: true,
+            }),
+            turnCompanion: true,
+          }
+          yield retryMessage
+          const next: State = {
+            messages: [...messagesForQuery, retryMessage],
+            toolUseContext,
+            autoCompactTracking: tracking,
+            maxOutputTokensRecoveryCount: 0,
+            hasAttemptedReactiveCompact: false,
+            maxOutputTokensOverride: undefined,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            consecutiveStopHookBlocks: 0,
+            thinkingOnlyNudged,
+            malformedToolUseRetryCount: malformedToolUseRetryCount + 1,
+            turnCount,
+            transition: { reason: 'malformed_tool_use_retry' },
+          }
+          state = next
+          continue
+        }
+        const exhaustedMessage = createAssistantAPIErrorMessage({
+          content: MALFORMED_TOOL_USE_EXHAUSTED_TEXT,
+        })
+        yield exhaustedMessage
+        void executeStopFailureHooks(exhaustedMessage, toolUseContext)
+        return { reason: 'malformed_tool_use_exhausted' }
       }
 
       // OCC-99: thinking-only response nudge — byte-verified port of the
@@ -1551,6 +1671,7 @@ async function* queryLoop(
             stopHookActive: undefined,
             consecutiveStopHookBlocks: 0,
             thinkingOnlyNudged: true,
+            malformedToolUseRetryCount,
             turnCount,
             transition: { reason: 'thinking_only_retry' },
           }
@@ -1675,6 +1796,10 @@ async function* queryLoop(
           consecutiveStopHookBlocks: nextBlockCount,
           turnCount,
           thinkingOnlyNudged,
+          // Official stop_hook_blocking site resets the malformed retry
+          // count: `guards:{...vt,...Ur,malformedToolUseRetryCount:0,
+          // stopHookActive:!0,stopHookBlockingCount:ke,turnCount:ee}`.
+          malformedToolUseRetryCount: 0,
           transition: { reason: 'stop_hook_blocking' },
         }
         state = next
@@ -1713,6 +1838,7 @@ async function* queryLoop(
     consecutiveStopHookBlocks: 0,
             turnCount,
             thinkingOnlyNudged,
+            malformedToolUseRetryCount,
             transition: { reason: 'token_budget_continuation' },
           }
           continue
@@ -2111,6 +2237,16 @@ async function* queryLoop(
       // OCC-99: official next_turn resets the nudge guard (spread of the
       // `Kr` reset set @211098289 — `{...Me,...Kr,turnCount}`).
       thinkingOnlyNudged: false,
+      // Official `zs` reset set (@6747889) also carries
+      // `stopHookBlockingCount:0` — OCC previously omitted the field here
+      // (readers default via `?? 0`, so runtime behavior is unchanged);
+      // explicit 0 satisfies the State type and matches the official reset.
+      consecutiveStopHookBlocks: 0,
+      // Official next_turn spreads the `zs` reset set (@6747889):
+      // `{...Ur,thinkingOnlyNudged:!1,malformedToolUseRetryCount:0,
+      // stopHookBlockingCount:0}` — the malformed retry count resets per
+      // turn.
+      malformedToolUseRetryCount: 0,
       transition: { reason: 'next_turn' },
     }
     state = next

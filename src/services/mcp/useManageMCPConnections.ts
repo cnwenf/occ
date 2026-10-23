@@ -83,6 +83,10 @@ import {
 } from './claudeai.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
 import { getMcpPrefix } from './mcpStringUtils.js'
+import {
+  sdkToolRelistKeptFailure,
+  sdkToolRelistSuccess,
+} from './sdkToolRelist.js'
 import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
 
 // Constants for reconnection with exponential backoff
@@ -690,11 +694,25 @@ export function useManageMCPConnections(
                     })
                   }
                   updateServer({ ...client, tools: newTools })
+                  // CC 2.1.307 (B4): official Ki success path clears the
+                  // kept-previous mark so the next turn start no longer waits
+                  // for this server's relist.
+                  sdkToolRelistSuccess(client.name)
                 } catch (error) {
                   logMCPError(
                     client.name,
                     `Failed to refresh tools after list_changed notification: ${errorMessage(error)}`,
                   )
+                  // CC 2.1.307 (B4): official Ki kept-previous branch — a
+                  // failed tools/list refresh keeps the previous tool set and
+                  // marks the server so a turn starting while a background
+                  // refresh is pending waits (within budget) for the relist.
+                  // Verbatim official debug string (em dash included).
+                  logMCPDebug(
+                    client.name,
+                    'tools/list failed after list_changed — keeping previous tool set',
+                  )
+                  sdkToolRelistKeptFailure(client.name)
                 }
               },
             )

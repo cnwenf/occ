@@ -12,6 +12,7 @@ const TAIL_READ_BYTES = 64 * 1024
 export function registerDebugSkill(): void {
   registerBundledSkill({
     name: 'debug',
+    menuDescription: 'Turn on debug logging and investigate problems', // CC 2.1.307 (B7) official verbatim
     description:
       process.env.USER_TYPE === 'ant'
         ? 'Debug your current Claude Code session by reading the session debug log. Includes all event logging'

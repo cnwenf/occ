@@ -4,6 +4,7 @@ import {
   formatDescriptionWithSource,
   getCommand,
   getCommandName,
+  menuDescriptionFor,
 } from '../../commands.js'
 import type { SuggestionItem } from '../../components/PromptInput/PromptInputFooterSuggestions.js'
 import { getSkillUsageScore } from './skillUsageTracking.js'
@@ -280,8 +281,17 @@ function createCommandSuggestionItem(
   const aliasText = matchedAlias ? ` (${matchedAlias})` : ''
 
   const isWorkflow = cmd.type === 'prompt' && cmd.kind === 'workflow'
+  // CC 2.1.307 (B7): the slash menu shows the SHORT menuDescription (bundled
+  // skills), substituted before source decoration — mirrors the official
+  // suggestions builder (`x.menuDescription??x.description`) and menu builder
+  // ({...S,description:S.menuDescription}). Workflow rows keep the raw
+  // description (unchanged). The Fuse index keeps the RAW description too.
+  const menuCmd: Command =
+    cmd.type === 'prompt'
+      ? { ...cmd, description: menuDescriptionFor(cmd) }
+      : cmd
   const fullDescription =
-    (isWorkflow ? cmd.description : formatDescriptionWithSource(cmd)) +
+    (isWorkflow ? cmd.description : formatDescriptionWithSource(menuCmd)) +
     (cmd.type === 'prompt' && cmd.argNames?.length
       ? ` (arguments: ${cmd.argNames.join(', ')})`
       : '')

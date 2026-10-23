@@ -1,5 +1,6 @@
 import { logEvent } from 'src/services/analytics/index.js'
 import { openBrowser } from '../../utils/browser.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { AuthCodeListener } from './auth-code-listener.js'
 import * as client from './client.js'
 import * as crypto from './crypto.js'
@@ -93,6 +94,13 @@ export class OAuthService {
     const isAutomaticFlow = this.authCodeListener?.hasPendingResponse() ?? false
     logEvent('tengu_oauth_auth_code_received', { automatic: isAutomaticFlow })
 
+    // CC 2.1.307 (B15): once the success redirect has been sent, a later
+    // profile-fetch failure must NOT replace the browser's success page
+    // with the error page. Official v307 achieves this implicitly (the
+    // success redirect consumes pendingResponse, so the error redirect
+    // no-ops); OCC pins the same contract with an explicit flag.
+    let redirectSent = false
+
     try {
       // Exchange authorization code for tokens
       const tokenResponse = await client.exchangeCodeForTokens(
@@ -104,18 +112,22 @@ export class OAuthService {
         options?.expiresIn,
       )
 
+      // CC 2.1.307 (B15): handleSuccessRedirect BEFORE the (slow,
+      // failure-prone) profile fetch — official v307 order is
+      // exchange → handleSuccessRedirect → fetchProfileInfo, so the user's
+      // browser shows the success page immediately after sign-in.
+      if (isAutomaticFlow) {
+        const scopes = client.parseScopes(tokenResponse.scope)
+        this.authCodeListener?.handleSuccessRedirect(scopes)
+        redirectSent = true
+      }
+
       // Fetch profile info (subscription type and rate limit tier) for the
       // returned OAuthTokens. Logout and account storage are handled by the
       // caller (installOAuthTokens in auth.ts).
       const profileInfo = await client.fetchProfileInfo(
         tokenResponse.access_token,
       )
-
-      // Handle success redirect for automatic flow
-      if (isAutomaticFlow) {
-        const scopes = client.parseScopes(tokenResponse.scope)
-        this.authCodeListener?.handleSuccessRedirect(scopes)
-      }
 
       return this.formatTokens(
         tokenResponse,
@@ -124,8 +136,17 @@ export class OAuthService {
         profileInfo.rawProfile,
       )
     } catch (error) {
-      // If we have a pending response, send an error redirect before closing
-      if (isAutomaticFlow) {
+      // If we have a pending response, send an error redirect before closing —
+      // but never after the success redirect already went out (the browser
+      // keeps the success page; the failure is still logged and rethrown).
+      if (redirectSent) {
+        logForDebugging(
+          `OAuth post-redirect failure (success page already shown): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { level: 'error' },
+        )
+      } else if (isAutomaticFlow) {
         this.authCodeListener?.handleErrorRedirect()
       }
       throw error

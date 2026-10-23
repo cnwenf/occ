@@ -67,7 +67,12 @@ describe('WebSearchTool.call() — per-session WebSearch cap (CC 2.1.212)', () =
     expect(String(result.data.results[0])).toContain(
       'web search budget',
     )
-    expect(String(result.data.results[0])).toContain('2 of 2')
+    // CC 2.1.307 (A7): the budget parenthetical is the official v307
+    // session-no-refill rendering ("limit: N WebSearch calls, ..."), no longer
+    // the v306 "N of M" count.
+    expect(String(result.data.results[0])).toContain(
+      'limit: 2 WebSearch calls',
+    )
     expect(String(result.data.results[0])).toContain(
       'CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION',
     )
@@ -177,7 +182,9 @@ describe('WebSearchTool.call() — per-session WebSearch cap (CC 2.1.212)', () =
 
     // Assert — budget-exhausted, no increment
     expect(result.data.durationSeconds).toBe(0)
-    expect(String(result.data.results[0])).toContain('3 of 3')
+    expect(String(result.data.results[0])).toContain(
+      'limit: 3 WebSearch calls',
+    )
     expect(reg.getWebSearchCalls()).toBe(3)
   })
 })

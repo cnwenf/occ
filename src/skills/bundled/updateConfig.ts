@@ -446,6 +446,7 @@ If a hook isn't running:
 export function registerUpdateConfigSkill(): void {
   registerBundledSkill({
     name: 'update-config',
+    menuDescription: 'Change settings: hooks, permissions, environment variables', // CC 2.1.307 (B7) official verbatim
     description:
       'Use this skill to configure the OCC harness via settings.json. Automated behaviors ("from now on when X", "each time X", "whenever X", "before/after X") require hooks configured in settings.json - the harness executes these, not the model, so memory/preferences cannot fulfill them. Also use for: permissions ("allow X", "add permission", "move permission to"), env vars ("set X=Y"), hook troubleshooting, or any changes to settings.json/settings.local.json files. Examples: "allow npm commands", "add bq permission to global settings", "move permission to user settings", "set DEBUG=true", "when OCC stops show X". For simple settings like theme/model, use Config tool.',
     allowedTools: ['Read'],

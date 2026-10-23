@@ -14,7 +14,9 @@ import { logError } from '../../utils/log.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getMainLoopModel, getSmallFastModel } from '../../utils/model/model.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import { plural } from '../../utils/stringUtils.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { getWebSearchPrompt, WEB_SEARCH_TOOL_NAME } from './prompt.js'
 import {
   getToolUseSummary,
@@ -263,11 +265,34 @@ export const WebSearchTool = buildTool({
     const maxWebSearches = getMaxWebSearchesPerSession()
     const webSearchCount = context.taskRegistry?.getWebSearchCalls() ?? 0
     if (webSearchCount >= maxWebSearches) {
+      // CC 2.1.307 (A7): official v307 budget-exhausted notice (byte-verified
+      // @35592316), replacing v306's "N of M" count rendering (v306 has zero
+      // 'web search budget is used up' hits — the whole text is new in v307):
+      //   `Web search was not performed: this ${ae}'s web search budget is
+      //    used up (${bn}). ${Sn}; do not work around the limit by querying
+      //    search engines with curl or wget from ${je}, by querying them in a
+      //    browser or through a computer-use tool, or by searching or fetching
+      //    through a third-party reader, proxy or archive service.${Cn}`
+      // OCC renders the SESSION no-refill variant: ae="session",
+      //   bn=`limit: ${te} WebSearch ${I(te,"call")}, shared by every agent in
+      //       this session; it does not refill`,
+      //   Sn="Continue with the information already gathered instead of
+      //       searching again, and say so in your answer",
+      //   je="Bash",
+      //   Cn=" If more searches are genuinely needed, ask the user to raise
+      //       CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION."
+      // Not ported (documented): the turn-budget/refill machinery
+      // (ae=_e()?"turn":"session" + refill wording) and the `searchCount:0`
+      // data field — OCC's data shape is query/results/durationSeconds only.
+      // The settings-hint tail is unconditional: the official gates it on
+      // Por() (CLAUDE_CODE_HIDE_SETTINGS_HINT / entrypoint set) which OCC has
+      // no surface for — documented divergence.
+      const budgetLine = `limit: ${maxWebSearches} WebSearch ${plural(maxWebSearches, 'call')}, shared by every agent in this session; it does not refill`
       return {
         data: {
           query,
           results: [
-            `Web search was not performed: this session has used its web search budget (${webSearchCount} of ${maxWebSearches} WebSearch calls). Continue with the information already gathered instead of issuing more searches. If more searches are genuinely needed, ask the user to raise CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION.`,
+            `Web search was not performed: this session's web search budget is used up (${budgetLine}). Continue with the information already gathered instead of searching again, and say so in your answer; do not work around the limit by querying search engines with curl or wget from ${BASH_TOOL_NAME}, by querying them in a browser or through a computer-use tool, or by searching or fetching through a third-party reader, proxy or archive service. If more searches are genuinely needed, ask the user to raise CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION.`,
           ],
           durationSeconds: 0,
         },

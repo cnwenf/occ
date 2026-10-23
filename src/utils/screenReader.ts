@@ -16,6 +16,34 @@
  *      gate. When the gate passes, SR is enabled per the source above; when
  *      it would fail, SR is off regardless.
  *
+ * 2.1.307 (since 2.1.305) settings-source gating — changelog: "Changed the
+ * axScreenReader setting and CLAUDE_AX_SCREEN_READER in a settings env block
+ * to apply only from user, managed or --settings settings":
+ *   - settings branch (binary @241429201):
+ *       `e=Y8("axScreenReader").find((l)=>Qt(l.source))?.value===!0`
+ *     with accessor (binary @240100650):
+ *       `var gmi=["policySettings","flagSettings","userSettings"];
+ *        function Y8(e){let n=[];for(let r of gmi){let s=pe(r)?.[e];
+ *        if(s!==void 0)n.push({source:r,value:s})}return n}`
+ *     → first-defined-wins over the three privileged sources, filtered by
+ *     enabled sources (`Qt(e){return Io().includes(e)}` @239248799).
+ *     projectSettings/localSettings axScreenReader is IGNORED.
+ *   - env branch: OCC materializes settings `env` blocks into process.env
+ *     (`applyConfigEnvironmentVariables` — full apply for -p mode / post-trust
+ *     interactive / mid-session settings change), so a raw process.env read
+ *     would let project/local env blocks inject CLAUDE_AX_SCREEN_READER. The
+ *     official avoids this by evaluation ordering + early caching (its env
+ *     scrubber `ne` @243114612 DOES allow CLAUDE_AX_* keys from settings env
+ *     blocks). OCC ports the intent deterministically: the env value resolves
+ *     from enabled privileged source env blocks (policy > flag > user — the
+ *     official Object.assign materialization order user→flag→policy,
+ *     later-wins), else the REAL launch env (pre-settings snapshot; live
+ *     process.env only before the snapshot exists).
+ *   - warning builder `getScreenReaderProjectSettingsWarning` ports binary
+ *     `U()` @241430678 verbatim; the startup caller ports `S7s` @241431432
+ *     (announcement wins; warning via console.log — call site @258318961:
+ *     `S7s(!St&&process.stdout.isTTY===!0,(s)=>{console.log(s)})`).
+ *
  * The feature gate subtlety: official `feature(name, default)` returns
  * `true | undefined`; `?? true` defaults ON when unregistered. OCC's `feature()`
  * returns `true | false`. Adding `'tengu_ax_screen_reader'` to FEATURE_ALLOWLIST
@@ -24,9 +52,21 @@
  * Without the allowlist entry, `false ?? true` = `false` (false is not
  * nullish) → SR permanently off even with env/flag/setting set.
  */
+import { homedir } from 'node:os'
+import { join, sep } from 'node:path'
+import { stripVTControlCharacters } from 'node:util'
+
 import { feature } from './featureFlags.js'
 import { isEnvTruthy } from './envUtils.js'
-import { getInitialSettings } from './settings/settings.js'
+import { peekPreSettingsEnvSnapshot } from './managedEnv.js'
+import {
+  isSettingSourceEnabled,
+  type SettingSource,
+} from './settings/constants.js'
+import {
+  getSettingsFilePathForSource,
+  getSettingsForSource,
+} from './settings/settings.js'
 
 /**
  * Value-consuming CLI flags (binary: `p5l`). A boolean flag like
@@ -83,6 +123,75 @@ export function hasArgvFlag(
 type ActivationSource = 'flag' | 'env' | 'settings' | undefined
 
 /**
+ * Privileged settings sources for axScreenReader / CLAUDE_AX_SCREEN_READER
+ * (binary: `gmi=["policySettings","flagSettings","userSettings"]` @240100650).
+ * Order matters — first-defined-wins when resolving the setting value, and
+ * policy > flag > user when resolving env blocks (matching the official
+ * Object.assign materialization order user→flag→policy, later-wins).
+ */
+const PRIVILEGED_AX_SETTING_SOURCES = [
+  'policySettings',
+  'flagSettings',
+  'userSettings',
+] as const satisfies readonly SettingSource[]
+
+interface PrivilegedAxSettingEntry {
+  source: SettingSource
+  value: unknown
+}
+
+/**
+ * Collect every privileged source that DEFINES `axScreenReader`, in
+ * policy→flag→user order (binary: `Y8("axScreenReader")` @240100650 —
+ * `let s=pe(r)?.[e];if(s!==void 0)n.push({source:r,value:s})`). NOT filtered
+ * by enabled sources here; callers filter via `isSettingSourceEnabled`
+ * (binary: `Qt`), exactly like the official `.find((l)=>Qt(l.source))` /
+ * `.some((i)=>Qt(i.source))` call sites.
+ */
+function getPrivilegedAxScreenReaderEntries(): PrivilegedAxSettingEntry[] {
+  const entries: PrivilegedAxSettingEntry[] = []
+  for (const source of PRIVILEGED_AX_SETTING_SOURCES) {
+    const value = getSettingsForSource(source)?.axScreenReader
+    if (value !== undefined) entries.push({ source, value })
+  }
+  return entries
+}
+
+/**
+ * Resolve the effective CLAUDE_AX_SCREEN_READER value for the env branch
+ * (see file header — 2.1.307 env-block gating):
+ *   1. enabled privileged source env blocks (policy > flag > user),
+ *   2. else the REAL launch env (pre-settings snapshot),
+ *   3. else live process.env (snapshot not yet captured — e.g. very early
+ *      startup or unit tests).
+ * Project/local env blocks materialized into process.env by
+ * `applyConfigEnvironmentVariables` are therefore NOT honored.
+ */
+function resolveAxScreenReaderEnvValue(): string | undefined {
+  for (const source of PRIVILEGED_AX_SETTING_SOURCES) {
+    if (!isSettingSourceEnabled(source)) continue
+    const value = getSettingsForSource(source)?.env?.CLAUDE_AX_SCREEN_READER
+    if (value !== undefined) return String(value)
+  }
+  const snapshot = peekPreSettingsEnvSnapshot()
+  if (snapshot !== undefined) return snapshot.CLAUDE_AX_SCREEN_READER
+  return process.env.CLAUDE_AX_SCREEN_READER
+}
+
+/**
+ * Path sanitizer for the warning message (binary: `hd` @239641041 —
+ * `BE(Ab(e)).replace(/(?![\t\n])[\p{Cc}\p{Cf}\u2028\u2029]/gu,"")` where
+ * `BE`=stripVTControlCharacters; identical regex to OCC's private
+ * `sanitizeMessageText` in settings/allowedProvidersEnforcement.ts).
+ */
+function sanitizeAxPathText(path: string): string {
+  return stripVTControlCharacters(path).replace(
+    /(?![\t\n])[\p{Cc}\p{Cf}\u2028\u2029]/gu,
+    '',
+  )
+}
+
+/**
  * Screen reader toggle (binary: `class jhc`). Caches the enabled decision and
  * the activation source. `#e` (binary) = enabled cache, `#t` = source.
  */
@@ -98,12 +207,18 @@ class ScreenReaderToggle {
       e = true
       t = 'flag'
     } else {
-      const envVal = process.env.CLAUDE_AX_SCREEN_READER
+      const envVal = resolveAxScreenReaderEnvValue()
       if (envVal !== undefined) {
         e = isEnvTruthy(envVal)
         t = 'env'
       } else {
-        e = getInitialSettings().axScreenReader === true
+        // 2.1.307 (binary @241429201): first-defined-wins over the privileged
+        // sources [policy, flag, user], filtered by enabled sources.
+        // projectSettings/localSettings are IGNORED.
+        e =
+          getPrivilegedAxScreenReaderEntries().find(l =>
+            isSettingSourceEnabled(l.source),
+          )?.value === true
         t = 'settings'
       }
     }
@@ -154,6 +269,77 @@ export function getScreenReaderAnnouncement(): string | null {
       : '[Screen Reader Mode: on]'
   }
   return null
+}
+
+/**
+ * Project-settings warning (2.1.307; binary: `U()` @241430678, verbatim):
+ *
+ *   function U(){{if(o().isEnabled()||rS("--ax-screen-reader")||
+ *   a.CLAUDE_AX_SCREEN_READER!==void 0||
+ *   Y8("axScreenReader").some((i)=>Qt(i.source)))return null;
+ *   if(!["projectSettings","localSettings"].some((i)=>{
+ *     let s=Qt(i)?pe(i):null;
+ *     return s?.axScreenReader===!0||Object.entries(s?.env??{}).some(
+ *       ([u,c])=>u.toUpperCase()==="CLAUDE_AX_SCREEN_READER"&&$e(c))}))
+ *     return null;
+ *   let n="start Claude Code with --ax-screen-reader";
+ *   if(!Qt("userSettings"))return`Screen reader mode is off: project settings
+ *     can't turn it on. To turn it on, ${n}.`;
+ *   let t=x(),r=hd(sn("userSettings")??C(t,".claude","settings.json"))
+ *     .replace(/[\t\n]/g," "),
+ *     l=r.startsWith(t+D)?`~${r.slice(t.length)}`:r;
+ *   return`Screen reader mode is off: project settings can't turn it on.
+ *     To turn it on, ${n}, or add "axScreenReader": true to your own settings
+ *     file at ${l} and restart.`}return null}
+ *
+ * Returns the warning when SR is off but project/local settings attempt to
+ * turn it on (via `axScreenReader: true` or an env-block
+ * CLAUDE_AX_SCREEN_READER with a truthy value), else `null`. Suppressed when
+ * SR is on, the CLI flag is present, CLAUDE_AX_SCREEN_READER is DEFINED in
+ * the effective env (even falsy), or any enabled privileged source defines
+ * `axScreenReader` (even false). The env guard uses the same gated resolver
+ * as `isEnabled()` (see file header). `hd` = `sanitizeAxPathText`; `x()` =
+ * homedir; `C` = path.join; `D` = path.sep; `$e` = isEnvTruthy.
+ *
+ * Startup caller (binary `S7s` @241431432 → call site @258318961
+ * `S7s(!St&&process.stdout.isTTY===!0,(s)=>{console.log(s)})`): the
+ * announcement wins; when there is no announcement, this warning is written
+ * to stdout via console.log (NOT the SR announce queue — the queue only
+ * drains when SR is on, and this warning only fires when SR is off).
+ */
+export function getScreenReaderProjectSettingsWarning(): string | null {
+  if (
+    screenReader.isEnabled() ||
+    hasArgvFlag('--ax-screen-reader') ||
+    resolveAxScreenReaderEnvValue() !== undefined ||
+    getPrivilegedAxScreenReaderEntries().some(i =>
+      isSettingSourceEnabled(i.source),
+    )
+  )
+    return null
+  const projectAttempted = (
+    ['projectSettings', 'localSettings'] as const
+  ).some(i => {
+    const s = isSettingSourceEnabled(i) ? getSettingsForSource(i) : null
+    return (
+      s?.axScreenReader === true ||
+      Object.entries(s?.env ?? {}).some(
+        ([u, c]) =>
+          u.toUpperCase() === 'CLAUDE_AX_SCREEN_READER' && isEnvTruthy(c),
+      )
+    )
+  })
+  if (!projectAttempted) return null
+  const n = 'start Claude Code with --ax-screen-reader'
+  if (!isSettingSourceEnabled('userSettings'))
+    return `Screen reader mode is off: project settings can't turn it on. To turn it on, ${n}.`
+  const t = homedir()
+  const r = sanitizeAxPathText(
+    getSettingsFilePathForSource('userSettings') ??
+      join(t, '.claude', 'settings.json'),
+  ).replace(/[\t\n]/g, ' ')
+  const l = r.startsWith(t + sep) ? `~${r.slice(t.length)}` : r
+  return `Screen reader mode is off: project settings can't turn it on. To turn it on, ${n}, or add "axScreenReader": true to your own settings file at ${l} and restart.`
 }
 
 /**

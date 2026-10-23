@@ -921,9 +921,20 @@ export function parseUserSpecifiedModel(
   const normalizedModel = modelInputTrimmed.toLowerCase()
 
   const has1mTag = has1mContext(normalizedModel)
-  const modelString = has1mTag
-    ? normalizedModel.replace(/\[1m]$/i, '').trim()
-    : normalizedModel
+  // CC 2.1.307 (A3): the [1m] strip before the alias switch is UNCONDITIONAL.
+  // Official v306 `Dt` gated it on has1m (byte-verified:
+  //   `let n=e.trim(),r=n.toLowerCase(),s=hp(r),h=s?Mt(r).trim():r`), so with
+  // CLAUDE_CODE_DISABLE_1M_CONTEXT set (hp/am→false → s=false) an alias like
+  // `opus[1m]` kept its suffix, missed every switch arm, and fell through raw
+  // to the API → model-not-found. v307 `Lt` (byte-verified @42219830) is
+  // identical except the strip always runs:
+  //   `let n=e.trim(),r=n.toLowerCase(),s=am(r),h=Mt(r).trim()`
+  // `has1mTag` still gates the re-append arms below (all `if(s)`-gated in the
+  // binary). Official `Mt(e)=e.replace(/\[1m\]$/i,"")` is a SINGLE trailing-
+  // suffix strip — OCC's regex is equivalent; the repeated-suffix form
+  // (/(\[1m\])+$/i) lives only in the dedup re-append arms (official `kG` ≡
+  // dedup1mSuffix), which are unchanged.
+  const modelString = normalizedModel.replace(/\[1m]$/i, '').trim()
 
   if (isModelAlias(modelString)) {
     // Official 2.1.280 `kt` alias arms (byte-verified @193434460 region):

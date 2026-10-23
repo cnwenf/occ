@@ -284,6 +284,7 @@ export function registerCodeReviewSkill(): void {
     // 2.1.154 (E14): /code-review is the bug-finding + cleanup review.
     // /simplify is now its own cleanup-only skill (no longer an alias here).
     name: 'code-review',
+    menuDescription: 'Review the current diff or a PR for bugs and cleanups', // CC 2.1.307 (B7) official verbatim
     // CC 2.1.218 #1: run as a background subagent so review work no longer
     // fills the main conversation and keeps stacked slash commands as its
     // review target. `context: 'fork'` routes through executeForkedSkill;
@@ -337,6 +338,7 @@ export function registerSimplifySkill(): void {
     // 2.1.154 (E14): /simplify split back out as a cleanup-only review that
     // applies fixes. Does not hunt for bugs — use /code-review for that.
     name: 'simplify',
+    menuDescription: 'Clean up the changed code without changing behavior', // CC 2.1.307 (B7) official verbatim
     description:
       'Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only — it does not hunt for bugs; use /code-review for that.',
     argumentHint: '[<target>]',

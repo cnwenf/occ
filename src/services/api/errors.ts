@@ -173,6 +173,11 @@ export const TOKEN_REVOKED_ERROR_MESSAGE =
   'OAuth token revoked · Please run /login'
 export const CCR_AUTH_ERROR_MESSAGE =
   'Authentication error · This may be a temporary network issue, please try again'
+// CC 2.1.307 (A8): total-content budget for the CCR 403 reason rendering —
+// official `MLe=1000` (byte-verified @20464428: `var Dl="API Error",MLe=1000;`).
+// The reason is truncated to MLe - head.length - 1 so the rendered content
+// stays within the budget.
+export const CCR_AUTH_REASON_MAX_CONTENT_LENGTH = 1000
 // 2.1.208 (#15): surfaced when apiKeyHelper is failing — shown within 3
 // attempts instead of a generic 401 after ~10 silent retries. Mirrors the
 // binary's `hgg` string.
@@ -298,6 +303,88 @@ export function getOAuthRefreshDiskFullErrorMessage(): string {
  */
 function isCCRMode(): boolean {
   return isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
+}
+
+/**
+ * CC 2.1.307 (A8): official `C` (byte-verified @20468400 region):
+ *   function C(e){if(/<!DOCTYPE html|<html\b/i.test(e)){
+ *     let r=e.match(/<title>([^<]+)<\/title>/i);
+ *     if(r&&r[1])return r[1].trim();return""}return e}
+ * HTML error bodies (gateway/proxy interstitials) collapse to their <title>
+ * text; a titleless HTML body yields '' so the caller falls back to the
+ * generic message. Non-HTML passes through unchanged.
+ */
+function extractHtmlTitleOrRaw(message: string): string {
+  if (/<!DOCTYPE html|<html\b/i.test(message)) {
+    const titleMatch = message.match(/<title>([^<]+)<\/title>/i)
+    if (titleMatch && titleMatch[1]) {
+      return titleMatch[1].trim()
+    }
+    return ''
+  }
+  return message
+}
+
+/**
+ * CC 2.1.307 (A8): official `R` — the error-shape guard used by `ftr`:
+ *   function R(e){return typeof e==="object"&&e!==null&&"error"in e&&
+ *     typeof e.error==="object"&&e.error!==null}
+ */
+function hasErrorObjectShape(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'error' in value &&
+    typeof (value as { error: unknown }).error === 'object' &&
+    (value as { error: unknown }).error !== null
+  )
+}
+
+/**
+ * CC 2.1.307 (A8): official `ftr` (byte-verified @20469403) — pull a human
+ * reason out of a forbidden (403) error body: try error.error.message, then
+ * error.message, each through the HTML-title collapse; null when neither
+ * yields a non-empty string.
+ *   function ftr(e){if(!R(e))return null;let n=e.error,
+ *     o=n?.error?.message;if(typeof o==="string"&&o.length>0){let s=C(o);if(s.length>0)return s}
+ *     let a=n?.message;if(typeof a==="string"&&a.length>0){let s=C(a);if(s.length>0)return s}
+ *     return null}
+ */
+function extractForbiddenReason(error: unknown): string | null {
+  if (!hasErrorObjectShape(error)) {
+    return null
+  }
+  const body = (error as { error: Record<string, unknown> }).error
+  const nestedMessage = (body.error as { message?: unknown } | undefined)
+    ?.message
+  if (typeof nestedMessage === 'string' && nestedMessage.length > 0) {
+    const collapsed = extractHtmlTitleOrRaw(nestedMessage)
+    if (collapsed.length > 0) {
+      return collapsed
+    }
+  }
+  const directMessage = body.message
+  if (typeof directMessage === 'string' && directMessage.length > 0) {
+    const collapsed = extractHtmlTitleOrRaw(directMessage)
+    if (collapsed.length > 0) {
+      return collapsed
+    }
+  }
+  return null
+}
+
+/**
+ * CC 2.1.307 (A8): stand-in for the official `Ot(K, MLe-Se.length-1)`
+ * truncator. The exact `Ot` body was NOT recoverable from the binary (the
+ * 2-letter name collides across bundle chunks), so this is a conservative
+ * slice that preserves the observable contract: total rendered content stays
+ * within CCR_AUTH_REASON_MAX_CONTENT_LENGTH. Documented deviation.
+ */
+function truncateToContentBudget(message: string, budget: number): string {
+  if (budget <= 0) {
+    return ''
+  }
+  return message.length <= budget ? message : message.slice(0, budget)
 }
 
 // Temp helper to log tool_use/tool_result mismatch errors
@@ -1020,11 +1107,37 @@ export function getAssistantMessageFromError(
       })
     }
 
-    // In CCR mode, auth is via JWTs - this is likely a transient network issue
+    // In CCR mode, auth is via JWTs - a transient network issue UNLESS the
+    // 403 body carries a real reason. CC 2.1.307 (A8): official CCR branch
+    // (byte-verified @2539100 region):
+    //   if(Y5t()){let K=e.status===403?ftr(e):null,Q=`${e.status} `,
+    //     Se=`${Dl}: ${Q}`,be=K&&Ot(K,MLe-Se.length-1);
+    //     return Ws({error:"authentication_failed",
+    //       content:be?Se+(be.startsWith(Q)?be.slice(Q.length):be):K5t})}
+    // — reason extraction is 403-only; the status prefix is deduped when the
+    // reason already starts with it; no reason → the generic CCR message.
+    // The second CCR site (x-api-key handler, ~:1021) is UNCHANGED in
+    // official v307 (byte-verified: still returns bare K5t) and stays as-is.
     if (isCCRMode()) {
+      const reason =
+        error.status === 403 ? extractForbiddenReason(error) : null
+      const statusPrefix = `${error.status} `
+      const head = `${API_ERROR_MESSAGE_PREFIX}: ${statusPrefix}`
+      const truncatedReason =
+        reason !== null
+          ? truncateToContentBudget(
+              reason,
+              CCR_AUTH_REASON_MAX_CONTENT_LENGTH - head.length - 1,
+            )
+          : null
       return createAssistantAPIErrorMessage({
         error: 'authentication_failed',
-        content: CCR_AUTH_ERROR_MESSAGE,
+        content: truncatedReason
+          ? head +
+            (truncatedReason.startsWith(statusPrefix)
+              ? truncatedReason.slice(statusPrefix.length)
+              : truncatedReason)
+          : CCR_AUTH_ERROR_MESSAGE,
       })
     }
 

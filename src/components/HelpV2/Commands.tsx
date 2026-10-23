@@ -1,7 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import * as React from 'react';
 import { useMemo } from 'react';
-import { type Command, formatDescriptionWithSource } from '../../commands.js';
+import { type Command, formatDescriptionWithSource, menuDescriptionFor } from '../../commands.js';
 import { Box, Text } from '../../ink.js';
 import { truncate } from '../../utils/format.js';
 import { Select } from '../CustomSelect/select.js';
@@ -38,7 +38,10 @@ export function Commands(t0) {
       t2 = cmd_0 => ({
         label: `/${cmd_0.name}`,
         value: cmd_0.name,
-        description: truncate(formatDescriptionWithSource(cmd_0), maxWidth, true)
+        // CC 2.1.307 (B7): the /help list shows the SHORT menuDescription
+        // (bundled skills), substituted before source decoration — mirrors
+        // the official menu builder `{...S,description:S.menuDescription}`.
+        description: truncate(formatDescriptionWithSource({ ...cmd_0, description: menuDescriptionFor(cmd_0) }), maxWidth, true)
       });
       $[3] = maxWidth;
       $[4] = t2;

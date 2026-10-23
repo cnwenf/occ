@@ -1085,11 +1085,14 @@ export const SettingsSchema = lazySchema(() =>
       // is cosmetic schema organization); OCC exposes it as a flat key to
       // match the access path in src/utils/screenReader.ts. Overridden by the
       // CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag.
+      // 2.1.307 (since 2.1.305): honored only from user/managed/--settings
+      // sources — describe text byte-matched to binary @239376087 (appends
+      // " Ignored in project and local settings.").
       axScreenReader: z
         .boolean()
         .optional()
         .describe(
-          'Render screen-reader friendly output (flat text, no decorative borders or animations). Overridden by the CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag.',
+          'Render screen-reader friendly output (flat text, no decorative borders or animations). Overridden by the CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag. Ignored in project and local settings.',
         ),
       // 2.1.110: default transcript view mode on startup (/focus command).
       viewMode: z

@@ -18,12 +18,29 @@
  */
 
 import { buildDangerousRmAutoDenyMessage } from 'src/tools/BashTool/dangerousRmAutoDeny.js'
+import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
+import { POWERSHELL_TOOL_NAME } from 'src/tools/PowerShellTool/toolName.js'
 import { feature } from 'src/utils/featureFlags.js'
+import { jsonStringify } from 'src/utils/slowOperations.js'
 
 export type AutoModeDenial = {
   toolName: string
   /** Human-readable description of the denied command (e.g. bash command string) */
   display: string
+  /**
+   * CC 2.1.307 B6: the denied shell command text, when the denial is a
+   * shell-family non-mcp tool call with a non-blank `command` input. Official
+   * record site (new307 @12632300): `Ao=Be.mcpInfo?void 0:uh.includes(Be.name)
+   * ?Ke.command:void 0`, stored via `...typeof Ao==="string"&&Ao.trim()!==""
+   * &&{command:Ao}`.
+   */
+  command?: string
+  /**
+   * CC 2.1.307 B6: canonical JSON input key for prior-denial dedup (official
+   * `uee`). Lets a retried identical call find its earlier denial so an
+   * approval removes it from the store.
+   */
+  inputKey?: string
   reason: string
   timestamp: number
 }
@@ -31,9 +48,39 @@ export type AutoModeDenial = {
 let DENIALS: readonly AutoModeDenial[] = []
 const MAX_DENIALS = 20
 
+/** Official `uh` — the shell-family tool-name list used by `uee`/`Ao`. */
+const SHELL_FAMILY_TOOL_NAMES: readonly string[] = [
+  BASH_TOOL_NAME,
+  POWERSHELL_TOOL_NAME,
+]
+
+/**
+ * CC 2.1.307 B6 (official `uee`):
+ * `function uee(h,x){if(uh.includes(h.name)&&!h.mcpInfo)return _({command:
+ * x.command});return _(x)}` — `_` = JSON.stringify (OCC jsonStringify).
+ */
+export function denialInputKey(
+  tool: { name: string; mcpInfo?: unknown },
+  input: Record<string, unknown>,
+): string {
+  if (SHELL_FAMILY_TOOL_NAMES.includes(tool.name) && !tool.mcpInfo) {
+    return jsonStringify({ command: (input as { command?: unknown }).command })
+  }
+  return jsonStringify(input)
+}
+
 export function recordAutoModeDenial(denial: AutoModeDenial): void {
   if (!feature('TRANSCRIPT_CLASSIFIER')) return
   DENIALS = [denial, ...DENIALS.slice(0, MAX_DENIALS - 1)]
+}
+
+/**
+ * CC 2.1.307 B6 (official `L`): remove a denial BY IDENTITY. Called when a
+ * previously-denied call is later approved (either on retry through the
+ * classifier or via the /permissions approve path).
+ */
+export function removeAutoModeDenial(denial: AutoModeDenial): void {
+  DENIALS = DENIALS.filter(stored => stored !== denial)
 }
 
 export function getAutoModeDenials(): readonly AutoModeDenial[] {

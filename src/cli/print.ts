@@ -268,6 +268,15 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { getMcpPrefix } from 'src/services/mcp/mcpStringUtils.js'
 import {
+  beginSdkRefresh,
+  endSdkRefresh,
+  raceWithTimeout,
+  sdkToolRelistJoin,
+  sdkToolRelistPending,
+  sdkUpdateWaitBudgetMs,
+  setSdkServerRegistry,
+} from 'src/services/mcp/sdkToolRelist.js'
+import {
   commandBelongsToServer,
   filterToolsByServer,
 } from 'src/services/mcp/utils.js'
@@ -1458,6 +1467,48 @@ function runHeadlessStreaming(
   let sdkClients: MCPServerConnection[] = []
   let sdkTools: Tools = []
 
+  // CC 2.1.307 (B4): wire the SDK tool-relist pending predicate to this
+  // closure's live config/client state. Official `qs` reads the minified
+  // module globals P (sdkMcpConfigs) / hn (sdkClients) directly; OCC injects
+  // them so sdkToolRelist.ts stays closure-free.
+  setSdkServerRegistry({
+    isConfigured: name => Object.hasOwn(sdkMcpConfigs, name),
+    isConnected: name =>
+      sdkClients.some(c => c.name === name && c.type === 'connected'),
+  })
+
+  /**
+   * CC 2.1.307 (B4): whether updateSdkMcp would actually do work — OCC
+   * equivalent of the official `my(P, hn) !== "none"` update-kind check
+   * (sync/retry_failed both mean an update is needed; OCC's updateSdkMcp
+   * has no "skip" variant that suppresses failed-client retries).
+   */
+  function sdkServersChanged(): boolean {
+    const currentServerNames = new Set(Object.keys(sdkMcpConfigs))
+    const connectedServerNames = new Set(sdkClients.map(c => c.name))
+    return (
+      Array.from(currentServerNames).some(
+        name => !connectedServerNames.has(name),
+      ) ||
+      Array.from(connectedServerNames).some(
+        name => !currentServerNames.has(name),
+      ) ||
+      sdkClients.some(c => c.type === 'pending') ||
+      sdkClients.some(c => c.type === 'failed')
+    )
+  }
+
+  /**
+   * CC 2.1.307 (B4): official `sdkMcpServersPending` wiring (@32540300):
+   * configured server names whose client is missing or still pending.
+   */
+  function sdkMcpServersPending(): string[] {
+    return Object.keys(sdkMcpConfigs).filter(name => {
+      const client = sdkClients.find(c => c.name === name)
+      return client === undefined || client.type === 'pending'
+    })
+  }
+
   // Track which MCP clients have had elicitation handlers registered
   const elicitationRegistered = new Set<string>()
 
@@ -1595,6 +1646,18 @@ function runHeadlessStreaming(
   }
 
   async function updateSdkMcp() {
+    // CC 2.1.307 (B4): official Vi Ge++ / finally Ge-- — mark this refresh
+    // in-flight so sdkToolRelistPending() holds a concurrently starting turn
+    // in the relist join instead of letting it query with stale SDK tools.
+    beginSdkRefresh()
+    try {
+      await updateSdkMcpInner()
+    } finally {
+      endSdkRefresh()
+    }
+  }
+
+  async function updateSdkMcpInner() {
     // Check if SDK MCP servers need to be updated (new servers added or removed)
     const currentServerNames = new Set(Object.keys(sdkMcpConfigs))
     const connectedServerNames = new Set(sdkClients.map(c => c.name))
@@ -2075,7 +2138,41 @@ function runHeadlessStreaming(
     headlessProfilerCheckpoint('run_entry')
     // TODO(custom-tool-refactor): Should move to the init message, like browser
 
-    await updateSdkMcp()
+    // CC 2.1.307 (B4): beforeDrain widening — when an SDK update is needed
+    // OR a tool relist is still pending, wait for updateSdkMcp within the
+    // budget and start the turn anyway on timeout (official
+    // sdk_mcp_update_wait_timeout; relay_marked/relay_hold are false — OCC
+    // has no mcpPrewait relay state). needed/pending are computed BEFORE the
+    // update starts (official ordering: `let C=...,H=...` then `j=update()`).
+    const sdkUpdateNeeded = sdkServersChanged()
+    const sdkRelistPending = sdkToolRelistPending()
+    const sdkUpdate = updateSdkMcp()
+    if (sdkUpdateNeeded || sdkRelistPending) {
+      const budgetMs = sdkUpdateWaitBudgetMs()
+      if (
+        (await raceWithTimeout(sdkUpdate.then(() => true), budgetMs)) !== true
+      ) {
+        // Detach so the still-running update can't reject unhandled.
+        sdkUpdate.catch(() => {})
+        const pendingServers = sdkMcpServersPending()
+        logEvent('tengu_sdk_mcp_update_wait_timeout', {
+          budget_ms: budgetMs,
+          // logEvent metadata accepts numbers only — the official
+          // pending_servers name list goes to the diagnostics log below.
+          pending_servers: pendingServers.length,
+          relay_marked: false,
+          relay_hold: false,
+        })
+        logForDiagnosticsNoPII('warn', 'sdk_mcp_update_wait_timeout', {
+          budget_ms: budgetMs,
+          pending_servers: pendingServers,
+          relay_marked: false,
+          relay_hold: false,
+        })
+      }
+    } else {
+      await sdkUpdate
+    }
     headlessProfilerCheckpoint('after_updateSdkMcp')
 
     // Resolve deferred plugin installation (CLAUDE_CODE_SYNC_PLUGIN_INSTALL).
@@ -2179,6 +2276,17 @@ function runHeadlessStreaming(
                 } as SDKUserMessageReplay)
               }
             }
+          }
+
+          // CC 2.1.307 (B4): turn_joins — official `sdkMcpServersJoin({command})
+          // ?? sdkToolRelistJoin(command)` awaited per queued command before
+          // the turn assembles its tools. If an SDK refresh is in flight or a
+          // kept-previous server is still connected, wait (within budget) so
+          // the turn doesn't start without an SDK MCP server's latest tools;
+          // on timeout the turn starts anyway (logged in sdkToolRelistJoin).
+          const relistJoin = sdkToolRelistJoin(command, updateSdkMcp)
+          if (relistJoin !== null) {
+            await relistJoin
           }
 
           // Combine all MCP clients. appState.mcp is populated incrementally

@@ -27,7 +27,7 @@ import { has1mContext } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { getAPIProvider } from './model/providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './model/providers.js'
 import { getInitialSettings } from './settings/settings.js'
 
 /**
@@ -266,6 +266,49 @@ export function shouldIncludeFirstPartyOnlyBetas(): boolean {
 }
 
 /**
+ * CC 2.1.307 (A4): dedicated gate for the prompt-caching-scope beta header,
+ * replacing the shared firstPartyOnlyBetas gate at the getAllModelBetas push
+ * site. Port of the official v307 `D8` (byte-verified @42238989; the beta
+ * table entry is `{beta:J2e,when:()=>D8()}` @42239857 with J2e =
+ * "prompt-caching-scope-2026-01-05" @35194481):
+ *
+ *   function D8(){if(!Qy())return!1;if(!Ni())return!1;let e=Re();return e==="firstParty"||e==="anthropicAws"}
+ *   function Qy(){return $Y()&&!L1()}                                       // ≡ firstPartyOnlyBetas
+ *   function $Y(){let e=Re();return e==="firstParty"||WL(e)||e==="foundry"} // WL: anthropicAws|anthropicGoogleCloud
+ *   function L1(){return a.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS||N1()}    // N1: hipaa taint
+ *   function Ni(){if(Qce())return!0;return Hu()}                            // ≡ isFirstPartyAnthropicBaseUrl
+ *
+ * Net effect vs v306: the header is suppressed behind a custom
+ * ANTHROPIC_BASE_URL gateway (Ni false) and on Foundry (outside D8's final
+ * provider arm), where it has no effect.
+ *
+ * Mapping notes:
+ * - D8's provider condition is $Y's set ∩ {firstParty, anthropicAws} =
+ *   exactly {firstParty, anthropicAws} (foundry and anthropicGoogleCloud drop
+ *   out), so the check is inlined here instead of reusing
+ *   shouldIncludeFirstPartyOnlyBetas(): OCC's port of that predicate predates
+ *   the 'anthropic_aws' provider and omits it, which would kill D8's
+ *   anthropicAws arm (the official DOES send the header there). The surviving
+ *   Qy condition is the CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS arm.
+ * - Official 'anthropicAws' → OCC provider 'anthropic_aws'.
+ * - Official D8 excludes anthropicGoogleCloud; OCC folds googleCloud into
+ *   firstParty (no separate provider surface) — documented acceptable
+ *   divergence.
+ * - L1's hipaa-taint arm is omitted — OCC has no classifier taint registry
+ *   (same documented omission as shouldSendExtendedCacheTtlBeta).
+ */
+export function shouldIncludePromptCachingScopeBeta(): boolean {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+    return false
+  }
+  if (!isFirstPartyAnthropicBaseUrl()) {
+    return false
+  }
+  const provider = getAPIProvider()
+  return provider === 'firstParty' || provider === 'anthropic_aws'
+}
+
+/**
  * Global-scope prompt caching is firstParty only. Foundry is excluded because
  * GrowthBook never bucketed Foundry users into the rollout experiment — the
  * treatment data is firstParty-only.
@@ -424,8 +467,12 @@ export const getAllModelBetas = memoize((model: string): string[] => {
     betaHeaders.push(WEB_SEARCH_BETA_HEADER)
   }
 
-  // Always send the beta header for 1P. The header is a no-op without a scope field.
-  if (includeFirstPartyOnlyBetas) {
+  // CC 2.1.307 (A4): prompt-caching-scope has its own gate (official D8) —
+  // suppressed behind custom base-url gateways and on Foundry, where the
+  // header has no effect. Still a no-op without a scope field on stock 1P.
+  // The global-cache second site in claude.ts (shouldUseGlobalCacheScope) is
+  // UNCHANGED in the official v307 and stays as-is.
+  if (shouldIncludePromptCachingScopeBeta()) {
     betaHeaders.push(PROMPT_CACHING_SCOPE_BETA_HEADER)
   }
 

@@ -1,4 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { McpConnectionState } from './sendTracking.js'
 import type {
   Resource,
   ServerCapabilities,
@@ -272,6 +274,19 @@ export type ConnectedMCPServer = {
    * /mcp renders "connected · tools fetch failed" instead of hard-failing.
    */
   toolsFetchError?: string
+  /**
+   * 2.1.307 B3: the live transport (official `Z.transport`). Read at tool-call
+   * entry for the `transport?.sessionId===void 0` staleness probe; the SDK
+   * only exposes `sessionId` on the HTTP/SSE transports, hence the
+   * intersection.
+   */
+  transport?: Transport & { sessionId?: string }
+  /**
+   * 2.1.307 B3: per-connection state (official `fe`): the transport close
+   * reason, tools/call send tracking (wired for http/claudeai-proxy at
+   * connect success), and the set of in-flight tool-call watchdogs.
+   */
+  connectionState?: McpConnectionState
 }
 
 export type FailedMCPServer = {

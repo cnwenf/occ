@@ -180,6 +180,9 @@ function buildPrompt(
 export function registerClaudeApiSkill(): void {
   registerBundledSkill({
     name: 'claude-api',
+    // CC 2.1.307 (B7): official verbatim short menu description
+    // (`Ri({name:"claude-api",menuDescription:"Build and debug apps that use the Claude API",...})`).
+    menuDescription: 'Build and debug apps that use the Claude API',
     description:
       'Build apps with the Claude API or Anthropic SDK.\n' +
       'TRIGGER when: code imports `anthropic`/`@anthropic-ai/sdk`/`claude_agent_sdk`, or user asks to use Claude API, Anthropic SDKs, or Agent SDK.\n' +
