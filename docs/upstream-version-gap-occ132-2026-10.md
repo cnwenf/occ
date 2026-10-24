@@ -90,4 +90,7 @@ Pairwise repro combos after fixes (each 0 fail): cleanup+otel+apiKeyHelper (34),
 
 ## §6 Release record
 
-(To be appended in the release commit: version bump 2.1.403 → 2.1.404, tag, CI status, GitHub Release.)
+- Feature commit `5d0a0832` (`feat(2.1.310): OCC-132 official 2.1.309→2.1.310 alignment — all 6 PORT items + env sweep find`) landed on `main` via fast-forward push (`4b08a123..5d0a0832`; repo history convention is linear — prior rounds OCC-130/131 likewise landed feature commits directly on main, no merge commits).
+- Release: `chore(release): 2.1.404` on main (package.json 2.1.403 → 2.1.404 + CHANGELOG `## 2.1.404 - 2026-10-25` + this §6), tag `v2.1.404` pushed.
+- npm publish: expected to FAIL with E404 (`@cnwenf/occ` package does not exist on npm and the registry lacks permission for the scoped name — known debt since v2.1.367; OCC-127/OCC-129 blocked awaiting admin-configured `NPM_TOKEN`). GitHub Release therefore created MANUALLY per the OCC-129 precedent: `gh release create v2.1.404 --generate-notes --title v2.1.404` (no `--target` — tag already on main).
+- CI run status + Release verification: recorded in the issue result comment (releases count == tags count check).
