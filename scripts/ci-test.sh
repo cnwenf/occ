@@ -74,8 +74,18 @@ for f in "${TEST_FILES[@]}"; do
   FILE_COUNT=$((FILE_COUNT + 1))
   # --timeout 10000: per-test timeout (CLI flag; bunfig.toml [test] timeout
   # doesn't work in bun 1.3.14, CLI flag is the fallback).
-  OUTPUT=$(bun test "$f" --timeout 10000 2>&1)
+  # OCC-131: outer wall-clock cap + file capture. `bun --timeout` bounds TEST
+  # BODIES only — module top-level evaluation, beforeAll/afterAll hooks and
+  # process exit are NOT bounded, and a bun hung in any of them blocks this
+  # script forever while $(...) buffers every byte of output invisibly (seen
+  # in CI: 68 min, zero log lines). timeout(1) bounds the wait; capturing to
+  # a file preserves bun's partial output so the tail dump below shows the
+  # last test/module line reached before the stall.
+  OUTPUT_FILE=$(mktemp)
+  timeout -k 5 600 bun test "$f" --timeout 10000 >"$OUTPUT_FILE" 2>&1
   EXIT_CODE=$?
+  OUTPUT=$(cat "$OUTPUT_FILE")
+  rm -f "$OUTPUT_FILE"
 
   # Extract counts from the last summary line.
   # Bun prints: "  N pass  M fail  K skip" or similar.
@@ -93,6 +103,14 @@ for f in "${TEST_FILES[@]}"; do
     echo "FAIL  $f  ($FAIL_COUNT fail, $PASS_COUNT pass, $SKIP_COUNT skip)"
     # Print the failing test output for CI log readability.
     echo "$OUTPUT" | grep -E '^\s*\(fail\)|^\s*✗|error:|Error:' | head -10
+    if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 137 ]; then
+      # OCC-131: bun was killed by the wall-clock cap — the greps above find
+      # nothing on a hang. Dump the raw tail: the last lines show exactly
+      # where bun stalled.
+      echo "      TIMEOUT: bun did not finish within 600s (exit $EXIT_CODE)"
+      echo "      last output before bun stopped:"
+      echo "$OUTPUT" | tail -25 | sed 's/^/      | /'
+    fi
     echo ""
   else
     echo "OK    $f  ($PASS_COUNT pass, $SKIP_COUNT skip)"
@@ -199,8 +217,15 @@ for pair in "${LEAK_PAIRS[@]}"; do
     echo ""
     continue
   fi
-  LEAK_PAIR_OUTPUT=$(bun test "$LEAK_PAIR_POLLUTER" "$LEAK_PAIR_VICTIM" --timeout 10000 2>&1)
+  # OCC-131: wall-clock cap + file capture (same rationale as the per-file
+  # runner above — this exact phase hung a CI runner for 68 min with zero
+  # log output at 285 -> mcpAllowedVarExemption306). Pairs normally finish
+  # in ~1-20s; 300s is a generous bound. Exit 124/137 = killed by the cap.
+  LEAK_PAIR_OUTFILE=$(mktemp)
+  timeout -k 5 300 bun test "$LEAK_PAIR_POLLUTER" "$LEAK_PAIR_VICTIM" --timeout 10000 >"$LEAK_PAIR_OUTFILE" 2>&1
   LEAK_PAIR_EXIT=$?
+  LEAK_PAIR_OUTPUT=$(cat "$LEAK_PAIR_OUTFILE")
+  rm -f "$LEAK_PAIR_OUTFILE"
   LEAK_PAIR_PASS=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ pass' | tail -1 | grep -oE '[0-9]+' || echo 0)
   LEAK_PAIR_FAIL=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ fail' | tail -1 | grep -oE '[0-9]+' || echo 0)
   LEAK_PAIR_FILES=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE 'across [0-9]+ files?' | tail -1 | grep -oE '[0-9]+' || echo 0)
@@ -212,9 +237,14 @@ for pair in "${LEAK_PAIRS[@]}"; do
     echo "FAIL  same-worker leak pair  ($LEAK_PAIR_FAIL fail, $LEAK_PAIR_PASS pass, $LEAK_PAIR_FILES files)"
     echo "      polluter: $LEAK_PAIR_POLLUTER"
     echo "      victim:   $LEAK_PAIR_VICTIM"
+    if [ "$LEAK_PAIR_EXIT" -eq 124 ] || [ "$LEAK_PAIR_EXIT" -eq 137 ]; then
+      echo "      TIMEOUT: bun did not finish within 300s (exit $LEAK_PAIR_EXIT)"
+    fi
     echo "      A failure here means a mock.module delegation leak guard"
     echo "      (mockActive pass-through) on the polluter side has regressed."
     echo "$LEAK_PAIR_OUTPUT" | grep -E '^\s*\(fail\)|^\s*✗|error:|Error:' | head -10
+    echo "      last output before bun stopped:"
+    echo "$LEAK_PAIR_OUTPUT" | tail -40 | sed 's/^/      | /'
     echo ""
   else
     echo "OK    same-worker leak pair  ($LEAK_PAIR_PASS pass across $LEAK_PAIR_FILES files)"

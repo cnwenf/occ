@@ -71,11 +71,63 @@ function writeManagedMcpJson(mcpServers: Record<string, unknown>): void {
 // branch dies (zero servers). beforeAll clears both path memos after the env
 // wiring so the first call re-memoizes under the override; afterAll clears
 // again to un-pin for later files.
-const { getManagedFilePath, getManagedSettingsDropInDir } = await import(
-  '../../../utils/settings/managedPath.js'
-)
+//
+// OCC-131 CI-hang fix: ALL module loads in this file (managedPath.js,
+// settings.js, the settings mock.module registration and the cache-busted
+// config.js instance) used to run at MODULE TOP LEVEL. In a same-worker pair
+// run bun evaluates both files' top levels CONCURRENTLY, so this file's
+// mock.module() fired while the polluter's (mcpGetDynamicScope285's heavy
+// mcp.js-handler chain) module graph was still mid-evaluation — on the CI
+// runner that combination deadlocked bun's module loader (68+ min, zero
+// output, both attempts; NOT reproducible locally, and pair #6's victim has
+// a top-level TLA import but registers no mock, while the 296 pairs register
+// top-level mocks but against a light polluter graph — only THIS pair has
+// both). Loading everything inside beforeAll serializes it strictly after
+// every file's top level has settled, mirroring the load sequence of the
+// per-file run that has always passed in CI.
+type ManagedPathModule = typeof import('../../../utils/settings/managedPath.js')
+type SettingsModule = typeof import('../../../utils/settings/settings.js')
+type ConfigModule = typeof import('../config.js')
 
-beforeAll(() => {
+let managedPathModule: ManagedPathModule
+let actualSettings: SettingsModule
+// OCC-131 hang fix — BY-VALUE snapshot of the real settings exports, taken
+// in beforeAll BEFORE any mock.module registration. bun's mock.module
+// RETROACTIVELY re-points the live bindings of already-captured namespace
+// objects (the ci-test.sh pair-2 warning): spreading `actualSettings` at
+// afterAll time copies the shim back in, re-installing it process-wide.
+// The re-installed shim then delegates to `actualSettings.getInitialSettings`
+// — which now resolves to the shim ITSELF. ESM is strict mode and bun's JSC
+// implements proper tail calls, so that self-recursion NEVER overflows the
+// stack: it spins synchronously at 100% CPU, starving the event loop (no
+// timer, no per-test timeout, no inspector). Trigger: any later same-process
+// file whose background work calls getInitialSettings() (rb295's headless
+// redial → getAllMcpConfigs → isMcpServerDenied). Every factory below must
+// spread/delegate through THIS snapshot, never the live namespace.
+let pristineSettingsExports: SettingsModule
+let doesEnterpriseMcpConfigExist: ConfigModule['doesEnterpriseMcpConfigExist']
+let getClaudeCodeMcpConfigs: ConfigModule['getClaudeCodeMcpConfigs']
+let isMcpServerAllowedByPolicy: ConfigModule['isMcpServerAllowedByPolicy']
+
+// OCC-97: Bun's mock.module leaks across test files in the same worker.
+// Spread the real module, override only what this test drives, restore after.
+// OCC-131: delegation + `mockActive` pass-through (the autoDefaultNudge296
+// pattern) — when this suite is NOT the file currently running, the
+// registration passes through to the REAL getInitialSettings, so a
+// same-worker sibling whose tests run under any file order never binds the
+// fake. Registered in beforeAll (see the CI-hang note above).
+let currentSettings: Record<string, unknown> = {}
+let settingsMockActive = false
+
+beforeAll(async () => {
+  managedPathModule = await import(
+    '../../../utils/settings/managedPath.js'
+  )
+  actualSettings = await import('../../../utils/settings/settings.js')
+  // Snapshot by value NOW — before mock.module re-points the live bindings
+  // of `actualSettings` (see the pristineSettingsExports declaration comment).
+  pristineSettingsExports = { ...actualSettings } as SettingsModule
+
   savedEnv = {
     USER_TYPE: process.env.USER_TYPE,
     CLAUDE_CODE_MANAGED_SETTINGS_PATH:
@@ -93,48 +145,46 @@ beforeAll(() => {
   // doesEnterpriseMcpConfigExist is memoized — seed a valid file before the
   // first parse so the enterprise-exclusive branch is live for every test.
   writeManagedMcpJson({})
-  getManagedFilePath.cache.clear()
-  getManagedSettingsDropInDir.cache.clear()
-  // Arm the settings-mock delegation (declared below) for this file's tests.
+  managedPathModule.getManagedFilePath.cache.clear()
+  managedPathModule.getManagedSettingsDropInDir.cache.clear()
+
+  mock.module('../../../utils/settings/settings.js', () => ({
+    ...pristineSettingsExports,
+    getInitialSettings: () =>
+      settingsMockActive
+        ? currentSettings
+        : pristineSettingsExports.getInitialSettings(),
+  }))
+
+  // OCC-97 cross-file mock leak: a src/cli/handlers MCP suite `mock.module`s
+  // config.js (with an empty `getClaudeCodeMcpConfigs`) at its top level, and
+  // Bun evaluates every test file's top level before any afterAll restore —
+  // so a plain top-level import here binds that leaked fake and #P9 sees zero
+  // servers. The cache-busted query specifier pulls a genuine config.js
+  // instance no sibling mock intercepts (same remedy mcpGetDynamicScope285
+  // uses); its internal settings.js import still resolves to THIS file's
+  // settings mock registered just above.
+  const cfg = (await import('../config.js?occ-p9-real')) as unknown as ConfigModule
+  doesEnterpriseMcpConfigExist = cfg.doesEnterpriseMcpConfigExist
+  getClaudeCodeMcpConfigs = cfg.getClaudeCodeMcpConfigs
+  isMcpServerAllowedByPolicy = cfg.isMcpServerAllowedByPolicy
+
+  // Arm the settings-mock delegation for this file's tests.
   settingsMockActive = true
 })
-
-// OCC-97: Bun's mock.module leaks across test files in the same worker.
-// Spread the real module, override only what this test drives, restore after.
-// OCC-131: delegation + `mockActive` pass-through (the autoDefaultNudge296
-// pattern) — when this suite is NOT the file currently running, the permanent
-// registration passes through to the REAL getInitialSettings, so a same-worker
-// sibling whose tests run under any file order never binds the fake.
-const actualSettings = await import('../../../utils/settings/settings.js')
-
-let currentSettings: Record<string, unknown> = {}
-let settingsMockActive = false
-
-mock.module('../../../utils/settings/settings.js', () => ({
-  ...actualSettings,
-  getInitialSettings: () =>
-    settingsMockActive ? currentSettings : actualSettings.getInitialSettings(),
-}))
-
-// OCC-97 cross-file mock leak: a src/cli/handlers MCP suite `mock.module`s
-// config.js (with an empty `getClaudeCodeMcpConfigs`) at its top level, and Bun
-// evaluates every test file's top level before any afterAll restore — so a plain
-// top-level import here binds that leaked fake and #P9 sees zero servers. The
-// cache-busted query specifier pulls a genuine config.js instance no sibling
-// mock intercepts (same remedy mcpGetDynamicScope285 uses); its internal
-// settings.js import still resolves to THIS file's settings mock below.
-const {
-  doesEnterpriseMcpConfigExist,
-  getClaudeCodeMcpConfigs,
-  isMcpServerAllowedByPolicy,
-} = await import('../config.js?occ-p9-real')
 
 afterAll(async () => {
   // Flip the delegation flag first so the permanent settings registration
   // passes through to the real module for any later file in the worker.
   settingsMockActive = false
+  // Re-pin with the BY-VALUE pre-mock snapshot — NOT `{...actualSettings}`:
+  // the namespace's live bindings were re-pointed to the shim the moment
+  // beforeAll's mock.module ran, so an afterAll-time spread re-installs the
+  // shim process-wide and its pass-through branch tail-recurses into itself
+  // forever (strict-mode TCO ⇒ no stack overflow ⇒ silent 100%-CPU spin —
+  // the OCC-131 CI hang). See pristineSettingsExports declaration.
   mock.module('../../../utils/settings/settings.js', () => ({
-    ...actualSettings,
+    ...pristineSettingsExports,
   }))
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) {
@@ -145,8 +195,8 @@ afterAll(async () => {
   }
   // Un-pin the shared managed-path memos (seeded under this suite's override)
   // so later files re-memoize under the restored env.
-  getManagedFilePath.cache.clear()
-  getManagedSettingsDropInDir.cache.clear()
+  managedPathModule.getManagedFilePath.cache.clear()
+  managedPathModule.getManagedSettingsDropInDir.cache.clear()
   // OCC-97 half-close (2.1.308 follow-up): doesEnterpriseMcpConfigExist is
   // ALSO memoized (config.ts) — this suite seeds it `true` under the temp
   // managedDir it then rmSyncs. Clear the cache-busted instance's memo, and
