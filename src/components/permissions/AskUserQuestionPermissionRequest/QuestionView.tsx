@@ -1,6 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import figures from 'figures';
 import React, { useCallback, useState } from 'react';
+import { updateLastInteractionTime } from '../../../bootstrap/state.js';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
 import { useAppState } from '../../../state/AppState.js';
@@ -194,6 +195,7 @@ export function QuestionView(t0) {
     if ($[18] !== onUpdateQuestionState || $[19] !== question.multiSelect || $[20] !== questionText) {
       t8 = async (currentValue, setValue) => {
         const result = await editPromptInEditor(currentValue);
+        updateLastInteractionTime(true);
         if (result.content !== null && result.content !== currentValue) {
           setValue(result.content);
           onUpdateQuestionState(questionText, {

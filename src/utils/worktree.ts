@@ -1505,8 +1505,17 @@ export function isEphemeralWorktreePath(worktreePath: string): boolean {
  * dir), it's left in place — a later readdir finding it stale again is harmless.
  */
 export async function cleanupStaleAgentWorktrees(
-  cutoffDate: Date,
+  cutoffDate: Date | null,
 ): Promise<number> {
+  // 2.1.310 changelog item 3: a null cutoff (the guarded cutoff helper in
+  // cleanup.ts returns null when cleanupPeriodDays overflows the Date range)
+  // means SKIP the sweep — the official orchestrator never invokes its sweep
+  // (`vAo`) with a null cutoff: `let O=kS();if(O!==null){...vAo(O,g,!1)...}`
+  // (BIN310 @258283561, byte-verified).
+  if (cutoffDate === null) {
+    return 0
+  }
+
   const gitRoot = findCanonicalGitRoot(getCwd())
   if (!gitRoot) {
     return 0
@@ -1521,6 +1530,13 @@ export async function cleanupStaleAgentWorktrees(
   }
 
   const cutoffMs = cutoffDate.getTime()
+  // Defense in depth (triage-T1 item 3 step 4): every comparison against NaN
+  // is false, so with an invalid cutoff the per-entry keep-skip below would
+  // never fire and the sweep would delete even the NEWEST worktrees. Skip the
+  // sweep instead — same semantics as a null cutoff.
+  if (Number.isNaN(cutoffMs)) {
+    return 0
+  }
   const currentPath = currentWorktreeSession?.worktreePath
   let removed = 0
 
@@ -1540,7 +1556,11 @@ export async function cleanupStaleAgentWorktrees(
     } catch {
       continue
     }
-    if (mtimeMs >= cutoffMs) {
+    // Fail-safe direction: `!(mtimeMs < cutoffMs)` is equivalent to the
+    // official `mtimeMs >= cutoffMs` (BIN310 `vAo`: `if(Se>=S)continue`) for
+    // all real timestamps, but KEEPS the entry if cutoffMs were ever NaN
+    // (the `>=` form would fall through to deletion).
+    if (!(mtimeMs < cutoffMs)) {
       continue
     }
 

@@ -1586,15 +1586,42 @@ function runHeadlessStreaming(
                 ? (request.params.elicitationId as string | undefined)
                 : undefined
 
-            const rawResult = await structuredIO.handleElicitation(
-              serverName,
-              request.params.message,
-              requestedSchema,
-              extra.signal,
-              mode,
-              url,
-              elicitationId,
+            // CC 2.1.310 (#12) — official watchdog counter around the
+            // awaited elicitation (BIN310 dd @275511304), mirrored for the
+            // headless path: attribute ONLY when exactly one tool-call
+            // watchdog is active, increment before the await and decrement
+            // in `finally` (`(tn.openQuestions??1)-1`). This is the arm the
+            // changelog targets — a non-interactive session where the
+            // server's question will never be answered.
+            const activeWatchdogs = Array.from(
+              connection.connectionState?.activeCallWatchdogs ?? [],
             )
+            const attributedWatchdog =
+              activeWatchdogs.length === 1 ? activeWatchdogs[0] : undefined
+            if (attributedWatchdog !== undefined) {
+              attributedWatchdog.openQuestions =
+                (attributedWatchdog.openQuestions ?? 0) + 1
+            }
+
+            let rawResult: Awaited<
+              ReturnType<typeof structuredIO.handleElicitation>
+            >
+            try {
+              rawResult = await structuredIO.handleElicitation(
+                serverName,
+                request.params.message,
+                requestedSchema,
+                extra.signal,
+                mode,
+                url,
+                elicitationId,
+              )
+            } finally {
+              if (attributedWatchdog !== undefined) {
+                attributedWatchdog.openQuestions =
+                  (attributedWatchdog.openQuestions ?? 1) - 1
+              }
+            }
 
             const result = await runElicitationResultHooks(
               serverName,

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test'
 import {
   attachAnalyticsSink,
   _resetForTesting,
@@ -12,13 +12,26 @@ import {
 // Shell.ts, which statically binds `SandboxPolicyRefusalError` from the
 // adapter — a partial factory without it throws "Export named ... not found".
 // Spread the real module (OCC-97 pattern) and override only SandboxManager.
-const actualSandboxAdapter = await import(
-  '../../../utils/sandbox/sandbox-adapter.js'
-)
+// Eager spread copy BEFORE mocking (OCC-97/132): bun patches the captured
+// namespace IN PLACE, so a lazy `...actualSandboxAdapter` spread inside a
+// restore factory would re-pin the MOCK values — and this file previously had
+// NO restore at all, leaking `SandboxManager: { isSandboxingEnabled }` (no
+// `reset`) into every later file (OCC-132 A/B: apparmorUsernsCheck310 +29).
+const actualSandboxAdapter = {
+  ...(await import('../../../utils/sandbox/sandbox-adapter.js')),
+}
 mock.module('../../../utils/sandbox/sandbox-adapter.js', () => ({
   ...actualSandboxAdapter,
   SandboxManager: { isSandboxingEnabled: () => false },
 }))
+
+afterAll(() => {
+  // Explicit re-mock restore from the eager copy — mock.restore() alone does
+  // NOT undo mock.module overrides in a shared-process `bun test src` run.
+  mock.module('../../../utils/sandbox/sandbox-adapter.js', () => ({
+    ...actualSandboxAdapter,
+  }))
+})
 
 // Import the unit under test after mocks are in place.
 const { logPermissionDecision } = await import('../permissionLogging.js')

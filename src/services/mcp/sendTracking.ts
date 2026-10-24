@@ -62,6 +62,15 @@ export interface ToolCallWatchdog {
   offCriticalPath: boolean
   toolUseId?: string
   ownSends?: ToolCallOwnSends
+  /**
+   * CC 2.1.310 (#12) — official `openQuestions` (BIN310 elicitation handler
+   * @275511304): incremented when the server opens an elicitation question
+   * while this watchdog is the ONLY active call (`$n.length===1` attribution
+   * guard), decremented in the handler's `finally`. Read at the tool-call
+   * timeout as `(rt.openQuestions??0)>0` to arm the question-unanswered
+   * message + the `mcp_question_unanswered` error class.
+   */
+  openQuestions?: number
 }
 
 /** Minimal structural view of the SDK transport (only `send` is wrapped). */

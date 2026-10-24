@@ -368,7 +368,12 @@ export function useManageMCPConnections(
           // with the real one (queues elicitation in AppState for UI). Registering
           // here (once per connect) instead of in a [mcpClients] effect avoids
           // re-running for every already-connected server on each state change.
-          registerElicitationHandler(client.client, client.name, setAppState)
+          registerElicitationHandler(
+            client.client,
+            client.name,
+            setAppState,
+            client.connectionState,
+          )
 
           client.client.onclose = () => {
             const configType = client.config.type ?? 'stdio'

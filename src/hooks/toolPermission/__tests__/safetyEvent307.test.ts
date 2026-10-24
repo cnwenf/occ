@@ -55,6 +55,12 @@ const actualEvents = await import(EVENTS_SPEC)
 const actualEventsExports = { ...actualEvents }
 const actualGrowthbook = await import(GROWTHBOOK_SPEC)
 const actualGrowthbookExports = { ...actualGrowthbook }
+// Eager spread copy BEFORE mocking (OCC-97/132): the partial factory used to
+// drop every other export (SandboxManager.reset, SandboxPolicyRefusalError, …)
+// with NO restore, poisoning every later file in a shared-process run
+// (OCC-132 A/B: apparmorUsernsCheck310 +29).
+const actualSandbox = await import(SANDBOX_SPEC)
+const actualSandboxExports = { ...actualSandbox }
 
 type OtelCall = { name: string; attrs: Record<string, string | undefined> }
 const otelCalls: OtelCall[] = []
@@ -74,6 +80,7 @@ mock.module(EVENTS_SPEC, () => ({
 }))
 
 mock.module(SANDBOX_SPEC, () => ({
+  ...actualSandboxExports,
   SandboxManager: { isSandboxingEnabled: () => false },
 }))
 
@@ -94,6 +101,9 @@ mock.module(GROWTHBOOK_SPEC, () => ({
 afterAll(() => {
   mock.module(EVENTS_SPEC, () => ({ ...actualEventsExports }))
   mock.module(GROWTHBOOK_SPEC, () => ({ ...actualGrowthbookExports }))
+  // Explicit re-mock restore — mock.restore() alone does NOT undo mock.module
+  // overrides (OCC-132 A/B evidence).
+  mock.module(SANDBOX_SPEC, () => ({ ...actualSandboxExports }))
 })
 
 // Units under test — imported AFTER the mocks are registered.

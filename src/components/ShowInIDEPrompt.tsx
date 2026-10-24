@@ -7,7 +7,7 @@ import { escapeControlCharsAsEntities } from '../utils/displayEscape.js';
 import { isSupportedVSCodeTerminal } from '../utils/ide.js';
 import { Select } from './CustomSelect/index.js';
 import { Pane } from './design-system/Pane.js';
-import type { PermissionOption, PermissionOptionWithLabel } from './permissions/FilePermissionDialog/permissionOptions.js';
+import type { FileOperationType, PermissionOption, PermissionOptionWithLabel } from './permissions/FilePermissionDialog/permissionOptions.js';
 type Props<A> = {
   filePath: string;
   input: A;
@@ -15,6 +15,12 @@ type Props<A> = {
   options: PermissionOptionWithLabel[];
   ideName: string;
   symlinkTarget?: string | null;
+  // CC 2.1.310 item 5: the official unified dialog renders the ONE Xo warning
+  // block (@274085299) even in showingDiffInIDE mode, with the verb following
+  // operationType and a symlinkUnchecked fallback — both threaded through
+  // here because OCC splits that dialog into two components.
+  symlinkUnchecked?: boolean;
+  operationType?: FileOperationType;
   rejectFeedback: string;
   acceptFeedback: string;
   setFocusedOption: (value: string) => void;
@@ -32,6 +38,8 @@ export function ShowInIDEPrompt(t0) {
     filePath,
     ideName,
     symlinkTarget,
+    symlinkUnchecked,
+    operationType,
     rejectFeedback,
     acceptFeedback,
     setFocusedOption,
@@ -48,17 +56,18 @@ export function ShowInIDEPrompt(t0) {
   } else {
     t1 = $[1];
   }
-  let t2;
-  if ($[2] !== symlinkTarget) {
-    // CC 2.1.291 (G#9): escape the DISPLAYED symlinkTarget so a target whose
-    // name contains \n can't spoof extra dialog lines. The `.startsWith("..")`
-    // working-directory check stays on the RAW value (logic, not display).
-    t2 = symlinkTarget && <Text color="warning">{relative(getCwd(), symlinkTarget).startsWith("..") ? `This will modify ${escapeControlCharsAsEntities(symlinkTarget)} (outside working directory) via a symlink` : `Symlink target: ${escapeControlCharsAsEntities(symlinkTarget)}`}</Text>;
-    $[2] = symlinkTarget;
-    $[3] = t2;
-  } else {
-    t2 = $[3];
-  }
+  // CC 2.1.310 item 5 (official Xo @274085299 — the ONE `This will ${` site
+  // in the 310 binary; "This will modify" = 0 hits in 310 / 2 in 309): verb
+  // follows operationType (`operationType==="read"?"read":"modify"`) and a
+  // symlinkUnchecked fallback renders the byte-verbatim literal "Could not
+  // check where this path leads on disk" (310=2 hits / 309=0). Computed
+  // without cache slots (formerly $[2]/$[3], left unused to avoid
+  // renumbering the _c(36) cache): the expression now has three reactive
+  // inputs and the element is trivial to rebuild.
+  // CC 2.1.291 (G#9): escape the DISPLAYED symlinkTarget so a target whose
+  // name contains \n can't spoof extra dialog lines. The `.startsWith("..")`
+  // working-directory check stays on the RAW value (logic, not display).
+  const t2 = symlinkTarget ? <Text color="warning">{relative(getCwd(), symlinkTarget).startsWith("..") ? `This will ${operationType === "read" ? "read" : "modify"} ${escapeControlCharsAsEntities(symlinkTarget)} (outside working directory) via a symlink` : `Symlink target: ${escapeControlCharsAsEntities(symlinkTarget)}`}</Text> : symlinkUnchecked ? <Text color="warning">Could not check where this path leads on disk</Text> : null;
   let t3;
   if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
     t3 = isSupportedVSCodeTerminal() && <Text dimColor={true}>Save file to continue…</Text>;

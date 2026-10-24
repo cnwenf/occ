@@ -51,6 +51,13 @@ const TRACING_SPEC = '../../../utils/telemetry/sessionTracing.js'
 const EVENTS_SPEC = '../../../utils/telemetry/events.js'
 const SANDBOX_SPEC = '../../../utils/sandbox/sandbox-adapter.js'
 
+// Eager spread copy BEFORE mocking (OCC-97/132): the partial factory used to
+// drop every other export (SandboxManager.reset, SandboxPolicyRefusalError, …)
+// with NO restore, poisoning every later file in a shared-process run
+// (OCC-132 A/B: apparmorUsernsCheck310 +29).
+const actualSandboxAdapter = await import(SANDBOX_SPEC)
+const actualSandboxAdapterExports = { ...actualSandboxAdapter }
+
 mock.module(TRACING_SPEC, () => ({
   ...actualTracingExports,
   endToolBlockedOnUserSpan: (decision?: string, source?: string): void => {
@@ -72,12 +79,16 @@ mock.module(EVENTS_SPEC, () => ({
 // permissionLogging's baseMetadata() reads SandboxManager; mock it so tests
 // don't read settings or spawn dependency-check shells (misreport pattern).
 mock.module(SANDBOX_SPEC, () => ({
+  ...actualSandboxAdapterExports,
   SandboxManager: { isSandboxingEnabled: () => false },
 }))
 
 afterAll(() => {
   mock.module(TRACING_SPEC, () => ({ ...actualTracingExports }))
   mock.module(EVENTS_SPEC, () => ({ ...actualEventsExports }))
+  // Explicit re-mock restore — mock.restore() alone does NOT undo mock.module
+  // overrides (OCC-132 A/B evidence).
+  mock.module(SANDBOX_SPEC, () => ({ ...actualSandboxAdapterExports }))
 })
 
 // Units under test — imported AFTER the mocks are registered.

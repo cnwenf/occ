@@ -4964,6 +4964,76 @@ export async function callMCPToolWithUrlElicitationRetry({
   }
 }
 
+/**
+ * CC 2.1.310 (#12) — official BIN310 constants region @243058412, verbatim:
+ * `o8s` (question-unanswered arm, NEW in 310) and `cWr` (outcome-unknown arm,
+ * pre-existing 309 baseline). Byte-verified via `grep -aboF` against the
+ * 2.1.310 / 2.1.309 linux ELFs (o8s: 2/0 hits, cWr: 2/2 hits).
+ */
+export const MCP_QUESTION_UNANSWERED_MSG =
+  "The server asked the user a question, and no answer came before the time limit. Do not call this tool again in this turn. Tell the user that the server's question got no answer, and wait for their reply."
+export const MCP_OUTCOME_UNKNOWN_MSG =
+  'The outcome is unknown: the call may have finished, may still be running, or may never have started. Check what it did before you repeat it.'
+
+/**
+ * CC 2.1.310 (#12) — the tool-call timeout rejection composition, verbatim
+ * from the official setTimeout callback (BIN310 dd @278877100+2400):
+ *
+ *   let At=`MCP server "${Tt}" tool "${lt}" timed out after
+ *           ${Math.floor(Ut/1000)}s`,
+ *       Bt=$t.size>0,                     // in-flight sends for this call
+ *       dt=(rt.openQuestions??0)>0,       // server question still open
+ *       zt=[...dt?[o8s]:[],...Bt?[cWr]:[]];
+ *   ft(Object.assign(new R(zt.length>0?`${At}. ${zt.join(" ")}`:At,
+ *       "MCP tool timeout",Bt?BJn:dt?s8s:void 0),
+ *       {mcpErrorSource:"downstream_unreachable"}))
+ *
+ * `$t` is officially the watchdog's own in-flight-sends Map (`Fe`, fed by the
+ * requestSent/requestTaken/requestAnswered/requestNotRun answer-tracking
+ * callbacks — a 309-era subsystem OCC has not ported). OCC's faithful analog
+ * from the 2.1.307 B3 send tracking: a send is still in flight (outcome
+ * unknown) when it was started and NOT definitively ran-nothing, i.e.
+ * `ownSends.started > ownSends.ranNothing`.
+ *
+ * The official 3rd ctor arg lands on `this.errorClass` (official `R` class:
+ * `constructor(n,e,t){...this.errorClass=t}`); OCC's TelemetrySafeError
+ * (src/utils/errors.ts — outside this WP's file scope) has a 2-arg ctor, so
+ * `errorClass` rides the same `Object.assign` as `mcpErrorSource`. Observable
+ * shape is identical (undefined is assigned when neither arm fires, matching
+ * the official `void 0`).
+ */
+export function buildMcpToolTimeoutRejection(
+  name: string,
+  tool: string,
+  timeoutMs: number,
+  watchdog: ToolCallWatchdog,
+): TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS & {
+  errorClass: string | undefined
+  mcpErrorSource: string
+} {
+  const base = `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`
+  const hasInFlight =
+    (watchdog.ownSends?.started ?? 0) > (watchdog.ownSends?.ranNothing ?? 0)
+  const openQuestion = (watchdog.openQuestions ?? 0) > 0
+  const parts = [
+    ...(openQuestion ? [MCP_QUESTION_UNANSWERED_MSG] : []),
+    ...(hasInFlight ? [MCP_OUTCOME_UNKNOWN_MSG] : []),
+  ]
+  const error =
+    new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+      parts.length > 0 ? `${base}. ${parts.join(' ')}` : base,
+      'MCP tool timeout',
+    )
+  return Object.assign(error, {
+    errorClass: hasInFlight
+      ? 'mcp_call_unanswered'
+      : openQuestion
+        ? 'mcp_question_unanswered'
+        : undefined,
+    mcpErrorSource: 'downstream_unreachable',
+  })
+}
+
 async function callMCPTool({
   client: { client, name, config, connectionState, transport },
   tool,
@@ -5031,19 +5101,18 @@ async function callMCPTool({
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
-        (reject, name, tool, timeoutMs) => {
-          reject(
-            new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-              `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
-              'MCP tool timeout',
-            ),
-          )
+        // CC 2.1.310 (#12): official passes (reject, server, tool, timeoutMs,
+        // inFlightSends, watchdog) into the callback and composes the
+        // two-arm rejection — see buildMcpToolTimeoutRejection.
+        (reject, name, tool, timeoutMs, watchdog) => {
+          reject(buildMcpToolTimeoutRejection(name, tool, timeoutMs, watchdog))
         },
         timeoutMs,
         reject,
         name,
         tool,
         timeoutMs,
+        callWatchdog,
       )
     })
 

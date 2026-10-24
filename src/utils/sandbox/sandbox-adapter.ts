@@ -78,6 +78,11 @@ import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { getPluginSeedDirs } from '../plugins/pluginDirectories.js'
 import { ripgrepCommand } from '../ripgrep.js'
 import {
+  checkApparmorUsernsBlock,
+  createApparmorUsernsProbe,
+  resolveBubblewrapPath,
+} from './apparmorUsernsCheck.js'
+import {
   getWindowsSideMountPoints,
   isPathAtOrUnder,
   type WslMountTableReader,
@@ -1391,13 +1396,40 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
 /**
  * Check if dependencies are available (memoized)
  * Returns { errors, warnings } - errors mean sandbox cannot run
+ *
+ * CC 2.1.310 changelog item 11 (official `Zde` gate, byte-verified): on
+ * linux/wsl with zero dependency errors and no runtime initialization
+ * (started), consult the AppArmor unprivileged-userns probe; a hit REPLACES
+ * the (empty) errors with the single verbatim remedy message. Official gate:
+ * `(O()==="linux"||O()==="wsl") && errors.length===0 && !Ge().runtimeInitialized`.
+ * OCC mapping: `Ge().runtimeInitialized` has no OCC field (never set true
+ * until initialize() succeeds); the existing `initializationPromise`
+ * (assigned synchronously at initialize() start, cleared on failure and in
+ * reset()) is the adapter's init state — `initializationPromise === undefined`
+ * gates identically for this memoized probe. Official `UV()` error/warning
+ * sanitization and the `FV()` early-return leg are NOT ported (out of
+ * item-11 scope).
  */
 const checkDependencies = memoize((): SandboxDependencyCheck => {
   const { rgPath, rgArgs } = ripgrepCommand()
-  return BaseSandboxManager.checkDependencies({
+  const base = BaseSandboxManager.checkDependencies({
     command: rgPath,
     args: rgArgs,
   })
+  const platform = getPlatform()
+  if (
+    (platform === 'linux' || platform === 'wsl') &&
+    base.errors.length === 0 &&
+    initializationPromise === undefined
+  ) {
+    const apparmorMessage = checkApparmorUsernsBlock(
+      createApparmorUsernsProbe(resolveBubblewrapPath),
+    )
+    if (apparmorMessage !== undefined) {
+      return { ...base, errors: [apparmorMessage] }
+    }
+  }
+  return base
 })
 
 function getSandboxEnabledSetting(): boolean {

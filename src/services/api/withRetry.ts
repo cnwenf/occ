@@ -98,9 +98,22 @@ let maxRetriesClampWarned = false
  * MAX_RETRIES cap-at-15 is not applied, mid-stream 529s are retried, and the
  * "background drop" / "custom 529 overload" / "retry-after too long" throws
  * are suppressed. Mirrors the binary's `vge()`.
+ *
+ * CC 2.1.310 (triage-T3-sweep B-1): official 310 gate (@249421445,
+ * byte-recovered; CLAUDE_CODE_RETRY_WATCHDOG_SCOPE has 3 hits in the 310 ELF
+ * — env table @116653064, export map @237740334, this gate — vs 0 in 309):
+ *   `function zb(){return i.CLAUDE_CODE_RETRY_WATCHDOG&&
+ *     i.CLAUDE_CODE_RETRY_WATCHDOG_SCOPE!=="capacity"}`
+ * with the env-table enum `["capacity"]` — SCOPE=capacity DISABLES the
+ * watchdog even when the first variable is truthy. The comparison is a strict
+ * case-sensitive `!== "capacity"`; the first clause keeps OCC's pre-existing
+ * isEnvTruthy style.
  */
 export function isRetryWatchdogEnabled(): boolean {
-  return isEnvTruthy(process.env.CLAUDE_CODE_RETRY_WATCHDOG)
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_RETRY_WATCHDOG) &&
+    process.env.CLAUDE_CODE_RETRY_WATCHDOG_SCOPE !== 'capacity'
+  )
 }
 
 /**
@@ -364,6 +377,27 @@ interface RetryOptions {
    * second 400 flips the latch and returns false so the error surfaces.
    */
   retryContextManagementRefused?: (error: APIError) => boolean
+  /**
+   * CC 2.1.310 (WP-api item-2): when an HTTP 400 reads as the server refusing
+   * effort — official detector `$K` (@248256506, byte-verified): a 400 that
+   * is NOT a thinking-type refusal (`rwe`) and either carries one of the two
+   * pre-310 message conditions ("effort parameter"+"not support", or
+   * "output_config"+"effort"+"extra inputs are not permitted"), or matches
+   * `ID(message,"effort_unsupported")` (capability_rejected token with
+   * right-boundary check), or — the NEW 310 arm — `FK(e,tbe)` (beta-header
+   * refusal matcher `b8t`: the `Unexpected value(s) …` backtick list naming
+   * `effort-2025-11-24`, or `capability_rejected:
+   * beta_header:effort-2025-11-24`) — the retry loop calls this so claude.ts
+   * can run the official `x_t` heal (@249531868): latch the model into the
+   * process-wide effort-unsupported registry, log the verbatim `[effort]`
+   * warn, fire `tengu_effort_unsupported_retry` {model}, and resend ONCE
+   * WITHOUT `output_config.effort` AND without the `effort-2025-11-24` beta
+   * (official verdict `"retry:effort-unsupported"`). The latch gates
+   * `configureEffortParams`, so this process never sends either to this model
+   * again; the per-request one-shot state bounds it to a single extra attempt
+   * per request (a second matching 400 returns false so the error surfaces).
+   */
+  retryEffortRefused?: (error: APIError) => boolean
   /**
    * CC 2.1.300 (#36): when an HTTP 400 points at `tools.N.input_schema`
    * (official `AGe.resolve` regex @107537522 — the API rejected an MCP
@@ -1115,6 +1149,31 @@ export async function* withRetry<T>(
         error instanceof APIError &&
         error.status === 400 &&
         options.retryContextManagementRefused?.(error)
+      ) {
+        attempt--
+        continue
+      }
+
+      // CC 2.1.310 (WP-api item-2): official `x_t` heal arm (@249531868) — an
+      // HTTP 400 that the `$K` detector (@248256506) reads as the server
+      // refusing effort (the `output_config.effort` field or the
+      // `effort-2025-11-24` beta; verdict `"retry:effort-unsupported"`). The
+      // claude.ts handler latches the model into the process-wide
+      // effort-unsupported registry, logs the verbatim warn, fires
+      // tengu_effort_unsupported_retry, and the loop retries without
+      // consuming budget — the params rebuild then omits BOTH the field and
+      // the beta (the latch gates configureEffortParams). One-shot per
+      // request: a second matching 400 flips the state to spent and the
+      // handler returns false, so the error surfaces on the normal
+      // non-retryable 400 path. Chain position: the official dispatch order
+      // could not be byte-pinned (the heal handlers live in a const series);
+      // OCC wires it with the other beta heals — after context_management,
+      // before the tool-schema hook (all arms here are 400-gated with
+      // mutually-exclusive classifiers).
+      if (
+        error instanceof APIError &&
+        error.status === 400 &&
+        options.retryEffortRefused?.(error)
       ) {
         attempt--
         continue

@@ -22,12 +22,44 @@ import { cleanupStaleAgentWorktrees } from './worktree.js'
 
 const DEFAULT_CLEANUP_PERIOD_DAYS = 30
 
-function getCutoffDate(): Date {
+/**
+ * claude-code 2.1.310 changelog: "Fixed background cleanup deleting some
+ * recent files, such as pasted images, when cleanupPeriodDays is set to a
+ * very large value." The Date math is factored into a NaN-guarded helper —
+ * official BIN310 `_e` @258251237 (byte-verified; BIN309 `_S` @260440480 was
+ * the single unguarded function):
+ *   function _e(e){let r=new Date(Date.now()-e*24*60*60*1000);
+ *                  return Number.isNaN(r.getTime())?null:r}
+ * A huge `cleanupPeriodDays` overflows `days * MS_PER_DAY` to Infinity →
+ * Invalid Date → null, and every caller skips its sweep (official callers:
+ * `let r=kS();if(r===null)return E();`). No clamps or max-value caps — the
+ * official has none. Exported for tests (module-internal in the binary).
+ */
+export function cutoffDateFromDays(days: number): Date | null {
+  const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+  return Number.isNaN(cutoffDate.getTime()) ? null : cutoffDate
+}
+
+/**
+ * Official BIN310 `kS` shape @258251302 (byte-verified): settings value
+ * (default 30), the `0 → null` short-circuit, then the guarded Date math via
+ * `cutoffDateFromDays`. The official's optional max-days override parameter
+ * (`if(e!==void 0&&e<s)s=e`) serves call sites OCC does not have — no OCC
+ * caller passes an override, so it is omitted.
+ */
+function getCutoffDate(): Date | null {
   const settings = getSettings_DEPRECATED() || {}
   const cleanupPeriodDays =
     settings.cleanupPeriodDays ?? DEFAULT_CLEANUP_PERIOD_DAYS
-  const cleanupPeriodMs = cleanupPeriodDays * 24 * 60 * 60 * 1000
-  return new Date(Date.now() - cleanupPeriodMs)
+  if (cleanupPeriodDays === 0) {
+    return null
+  }
+  return cutoffDateFromDays(cleanupPeriodDays)
+}
+
+/** Empty sweep result — the official's `E()` returned on a null cutoff. */
+function emptyCleanupResult(): CleanupResult {
+  return { messages: 0, errors: 0 }
 }
 
 export type CleanupResult = {
@@ -93,6 +125,10 @@ async function cleanupOldFilesInDirectory(
 export async function cleanupOldMessageFiles(): Promise<CleanupResult> {
   const fsImpl = getFsImplementation()
   const cutoffDate = getCutoffDate()
+  // 2.1.310: null cutoff → skip the sweep (official `if(r===null)return E();`).
+  if (cutoffDate === null) {
+    return emptyCleanupResult()
+  }
   const errorPath = CACHE_PATHS.errors()
   const baseCachePath = CACHE_PATHS.baseLogs()
 
@@ -154,7 +190,11 @@ async function tryRmdir(dirPath: string, fsImpl: FsOperations): Promise<void> {
 
 export async function cleanupOldSessionFiles(): Promise<CleanupResult> {
   const cutoffDate = getCutoffDate()
-  const result: CleanupResult = { messages: 0, errors: 0 }
+  const result: CleanupResult = emptyCleanupResult()
+  // 2.1.310: null cutoff → skip the sweep (official `if(e===null)return r;`).
+  if (cutoffDate === null) {
+    return result
+  }
   const projectsDir = getProjectsDir()
   const fsImpl = getFsImplementation()
 
@@ -269,7 +309,11 @@ async function cleanupSingleDirectory(
   removeEmptyDir: boolean = true,
 ): Promise<CleanupResult> {
   const cutoffDate = getCutoffDate()
-  const result: CleanupResult = { messages: 0, errors: 0 }
+  const result: CleanupResult = emptyCleanupResult()
+  // 2.1.310: null cutoff → skip the sweep (official `if(i===null)return m;`).
+  if (cutoffDate === null) {
+    return result
+  }
   const fsImpl = getFsImplementation()
 
   let dirents
@@ -304,7 +348,11 @@ export function cleanupOldPlanFiles(): Promise<CleanupResult> {
 
 export async function cleanupOldFileHistoryBackups(): Promise<CleanupResult> {
   const cutoffDate = getCutoffDate()
-  const result: CleanupResult = { messages: 0, errors: 0 }
+  const result: CleanupResult = emptyCleanupResult()
+  // 2.1.310: null cutoff → skip the sweep (official `if(r===null)return e;`).
+  if (cutoffDate === null) {
+    return result
+  }
   const fsImpl = getFsImplementation()
 
   try {
@@ -349,7 +397,11 @@ export async function cleanupOldFileHistoryBackups(): Promise<CleanupResult> {
 
 export async function cleanupOldSessionEnvDirs(): Promise<CleanupResult> {
   const cutoffDate = getCutoffDate()
-  const result: CleanupResult = { messages: 0, errors: 0 }
+  const result: CleanupResult = emptyCleanupResult()
+  // 2.1.310: null cutoff → skip the sweep (official `if(r===null)return e;`).
+  if (cutoffDate === null) {
+    return result
+  }
   const fsImpl = getFsImplementation()
 
   try {
@@ -395,7 +447,11 @@ export async function cleanupOldSessionEnvDirs(): Promise<CleanupResult> {
  */
 export async function cleanupOldDebugLogs(): Promise<CleanupResult> {
   const cutoffDate = getCutoffDate()
-  const result: CleanupResult = { messages: 0, errors: 0 }
+  const result: CleanupResult = emptyCleanupResult()
+  // 2.1.310: null cutoff → skip the sweep (official `if(r===null)return e;`).
+  if (cutoffDate === null) {
+    return result
+  }
   const fsImpl = getFsImplementation()
   const debugDir = join(getClaudeConfigHomeDir(), 'debug')
 
@@ -434,6 +490,10 @@ export async function cleanupOldDebugLogs(): Promise<CleanupResult> {
  */
 export async function cleanupOldMiscConfigDirs(): Promise<CleanupResult> {
   const cutoffDate = getCutoffDate()
+  // 2.1.310: null cutoff → skip the sweep (official `if(r===null)return e;`).
+  if (cutoffDate === null) {
+    return emptyCleanupResult()
+  }
   const configDir = getClaudeConfigHomeDir()
   let result: CleanupResult = { messages: 0, errors: 0 }
   for (const subdir of ['tasks', 'shell-snapshots', 'backups']) {
@@ -622,10 +682,18 @@ export async function cleanupOldMessageFilesInBackground(): Promise<void> {
   // 2.1.117: sweep tasks/, shell-snapshots/, backups/.
   await cleanupOldMiscConfigDirs()
   await cleanupOldImageCaches()
-  await cleanupOldPastes(getCutoffDate())
-  const removedWorktrees = await cleanupStaleAgentWorktrees(getCutoffDate())
-  if (removedWorktrees > 0) {
-    logEvent('tengu_worktree_cleanup', { removed: removedWorktrees })
+  // 2.1.310: pastes + the stale-worktree sweep run only on a valid cutoff —
+  // official BIN310 @258283561: `let O=kS();if(O!==null){await z1s(O,e);...
+  // let A=await vAo(O,g,!1);if(A>0)a("tengu_worktree_cleanup",{removed:A});...}`.
+  // (OCC's cleanupOldImageCaches takes no cutoff — session-keyed, not
+  // age-based — so it stays outside the guard.)
+  const cutoffDate = getCutoffDate()
+  if (cutoffDate !== null) {
+    await cleanupOldPastes(cutoffDate)
+    const removedWorktrees = await cleanupStaleAgentWorktrees(cutoffDate)
+    if (removedWorktrees > 0) {
+      logEvent('tengu_worktree_cleanup', { removed: removedWorktrees })
+    }
   }
   if (process.env.USER_TYPE === 'ant') {
     await cleanupNpmCacheForAnthropicPackages()

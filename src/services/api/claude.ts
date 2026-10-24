@@ -632,6 +632,199 @@ export function should1hCacheTTL(
   )
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.310 (WP-api item-2): the effort-beta 400 refusal detector — official
+// `$K` (@248256506, byte-verified) and its helpers. The 309→310 delta is the
+// new `||FK(e,tbe)` arm (309's `Xq` is identical minus that arm); `tbe` is
+// the effort beta descriptor `k("effort","effort-2025-11-24")` (@239560533
+// region).
+// ---------------------------------------------------------------------------
+
+/** Official `gm` (@245174178): the capability_rejected message prefix. */
+const CAPABILITY_REJECTED_PREFIX = 'capability_rejected: '
+
+/**
+ * Official `ID` (@248256xxx region, byte-verified) with
+ * `uMo(e){return`${gm}${e}`}`: true when `capability_rejected: <token>`
+ * occurs in the message with a right boundary — the character after the
+ * match must not be in [A-Za-z0-9_:.-], or the match must end the string.
+ */
+function includesCapabilityRejectedToken(
+  message: string,
+  token: string,
+): boolean {
+  const needle = `${CAPABILITY_REJECTED_PREFIX}${token}`
+  let searchFrom = 0
+  for (;;) {
+    const hit = message.indexOf(needle, searchFrom)
+    if (hit === -1) {
+      return false
+    }
+    const next = message[hit + needle.length]
+    if (next === undefined || !/[A-Za-z0-9_:.-]/.test(next)) {
+      return true
+    }
+    searchFrom = hit + 1
+  }
+}
+
+/**
+ * Official `jbe` (@248248445, byte-verified): the FIRST line of the error's
+ * structured body message (`e.error?.error?.message` when it is a string),
+ * else `e.message` with a leading `^\d{3} ` status prefix stripped.
+ */
+function firstLineOfApiErrorMessage(error: APIError): string {
+  const bodyMessage = (
+    error.error as { error?: { message?: unknown } } | undefined
+  )?.error?.message
+  const text =
+    typeof bodyMessage === 'string'
+      ? bodyMessage
+      : error.message.replace(/^\d{3} /, '')
+  const newline = text.indexOf('\n')
+  return newline === -1 ? text : text.slice(0, newline)
+}
+
+/**
+ * Official `b8t` (@248251960, byte-verified): the beta-header refusal
+ * matcher — the `Unexpected value(s) …` backtick list on the first message
+ * line must name the header, OR the message carries
+ * `capability_rejected: beta_header:<header>`. Official `FK(e,n)` adds an
+ * `S8t.get(n)?.(e.message)` custom-matcher arm, but the effort descriptor
+ * `tbe` is NOT a key of that map (@248252xxx: keys are the context-1m /
+ * context_management / evict / thinking-display / tool-search descriptors),
+ * so `FK(e,tbe)` reduces exactly to `b8t(e,"effort-2025-11-24")`.
+ */
+const UNEXPECTED_BETA_VALUES_PATTERN =
+  /^Unexpected value\(s\) ((?:`[^`]+`(?:, )?)+) for the `anthropic[-_]beta`/
+function matchesRefusedBetaHeader(error: APIError, header: string): boolean {
+  return (
+    UNEXPECTED_BETA_VALUES_PATTERN.exec(firstLineOfApiErrorMessage(error))?.[1]?.includes(
+      `\`${header}\``,
+    ) === true ||
+    includesCapabilityRejectedToken(error.message, `beta_header:${header}`)
+  )
+}
+
+/** Official `mMo` (@245175709, byte-verified): the thinking-type parser. */
+function parseThinkingTypeNotSupported(
+  message: string,
+): 'enabled' | 'adaptive' | undefined {
+  const match =
+    // biome-ignore lint/correctness/noEmptyCharacterClassInRegex: `[^]` is the byte-verbatim official `mMo` (@245175709) any-char-incl-newline class (`[\s\S]` equivalent) — kept faithful to the binary.
+    /thinking\.type[^a-z]{1,8}(enabled|adaptive)[^]*?not supported/i.exec(
+      message,
+    ) ?? /\b(adaptive) thinking is not supported/i.exec(message)
+  return match?.[1]
+    ? (match[1].toLowerCase() as 'enabled' | 'adaptive')
+    : undefined
+}
+
+/** Official `rwe` (@248258028, byte-verified): thinking-type 400 parser. */
+function parseRefusedThinkingType(
+  error: APIError,
+): 'enabled' | 'adaptive' | null {
+  if (error.status !== 400) {
+    return null
+  }
+  const fromMessage = parseThinkingTypeNotSupported(error.message)
+  if (fromMessage) {
+    return fromMessage
+  }
+  if (includesCapabilityRejectedToken(error.message, 'thinking_type:enabled')) {
+    return 'enabled'
+  }
+  if (includesCapabilityRejectedToken(error.message, 'thinking_type:adaptive')) {
+    return 'adaptive'
+  }
+  return null
+}
+
+/**
+ * Official `$K` (@248256506, byte-verified) — the effort-refusal detector:
+ *   `function $K(e){if(!(e instanceof Dt)||e.status!==400)return!1;
+ *    if(rwe(e)!==null)return!1;let n=e.message.toLowerCase();
+ *    if(n.includes("effort parameter")&&n.includes("not support"))return!0;
+ *    if(n.includes("output_config")&&n.includes("effort")&&n.includes(
+ *      "extra inputs are not permitted"))return!0;
+ *    return ID(e.message,"effort_unsupported")||FK(e,tbe)}`
+ * The `instanceof APIError` clause is enforced by the withRetry catch-chain
+ * call site (OCC heal-hook convention); everything else is verbatim. Exported
+ * for the 310 detector unit tests.
+ */
+export function isEffortRefusedError(error: APIError): boolean {
+  if (error.status !== 400) {
+    return false
+  }
+  if (parseRefusedThinkingType(error) !== null) {
+    return false
+  }
+  const lower = error.message.toLowerCase()
+  if (lower.includes('effort parameter') && lower.includes('not support')) {
+    return true
+  }
+  if (
+    lower.includes('output_config') &&
+    lower.includes('effort') &&
+    lower.includes('extra inputs are not permitted')
+  ) {
+    return true
+  }
+  return (
+    includesCapabilityRejectedToken(error.message, 'effort_unsupported') ||
+    matchesRefusedBetaHeader(error, EFFORT_BETA_HEADER)
+  )
+}
+
+// CC 2.1.310 (WP-api item-2): official latch registry —
+// `gAn(e){n().host.requestLatches.markEffortUnsupported(e)}` /
+// `qdr(e){return n().host.requestLatches.effortUnsupportedModels().has(e)}`.
+// The official stores it on the host requestLatches singleton (out of OCC
+// scope); a module-level Set mirrors the process-wide per-model semantics.
+// Marked by the `x_t` heal; consulted by the effort capability readers FIRST
+// (`Tw(e){if(qdr(e))return!1;…}`) — in OCC by configureEffortParams's
+// delete-first gate below, so a latched model never gets `output_config.effort`
+// or the `effort-2025-11-24` beta again for the life of the process.
+const effortUnsupportedModels = new Set<string>()
+
+/** Official `gAn` — mark a model effort-refused for the process lifetime. */
+export function markEffortUnsupported(model: string): void {
+  effortUnsupportedModels.add(model)
+}
+
+/** Official `qdr` — true once the server refused effort for this model. */
+export function isEffortUnsupported(model: string): boolean {
+  return effortUnsupportedModels.has(model)
+}
+
+/** Test-only reset for the process-wide latch (OCC convention). */
+export function resetEffortUnsupportedLatchesForTesting(): void {
+  effortUnsupportedModels.clear()
+}
+
+/**
+ * Official `wt` (@240688167, byte-verified) — the telemetry model sanitizer
+ * used by `x_t`'s `a("tengu_effort_unsupported_retry",{model:wt(Q.model)})`:
+ * conforming ids pass through, everything else reports the literal
+ * 'nonconforming'. Same mapping as toolSearch.ts's private
+ * sanitizeModelForBetaHealTelemetry (that file keeps its copy module-private
+ * and is out of this WP's scope).
+ */
+const EFFORT_TELEMETRY_MODEL_PATTERN = /^[A-Za-z0-9._:[\]-]{1,100}$/
+const EFFORT_TELEMETRY_MODEL_SNAPSHOT_PATTERN =
+  /^[A-Za-z0-9._:[\]-]{1,91}@\d{8}(\[\d{1,3}[mM]\])?$/
+function sanitizeModelForEffortTelemetry(
+  model: string | null | undefined,
+): string | undefined {
+  if (model == null) {
+    return undefined
+  }
+  return EFFORT_TELEMETRY_MODEL_PATTERN.test(model) ||
+    EFFORT_TELEMETRY_MODEL_SNAPSHOT_PATTERN.test(model)
+    ? model
+    : 'nonconforming'
+}
+
 /**
  * Configure effort parameters for API request.
  *
@@ -650,6 +843,12 @@ export function should1hCacheTTL(
  * legacy USER_TYPE=ant branch was removed in the review P2-1 fix. Numeric
  * effortValues are normalized upstream by `resolveAppliedEffort` (official
  * `kE`/`dF`); a numeric value reaching here sends nothing, as in official.
+ * CC 2.1.310 (WP-api item-2): the first gate now also consults the
+ * process-wide effort-unsupported latch — official `Nh`→`Tw` reader chain:
+ * `Tw(e){if(qdr(e))return!1;…}`, i.e. a model the server refused effort for
+ * takes the SAME delete-first branch as an unsupported model (an
+ * EXTRA_BODY-injected `output_config.effort` is removed too) and the
+ * `effort-2025-11-24` beta is never pushed again.
  * Exported for the cap e2e/unit test.
  */
 export function configureEffortParams(
@@ -659,7 +858,7 @@ export function configureEffortParams(
   betas: string[],
   model: string,
 ): void {
-  if (!modelSupportsEffort(model)) {
+  if (!modelSupportsEffort(model) || isEffortUnsupported(model)) {
     delete outputConfig.effort
     return
   }
@@ -1185,6 +1384,15 @@ export async function* executeNonStreamingRequest(
      */
     retryContextManagementRefused?: (error: APIError) => boolean
     /**
+     * CC 2.1.310 (WP-api item-2): the shared one-shot effort-refusal heal
+     * handler (official `x_t` in the sync onApiError fatal-400 chain, verdict
+     * `retry:effort-unsupported`) — wired into the non-streaming fallback too,
+     * so the fallback gets the same handler instance as the streaming loop.
+     * Returns true when the 400 was healed and the request must be resent
+     * WITHOUT `output_config.effort` and the `effort-2025-11-24` beta.
+     */
+    retryEffortRefused?: (error: APIError) => boolean
+    /**
      * CC 2.1.300 (#36): the shared MCP tool input-schema refusal handler
      * (official `AGe`/`sut` @227866518) — the official wires the same
      * resolver instance into the sync onApiError chain too, so the
@@ -1333,6 +1541,8 @@ export async function* executeNonStreamingRequest(
       retryContext1mBetaRefused: retryOptions.retryContext1mBetaRefused,
       // CC 2.1.304 (#22): same-instance context_management beta heal handler.
       retryContextManagementRefused: retryOptions.retryContextManagementRefused,
+      // CC 2.1.310 (WP-api item-2): same-instance effort-refusal heal handler.
+      retryEffortRefused: retryOptions.retryEffortRefused,
       // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
       retryToolSchemaRefused: retryOptions.retryToolSchemaRefused,
       // CC 2.1.306 (#1/#2): same-instance tool-search refuse-recovery handler.
@@ -2578,6 +2788,63 @@ async function* queryModel(
     }
   }
 
+  // CC 2.1.310 (WP-api item-2): official `x_t` heal arm (@249531868,
+  // byte-verified) — the effort-beta 400 heal. Per-request one-shot state
+  // mirroring contextManagementHealState; cross-request suppression is the
+  // process-wide latch (once marked, the params rebuild sends neither
+  // `output_config.effort` nor the `effort-2025-11-24` beta, so a re-fire is
+  // structurally impossible). The official arm has NO try/catch and NO
+  // success-side mark (no tengu_beta_400_healed for effort — the latch is
+  // permanent), so neither is ported; the spent transition is silent because
+  // the official has no second-refusal log text.
+  let effortHealState: 'idle' | 'retrying' | 'spent' = 'idle'
+
+  /**
+   * CC 2.1.310 (WP-api item-2): official `x_t` (@249531868) — the fatal-400
+   * chain handler whose official verdict is `"retry:effort-unsupported"`:
+   *   `x_t=(Qn)=>{if(!$K(Qn))return null;if(gAn(Q.model),ft!==Q.model)
+   *    gAn(ft);return t(`[effort] the server refused effort for model
+   *    ${Q.model} (the output_config.effort field or the anthropic-beta value
+   *    ${tbe.header}). Sending the request again without either; this Claude
+   *    Code process will not send either to this model again.`,{level:"warn"}),
+   *    a("tengu_effort_unsupported_retry",{model:wt(Q.model)}),
+   *    "retry:effort-unsupported"}`
+   * `Q.model` is the caller-facing model and `ft` the resolved wire model
+   * (evidence: `gnt({runtimeOverride:DYe(Q.model),resolvedModel:ft,…})`) —
+   * OCC marks both `options.model` and `normalizeModelStringForAPI(
+   * options.model)` when they differ. Returns true when the 400 was healed
+   * and withRetry must resend WITHOUT `output_config.effort` AND without the
+   * effort beta (the latch gates configureEffortParams on the rebuild).
+   * One-shot per request: a second matching 400 flips the state to spent and
+   * returns false so the error surfaces.
+   */
+  const retryEffortRefused = (error: APIError): boolean => {
+    if (!isEffortRefusedError(error)) {
+      return false
+    }
+    if (effortHealState !== 'idle') {
+      effortHealState = 'spent'
+      return false
+    }
+    effortHealState = 'retrying'
+    markEffortUnsupported(options.model)
+    const wireModel = normalizeModelStringForAPI(options.model)
+    if (wireModel !== options.model) {
+      markEffortUnsupported(wireModel)
+    }
+    logForDebugging(
+      `[effort] the server refused effort for model ${options.model} (the output_config.effort field or the anthropic-beta value ${EFFORT_BETA_HEADER}). Sending the request again without either; this Claude Code process will not send either to this model again.`,
+      { level: 'warn' },
+    )
+    logEvent('tengu_effort_unsupported_retry', {
+      model:
+        sanitizeModelForEffortTelemetry(
+          options.model,
+        ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+    return true
+  }
+
   // CC 2.1.300 (#36): official `eut=new AGe(st)` (@227866518) — one resolver
   // per request over the conversation-scoped refusedToolSchemas map (official
   // `st.refusedToolSchemas`). The official resolve indexes `DB` — the exact
@@ -3247,6 +3514,9 @@ async function* queryModel(
         // CC 2.1.304 (#22): official `Bgt`'s `dde` arm — context_management
         // beta 400 heal (see handler creation above).
         retryContextManagementRefused,
+        // CC 2.1.310 (WP-api item-2): official `x_t` — effort-beta 400 heal
+        // (see handler creation above).
+        retryEffortRefused,
         // CC 2.1.300 (#36): official `AGe`/`sut` — MCP tool input-schema
         // refusal heal (see handler creation above).
         retryToolSchemaRefused,
@@ -4289,6 +4559,8 @@ async function* queryModel(
           retryContext1mBetaRefused,
           // CC 2.1.304 (#22): same-instance context_management heal handler.
           retryContextManagementRefused,
+          // CC 2.1.310 (WP-api item-2): same-instance effort-refusal heal handler.
+          retryEffortRefused,
           // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
           retryToolSchemaRefused,
           // CC 2.1.306 (#1/#2): same-instance tool-search refuse-recovery handler.
@@ -4430,6 +4702,8 @@ async function* queryModel(
             retryContext1mBetaRefused,
             // CC 2.1.304 (#22): same-instance context_management heal handler.
             retryContextManagementRefused,
+            // CC 2.1.310 (WP-api item-2): same-instance effort-refusal heal handler.
+            retryEffortRefused,
             // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
             retryToolSchemaRefused,
             // CC 2.1.306 (#1/#2): same-instance tool-search refuse-recovery handler.

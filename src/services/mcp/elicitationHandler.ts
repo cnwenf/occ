@@ -17,6 +17,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../analytics/index.js'
+import type { McpConnectionState } from './sendTracking.js'
 
 /** Configuration for the waiting state shown after the user opens a URL. */
 export type ElicitationWaitingState = {
@@ -80,10 +81,18 @@ function findElicitationInQueue(
   )
 }
 
+/**
+ * @param connectionState CC 2.1.310 (#12) — the per-server connection state
+ * (official `xe` in the elicitation handler @275511304). Optional so existing
+ * call sites compile unchanged; when present, its `activeCallWatchdogs` drive
+ * the `openQuestions` counter that arms the tool-call timeout's
+ * question-unanswered error.
+ */
 export function registerElicitationHandler(
   client: Client,
   serverName: string,
   setAppState: (f: (prevState: AppState) => AppState) => void,
+  connectionState?: McpConnectionState,
 ): void {
   // Register the elicitation request handler.
   // Wrapped in try/catch because setRequestHandler throws if the client wasn't
@@ -125,6 +134,29 @@ export function registerElicitationHandler(
           mode === 'url' && 'elicitationId' in request.params
             ? (request.params.elicitationId as string | undefined)
             : undefined
+
+        // CC 2.1.310 (#12) — official watchdog counter (BIN310 dd @275511304):
+        //   Gt=Array.from(xe?.activeCallWatchdogs??[]);
+        //   $n=<timing filter>;
+        //   let tn=$n.length===1?$n[0]:void 0;
+        //   if(tn!==void 0)tn.openQuestions=(tn.openQuestions??0)+1;
+        //   try{lr=await e.handleElicitation(...)}
+        //   finally{if(tn!==void 0)tn.openQuestions=(tn.openQuestions??1)-1}
+        // The counter is attributed ONLY when exactly one watchdog is active
+        // (ambiguous otherwise). Official also applies a `timing` vs
+        // `dialledUnder` filter and a questionOpened?/questionClosed?
+        // telemetry fan-out — 309-era machinery OCC has not ported; without
+        // it the filter degenerates to the full set and the fan-out is a
+        // no-op, so neither is added here (minimum viable per the WP).
+        const activeWatchdogs = Array.from(
+          connectionState?.activeCallWatchdogs ?? [],
+        )
+        const attributedWatchdog =
+          activeWatchdogs.length === 1 ? activeWatchdogs[0] : undefined
+        if (attributedWatchdog !== undefined) {
+          attributedWatchdog.openQuestions =
+            (attributedWatchdog.openQuestions ?? 0) + 1
+        }
 
         const response = new Promise<ElicitResult>(resolve => {
           const onAbort = () => {
@@ -177,7 +209,18 @@ export function registerElicitationHandler(
 
           extra.signal.addEventListener('abort', onAbort, { once: true })
         })
-        const rawResult = await response
+        // CC 2.1.310 (#12): decrement in `finally` — the official
+        // `(tn.openQuestions??1)-1` runs even when the awaited resolution
+        // path throws.
+        let rawResult: ElicitResult
+        try {
+          rawResult = await response
+        } finally {
+          if (attributedWatchdog !== undefined) {
+            attributedWatchdog.openQuestions =
+              (attributedWatchdog.openQuestions ?? 1) - 1
+          }
+        }
         logMCPDebug(
           serverName,
           `Elicitation response: ${jsonStringify(rawResult)}`,
