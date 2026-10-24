@@ -2,6 +2,15 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.403 - 2026-10-24 (OCC-131 forward-fix — NEEDS_CHANGES 终审整改发版：T-1 provisioning wiring 测试 + dataflow-01/02/07 修复落地 main（`6776a89c`），验收员独立复验 PASS + F-02 书面 sign-off 授予；v2.1.402 曾随 pre-remediation 树先行发出——gap doc §6.1 已如实记录时间线且不回滚（T-1 为测试覆盖缺口、非运行期回归），本版为整改树 forward-fix)
+
+- T-1（P2 must-fix）：新增 `src/services/mcp/__tests__/flagMcpConfigProvisioningT1309.test.ts` 双探针封死 `--mcp-config` 供给入口 wiring——行为探针按 main.tsx 原序（resolve→parse→collect→set）断言 store 与 `convertToSandboxRuntimeConfig({}).filesystem.denyWrite` 均含字面+realpath 双拼写（覆盖解析失败仍记录 / stat 失败 fail-open / 目录排除）；源码级 wiring pin 断言 collect < setter < fatal-error 早退的顺序关系。Mutation-kill 4/4，验收员独立重跑全部 RED→GREEN
+- dataflow-01/07：`worktree.ts` lazy-fetch 调用点改道 `resolveFetchSshFailFast(buildMergedGitEnv({ ...GIT_NO_PROMPT_ENV }))`，与同函数其他 git spawn 同源；被推翻的 PARTIAL-WIRING 注释替换为准确解释。新增 `worktreeFetchEnvHardening309.test.ts`：敌意 GIT_DIR/GIT_CONFIG_* scrub、SSH_ASKPASS/SSH_ASKPASS_REQUIRE pin 经组合存活、调用点正则 pin + 假注释 absence pin——调用点回退即 RED
+- dataflow-02：`buildMergedGitEnv` 加固默认项落实并声明 deviation #4——默认注入 `GIT_CONFIG_PARAMETERS: GIT_CONFIG_PARAMETERS_BASE`（alias 中和 join，封杀恶意 `.git/config` `alias.remote-*` 走私）+ `GIT_TERMINAL_PROMPT:'0'`；`GIT_ALLOW_PROTOCOL` 有据不默认（会禁掉全部 transport）；幂等守卫确认。gitEnv309 新增 5 测（默认、caller 覆盖优先、敌意 base 替换、inForce 覆盖重建、真实 `/bin/sh` printenv child-env 集成）
+- F-02 书面 sign-off（验收员授予）：`sdkToolRelist.ts:134` 常永 ARMED `gave_up` 门按文档化刻意偏差保留现状——无 Vi relist runner 时解除武装会静默投放陈旧工具（B4 bug 类）；余留成本仅失败期每 turn 起始一次 no-op update + 一条 diag
+- docs：gap doc §7 整改台账（mutation 矩阵、回归门：全量 A/B 对照 +16 tests / 270=270 零新增失败）；§6.1 时间线如实补记（NEEDS_CHANGES 先于 v2.1.402 发出、release commit `30c0f3ab` 信息引用偏差更正、tag 不单方面删改）；P3 随访项（contract-01/02、dataflow-03..06、T-2..T-8 共 12 项）记录于 §7 随下一轮消化
+- CI：整改 commit `6776a89c` run 40071464325 **success**；§6.1 docs commit `1eb1fdf9` run 40073478291 **success**；验收员在精确 head 实跑 3 个整改套件 37 pass / 0 fail / 93 expect
+
 ## 2.1.402 - 2026-10-24 (OCC-131 — 官方 2.1.308→2.1.309 追齐轮：79 条 changelog 逐条对官方 v308/v309 ELF 三方取证 triage（strings/grep -aboF/dd 只读取证、从未执行官方二进制），最终 PORT 23 · STAGED 21 · N-A 35；23 个 PORT 项经 8 个并行工作包（WP-A–H）全部落地；官方用户可见文案逐字节 verbatim，结构性 deviation 全部在 filedoc 声明并附 BIN309 偏移；README Tracks 徽章 → 2.1.309 partial)
 
 - /feedback 组织拒绝原因分类器上线（官方 `As` 逐字节端口：15 值 failureReason 枚举 + `{kind:'org'|'credential'|'transient'|'other'}` refusal 形状；error_code 驱动 — feedback_retention_blocked/feedback_disabled/feedback_third_party_blocked/oauth_scope_insufficient/feedback_check_unavailable，legacy status/message 回退），`normalizeServerMessage`（官方 `ou`：不可见字符正则清洗→空格、折叠+trim、200 字符上限）+ zod `feedbackErrorBodySchema`（`.catch(undefined)` 加固）；展示链 org/credential refusal + 状态后缀 + GitHub-issues 报 bug 指引（官方 `l$o` verbatim：` To report a bug, open an issue at …  Issues are public, so leave out anything confidential.`）；`errorIsFinal`（官方 `Kt`/`fe`）— 终态组织拒绝在编辑后存活、阻断重提交、隐藏重试提示（items 25/66）

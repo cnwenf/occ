@@ -218,6 +218,13 @@ dataflow-01/02 + "复验通过才走 v2.1.402 发版"), posted ~2h BEFORE the re
    delta rides along).
 6. Published tag/release v2.1.402 is NOT deleted or rewritten unilaterally; disposition (keep as
    history vs. mark deprecated in release notes) deferred to 验收员/Leader.
+7. 10-24 07:21 — 验收员 re-verification **PASS** (`1f4a2387`) on `6776a89c`: independent mutation
+   re-runs all RED→GREEN (4 groups), 37 pass / 0 fail / 93 expect at the exact head, CI 40071464325
+   success confirmed; **F-02 sign-off GRANTED** (permanent-armed `gave_up` gate stays as documented
+   deviation #F-02); v2.1.403 forward-fix adopted. Executed per that instruction: version bumped
+   2.1.402→2.1.403, CHANGELOG `## 2.1.403 - 2026-10-24` section added, tag `v2.1.403` on the
+   release commit — this closes the §6.1 chain up to release; Leader 收尾 (flip done + lark) follows
+   验收员 CI 复核.
 
 **npm E404 debt disposition (per Leader item 5)**: no separate issue — the expired-NPM_TOKEN
 blocker (`@cnwenf/occ` npm stuck at 2.1.367, awaiting admin rotation) is already tracked by
