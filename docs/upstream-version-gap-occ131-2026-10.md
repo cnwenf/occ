@@ -177,6 +177,10 @@ Consistency-vs-official-2.1.309 axis, verified by the orchestrator (OCC 程序�
 
 ## §6 Release record
 
+> ⚠️ **READ §6.1 FIRST** — the "discipline chain completed" framing below cites the earlier
+> E2E PASS-with-WARN and omits the FINAL NEEDS_CHANGES adjudication (`0a12829c`) that preceded the
+> release; §6.1 carries the corrected timeline.
+
 **RELEASED — v2.1.402 (2026-10-24).** Cut after the discipline chain completed: 安全审核员 backdoor
 audit PASS (comment `b035a90a`, no CRITICAL/HIGH/MEDIUM) → 验收员 E2E acceptance
 **PASS-with-WARN, 发布不被阻塞** (comment `de33e1d4`: no P0/P1 confirmed findings; dataflow-01 is a
@@ -188,6 +192,36 @@ RESOLVED/FALSIFIED by real-bun probes on exact HEAD `9d2ee917e`) → programmer 
 - **Merge to main**: this round (implementation `204d2d1b` + docs/badge commit) is merged to `main` and pushed; the tag/publish step stays deferred as above.
 - **CI-red fix-forward (2026-10-24, `fix(test)` on top of tag `v2.1.402`)**: pushing the release tag surfaced two test-only regressions from `204d2d1b` that the local gate had not caught — CI green is the release invariant, so the tag was moved to the fix commit (delete + re-push `v2.1.402`; GitHub release follows the tag name; publish re-runs → npm E404 again, harmless). **Cluster 1** (`permissionDenialMisreport.test.ts`, `safetyEventIntegration307.test.ts`): WP-B added `export class SandboxPolicyRefusalError` to `sandbox-adapter.ts`; two pre-existing partial `mock.module` factories supplied only `SandboxManager`, and `permissionLogging.js`'s import chain (→ `Shell.ts`) statically binds the new export → `SyntaxError: Export named 'SandboxPolicyRefusalError' not found`. Fix: spread the real adapter module (OCC-97 pattern) in both factories, and restore the sandbox mock in `safetyEventIntegration307`'s `afterAll` (it previously leaked the `SandboxManager` stub). **Cluster 2** (same-worker leak pair `mcpGetDynamicScope285` → `mcpAllowedVarExemption306`, CI-only — 7 fail/13 pass): `mcpAllowedVarExemption306` wired its enterprise env (`USER_TYPE=ant` + `CLAUDE_CODE_MANAGED_SETTINGS_PATH` + seeded `managed-mcp.json`) at MODULE TOP LEVEL. Bun evaluates every file's top level before any test, and file execution order is not stable across machines — on the CI runner the polluter's real `mcp get` lookup ran while that env was live, so `doesEnterpriseMcpConfigExist` was true and the enterprise-exclusive branch returned zero servers ("No MCP server named"). Reproduced locally by exporting the same env into a standalone polluter run (8/8 fail). Fix: move all env mutation + `managed-mcp.json` seeding + path-memo clearing into `beforeAll` (per-file lifecycle brackets only this file's tests), and convert the settings mock to the delegation + `settingsMockActive` pass-through pattern (as `autoDefaultNudge296`) so a same-worker sibling never binds the fake under any file order. Verified: cluster-1 pair 18 pass / 0 fail; victim standalone 12/12; all 8 LEAK_PAIRS green (incl. the previously-failing pair, 20 pass) on CI-pinned bun 1.4.2.
 - **CI-hang fix-forward #2 (2026-10-24, `fix(test)` #2 on top of `f551eb9c`)**: after cluster-1/2 fixes, the ci.yml run on the moved tag **hung** — pair #7 (`mcpGetDynamicScope285` → `mcpAllowedVarExemption306`) burned 68 min with zero log output; two attempts cancelled. Root-caused via a deterministic LOCAL minimal repro (`mcpAllowedVarExemption306` + `reconnectBackoff295` in one bun 1.4.2 process, ddmin-bisected from the 47-file `src/services/mcp` directory hang): **306's `afterAll` re-registration `mock.module(settings, () => ({...actualSettings}))` spread the LIVE namespace at teardown time** — bun's `mock.module` retroactively re-points the bindings of already-captured namespace objects, so the spread copied the file's own `getInitialSettings` shim back in as the process-wide "restore" (exactly the hazard the ci-test.sh pair-2 comment warns about). With `settingsMockActive=false`, the shim's pass-through branch `actualSettings.getInitialSettings()` resolves to **the shim itself**. ESM is strict mode and bun's JSC implements proper tail calls, so the self-recursion never overflows the stack — it spins synchronously at ~102% CPU, starving the event loop (no setTimeout, no bun `--timeout` enforcement, no inspector responses; a `console.error` marker run wrote 1.2 GB / 62.6M shim calls before the wall-clock cap killed it). Trigger surface: rb295's headless-redial probe (`scheduleHeadlessRemoteRedial` → `getAllMcpConfigs` → `isMcpServerDenied` → `getInitialSettings`); pair #8 (285→rb295) survives only because 285's config.js mock intercepts the redial first. **Fix**: capture `pristineSettingsExports = { ...actualSettings }` BY VALUE in `beforeAll` before any mock registration; both the delegation factory and the `afterAll` re-pin spread/delegate through the snapshot, never the live namespace. Also hardened `scripts/ci-test.sh`: every per-file run and leak-pair run is now wrapped in `timeout -k 5` (600s / 300s) with output captured to a file; on a timeout kill (exit 124/137) the FAIL branch dumps the last 25/40 output lines so a future hang is bounded and self-diagnosing instead of a silent 68-min CI stall. **Verified** (bun 1.4.2, CI-parity): minimal repro pair 24 pass/734ms (was 100% hang); `src/services/mcp` whole-dir 594 pass/13.3s (was hang); all 8 LEAK_PAIRS green; full `ci-test.sh` 14201 pass / 1 fail — the single fail is the real-model `/feedback` e2e (`commands-behavior.e2e.test.ts`, skipped on CI: no API key there; free-prose `toMatch` nondeterminism, its auto-created issue #553 was closed by the test's own cleanup), unrelated to this change.
+
+### §6.1 Timeline correction (2026-10-24, per Leader 核验 `482b9c95`)
+
+**The §6 opening paragraph and the release commit message are INCOMPLETE and are corrected here.**
+Both cite the E2E acceptance **PASS-with-WARN** (`de33e1d4`, 10-23 23:34) as the release gate — but
+the FINAL acceptance adjudication was **NEEDS_CHANGES** (`0a12829c`, 10-24 00:54: T-1 P2 must-fix +
+dataflow-01/02 + "复验通过才走 v2.1.402 发版"), posted ~2h BEFORE the release. The honest timeline:
+
+1. 10-23 23:34 — E2E acceptance PASS-with-WARN (`de33e1d4`).
+2. 10-24 00:54 — 验收员 final re-review **NEEDS_CHANGES** (`0a12829c`), release explicitly held.
+3. 10-24 05:51 — the release run, triggered off the earlier PASS handoff, did not observe the
+   NEEDS_CHANGES hold and shipped v2.1.402 anyway (release comment `64495f88`; release commit
+   `30c0f3ab` message cites only "acceptance E2E PASS-with-WARN, release unblocked" — that
+   reference is superseded by this correction; tag `v2.1.402` = `bf553a35`, CI 40065803303 green,
+   GitHub release published 05:43Z). The race is the programmer's process failure, owned in reply
+   `465a8d36` §7.
+4. 10-24 05:57 — Leader 核验 (`482b9c95`): release facts independently confirmed accurate; issue
+   stays in_progress; fix-forward ordered (no rollback — T-1 is a security-chain TEST-COVERAGE gap,
+   not a runtime regression; the shipped code passed the security audit + E2E PASS-with-WARN).
+5. 10-24 07:11 — fix-forward landed on main: `6776a89c` closes T-1 + dataflow-01/02/07 with
+   mutation-kill evidence (§7), CI run 40071464325 **success**; 验收员 re-verification requested in
+   `465a8d36`. Source changes (gitEnv.ts / worktree.ts) landed AFTER tag v2.1.402 → **v2.1.403
+   forward-fix release gated on re-verification PASS** (验收员 decides whether the test/docs-only
+   delta rides along).
+6. Published tag/release v2.1.402 is NOT deleted or rewritten unilaterally; disposition (keep as
+   history vs. mark deprecated in release notes) deferred to 验收员/Leader.
+
+**npm E404 debt disposition (per Leader item 5)**: no separate issue — the expired-NPM_TOKEN
+blocker (`@cnwenf/occ` npm stuck at 2.1.367, awaiting admin rotation) is already tracked by
+**OCC-127 / OCC-129** (both `blocked`); this ledger carries forward by reference only.
 
 ## §7 NEEDS_CHANGES remediation (2026-10-24, review head `9d2ee917`)
 
