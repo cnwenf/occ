@@ -8,7 +8,15 @@ import {
 // Mock the sandbox adapter so logPermissionDecision's baseMetadata() doesn't
 // read settings or spawn dependency-check shells. Must be registered before
 // importing permissionLogging.js (which imports SandboxManager).
+// OCC-131 (2.1.309 WP-B): permissionLogging's import chain now also pulls in
+// Shell.ts, which statically binds `SandboxPolicyRefusalError` from the
+// adapter — a partial factory without it throws "Export named ... not found".
+// Spread the real module (OCC-97 pattern) and override only SandboxManager.
+const actualSandboxAdapter = await import(
+  '../../../utils/sandbox/sandbox-adapter.js'
+)
 mock.module('../../../utils/sandbox/sandbox-adapter.js', () => ({
+  ...actualSandboxAdapter,
   SandboxManager: { isSandboxingEnabled: () => false },
 }))
 

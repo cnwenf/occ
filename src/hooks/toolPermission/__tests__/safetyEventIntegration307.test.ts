@@ -40,6 +40,8 @@ const actualEvents = await import(EVENTS_SPEC)
 const actualEventsExports = { ...actualEvents }
 const actualGrowthbook = await import(GROWTHBOOK_SPEC)
 const actualGrowthbookExports = { ...actualGrowthbook }
+const actualSandboxAdapter = await import(SANDBOX_SPEC)
+const actualSandboxAdapterExports = { ...actualSandboxAdapter }
 
 type OtelCall = { name: string; attrs: Record<string, string | undefined> }
 const otelCalls: OtelCall[] = []
@@ -58,7 +60,11 @@ mock.module(EVENTS_SPEC, () => ({
   },
 }))
 
+// OCC-131 (2.1.309 WP-B): sandbox-adapter gained `SandboxPolicyRefusalError`
+// (consumed by Shell.ts in the import chain) — a partial factory without it
+// throws "Export named ... not found". Spread the real module (OCC-97 pattern).
 mock.module(SANDBOX_SPEC, () => ({
+  ...actualSandboxAdapterExports,
   SandboxManager: { isSandboxingEnabled: () => false },
 }))
 
@@ -79,6 +85,9 @@ mock.module(GROWTHBOOK_SPEC, () => ({
 afterAll(() => {
   mock.module(EVENTS_SPEC, () => ({ ...actualEventsExports }))
   mock.module(GROWTHBOOK_SPEC, () => ({ ...actualGrowthbookExports }))
+  // OCC-131: restore the sandbox adapter too — the SandboxManager stub above
+  // would otherwise leak into later files in the same worker.
+  mock.module(SANDBOX_SPEC, () => ({ ...actualSandboxAdapterExports }))
 })
 
 const { logPermissionDecision } = await import('../permissionLogging.js')

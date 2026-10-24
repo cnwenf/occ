@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -37,26 +37,23 @@ import type { McpServerConfig } from '../types.js'
  * filter path, so no warning string is asserted or invented here.
  */
 
-// --- environment wiring (before any config.js import) --------------------
+// --- environment wiring ------------------------------------------------------
+//
+// OCC-131 CI leak fix: the env wiring below used to run at MODULE TOP LEVEL.
+// Bun evaluates every test file's top level before any tests run, and file
+// execution order is not stable across machines — on the CI runner the
+// same-worker pair (polluter mcpGetDynamicScope285 -> this file) ran the
+// polluter's tests while `USER_TYPE=ant` + `CLAUDE_CODE_MANAGED_SETTINGS_PATH`
+// + a seeded managed-mcp.json from THIS file's top level were live, forcing
+// the polluter's real config lookup into the enterprise-exclusive branch
+// (zero servers, "No MCP server named"). All process-env mutations therefore
+// live in beforeAll/afterAll (per-file lifecycle — guaranteed to bracket only
+// this file's tests), never at top level.
 
 const managedDir = mkdtempSync(join(tmpdir(), 'occ-mcp-306-managed-'))
 const configDir = mkdtempSync(join(tmpdir(), 'occ-mcp-306-config-'))
 
-const savedEnv = {
-  USER_TYPE: process.env.USER_TYPE,
-  CLAUDE_CODE_MANAGED_SETTINGS_PATH:
-    process.env.CLAUDE_CODE_MANAGED_SETTINGS_PATH,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  OCC_P9_TOKEN: process.env.OCC_P9_TOKEN,
-  OCC_P9_CMD: process.env.OCC_P9_CMD,
-}
-
-// getManagedFilePath (memoized) honors the override only for USER_TYPE=ant.
-process.env.USER_TYPE = 'ant'
-process.env.CLAUDE_CODE_MANAGED_SETTINGS_PATH = managedDir
-process.env.CLAUDE_CONFIG_DIR = configDir
-process.env.OCC_P9_TOKEN = 'secret-token-value'
-process.env.OCC_P9_CMD = 'cmd-var-binary'
+let savedEnv: Record<string, string | undefined> = {}
 
 function writeManagedMcpJson(mcpServers: Record<string, unknown>): void {
   writeFileSync(
@@ -65,34 +62,58 @@ function writeManagedMcpJson(mcpServers: Record<string, unknown>): void {
   )
 }
 
-// doesEnterpriseMcpConfigExist is memoized — seed a valid file before the
-// first parse so the enterprise-exclusive branch is live for every test.
-writeManagedMcpJson({})
-
 // OCC-97 cross-file leak, second vector: getManagedFilePath is memoized in
 // managedPath.ts — a SHARED module that even the cache-busted config.js
 // instance below resolves to. In combined runs an earlier suite's preload can
 // seed that memo under the default env (USER_TYPE unset → '/etc/claude-code')
-// before the env wiring above exists, and lodash memoize never re-reads the
+// before the env wiring exists, and lodash memoize never re-reads the
 // override — doesEnterpriseMcpConfigExist then pins false and the enterprise
-// branch dies (zero servers). Clear both path memos after the env wiring so
-// the first call re-memoizes under the override; afterAll clears again to
-// un-pin for later files.
+// branch dies (zero servers). beforeAll clears both path memos after the env
+// wiring so the first call re-memoizes under the override; afterAll clears
+// again to un-pin for later files.
 const { getManagedFilePath, getManagedSettingsDropInDir } = await import(
   '../../../utils/settings/managedPath.js'
 )
-getManagedFilePath.cache.clear()
-getManagedSettingsDropInDir.cache.clear()
+
+beforeAll(() => {
+  savedEnv = {
+    USER_TYPE: process.env.USER_TYPE,
+    CLAUDE_CODE_MANAGED_SETTINGS_PATH:
+      process.env.CLAUDE_CODE_MANAGED_SETTINGS_PATH,
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    OCC_P9_TOKEN: process.env.OCC_P9_TOKEN,
+    OCC_P9_CMD: process.env.OCC_P9_CMD,
+  }
+  // getManagedFilePath (memoized) honors the override only for USER_TYPE=ant.
+  process.env.USER_TYPE = 'ant'
+  process.env.CLAUDE_CODE_MANAGED_SETTINGS_PATH = managedDir
+  process.env.CLAUDE_CONFIG_DIR = configDir
+  process.env.OCC_P9_TOKEN = 'secret-token-value'
+  process.env.OCC_P9_CMD = 'cmd-var-binary'
+  // doesEnterpriseMcpConfigExist is memoized — seed a valid file before the
+  // first parse so the enterprise-exclusive branch is live for every test.
+  writeManagedMcpJson({})
+  getManagedFilePath.cache.clear()
+  getManagedSettingsDropInDir.cache.clear()
+  // Arm the settings-mock delegation (declared below) for this file's tests.
+  settingsMockActive = true
+})
 
 // OCC-97: Bun's mock.module leaks across test files in the same worker.
 // Spread the real module, override only what this test drives, restore after.
+// OCC-131: delegation + `mockActive` pass-through (the autoDefaultNudge296
+// pattern) — when this suite is NOT the file currently running, the permanent
+// registration passes through to the REAL getInitialSettings, so a same-worker
+// sibling whose tests run under any file order never binds the fake.
 const actualSettings = await import('../../../utils/settings/settings.js')
 
 let currentSettings: Record<string, unknown> = {}
+let settingsMockActive = false
 
 mock.module('../../../utils/settings/settings.js', () => ({
   ...actualSettings,
-  getInitialSettings: () => currentSettings,
+  getInitialSettings: () =>
+    settingsMockActive ? currentSettings : actualSettings.getInitialSettings(),
 }))
 
 // OCC-97 cross-file mock leak: a src/cli/handlers MCP suite `mock.module`s
@@ -109,6 +130,9 @@ const {
 } = await import('../config.js?occ-p9-real')
 
 afterAll(async () => {
+  // Flip the delegation flag first so the permanent settings registration
+  // passes through to the real module for any later file in the worker.
+  settingsMockActive = false
   mock.module('../../../utils/settings/settings.js', () => ({
     ...actualSettings,
   }))
