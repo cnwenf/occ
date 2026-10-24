@@ -153,11 +153,56 @@ describe('buildMergedGitEnv (official air — 309 item 10 delta)', () => {
     expect(env.GIT_NO_REPLACE_OBJECTS).toBe('0')
   })
 
-  test('is lighter than Ts: no locale / ssh / hardened-set injection', () => {
+  test('is lighter than Ts: no locale / ssh injection', () => {
     const env = buildMergedGitEnv({}, { base: {} })
     expect(env.LC_ALL).toBeUndefined()
     expect(env.GIT_SSH_COMMAND).toBeUndefined()
-    expect(env.GIT_TERMINAL_PROMPT).toBeUndefined()
+    expect(env.GIT_ALLOW_PROTOCOL).toBeUndefined()
+  })
+
+  test('OCC deviation #4 (dataflow-02): defaults carry the alias-neutralizer base + terminal-prompt-off', () => {
+    // The merged builder feeds the network sinks (worktree fetches, item-56
+    // promisor pre-fetch); official `air` lacks these, OCC adds them as
+    // declared security-positive hardening. GIT_ALLOW_PROTOCOL stays unset
+    // ('/' would disable every transport and break the fetch sinks).
+    const env = buildMergedGitEnv({}, { base: {} })
+    expect(env.GIT_TERMINAL_PROMPT).toBe('0')
+    expect(env.GIT_CONFIG_PARAMETERS).toBe(GIT_CONFIG_PARAMETERS_BASE)
+  })
+
+  test('OCC deviation #4: caller overrides win over the hardening defaults', () => {
+    const env = buildMergedGitEnv(
+      { GIT_TERMINAL_PROMPT: '1', GIT_CONFIG_PARAMETERS: "'custom.key=v'" },
+      { base: {} },
+    )
+    expect(env.GIT_TERMINAL_PROMPT).toBe('1')
+    expect(env.GIT_CONFIG_PARAMETERS).toBe("'custom.key=v'")
+  })
+
+  test('OCC deviation #4: ambient GIT_CONFIG_PARAMETERS / GIT_TERMINAL_PROMPT in base are replaced, not merged', () => {
+    // A hostile ambient env must not be able to prepend its own alias config.
+    const env = buildMergedGitEnv(
+      {},
+      {
+        base: {
+          GIT_CONFIG_PARAMETERS: "'alias.remote-none=/evil'",
+          GIT_TERMINAL_PROMPT: '1',
+        },
+      },
+    )
+    expect(env.GIT_CONFIG_PARAMETERS).toBe(GIT_CONFIG_PARAMETERS_BASE)
+    expect(env.GIT_TERMINAL_PROMPT).toBe('0')
+  })
+
+  test('OCC deviation #4: caller GIT_ALLOW_PROTOCOL rebuild keeps the neutralizers (base treated as empty by Y)', () => {
+    // lazyFetchEnv inForce overlay: GIT_ALLOW_PROTOCOL:'/' + the defaults —
+    // Y must not duplicate the base neutralizers into the rebuilt value.
+    const env = buildMergedGitEnv(
+      { GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '/' },
+      { base: {} },
+    )
+    expect(env.GIT_CONFIG_PARAMETERS).toBe(GIT_CONFIG_PARAMETERS_BASE)
+    expect(env.GIT_ALLOW_PROTOCOL).toBe('/')
   })
 
   test('scrubs GIT_LFS_SKIP_SMUDGE / GIT_NO_LAZY_FETCH to undefined when absent', () => {
@@ -229,6 +274,23 @@ describe('execFileNoThrow gitEnv opt-in wiring', () => {
     )
     // printenv exits 1 and prints nothing when the var is unset (scrubbed).
     expect(r.stdout.trim()).toBe('')
+  })
+
+  test('gitEnv:true injects the OCC neutralizer base + prompt-off into the child (deviation #4)', async () => {
+    const params = await execFileNoThrowWithCwd(
+      '/bin/sh',
+      ['-c', 'printenv GIT_CONFIG_PARAMETERS'],
+      { gitEnv: true, timeout: 5000 },
+    )
+    expect(params.code).toBe(0)
+    expect(params.stdout.trim()).toBe(GIT_CONFIG_PARAMETERS_BASE)
+    const prompt = await execFileNoThrowWithCwd(
+      '/bin/sh',
+      ['-c', 'printenv GIT_TERMINAL_PROMPT'],
+      { gitEnv: true, timeout: 5000 },
+    )
+    expect(prompt.code).toBe(0)
+    expect(prompt.stdout.trim()).toBe('0')
   })
 
   test('gitEnv absent → generic exec passes the inherited env through', async () => {

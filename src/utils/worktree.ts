@@ -452,15 +452,23 @@ export async function getOrCreateWorktree(
   // (2.1.285 changelog item 3) — SSH_ASKPASS_REQUIRE=never + SSH_ASKPASS=false
   // pins and a detached-from-controlling-terminal spawn, so ssh passphrase /
   // new-host prompts fail fast instead of seizing the terminal.
-  // PARTIAL-WIRING DECLARATION (2.1.309 item 10/44): this fetch env pipeline
-  // stays on the v285 fail-fast formula — it is NOT routed through
-  // buildMergedGitEnv, because the merge scrub would strip the SSH_ASKPASS
-  // pins' surrounding env shape the fail-fast path was verified against, and
-  // the official fetch-site 309 formula was not separately recovered. The
-  // item-56 promisor fetch (worktreeLazyFetch.prefetchMissingObjects) DOES use
-  // the official merge-builder env (WNt=air).
+  // 309 review dataflow-01/07 repair: the fetch env base is routed through
+  // buildMergedGitEnv like every sibling git spawn in this routine, so ambient
+  // GIT_DIR/GIT_WORK_TREE/GIT_CONFIG_* redirect vars are scrubbed before the
+  // remote-resolving subprocess sees them (probe: a decoy GIT_DIR otherwise
+  // silently fetches the WRONG remote). The former partial-wiring comment here
+  // argued the merge scrub breaks the SSH askpass pin shape — the review's
+  // dataflow-07 probe falsified that: the scrub lists carry only GIT_*
+  // redirect/config keys, and resolveFetchSshFailFast applies the SSH pins
+  // AFTER the env build, so they survive verbatim. The official fetch-site 309
+  // formula was not separately recovered; this composition (merged builder →
+  // fail-fast wrapper) keeps both official mechanisms (WNt env + D0 pins)
+  // intact and restores sink identity with the sibling spawns. The merged
+  // builder's OCC defaults (deviation #4, dataflow-02) additionally neutralize
+  // malicious `.git/config` `alias.remote-*` smuggling and pin
+  // GIT_TERMINAL_PROMPT=0 on this network sink.
   const fetchSpawn = await resolveFetchSshFailFast(
-    { ...process.env, ...GIT_NO_PROMPT_ENV },
+    buildMergedGitEnv({ ...GIT_NO_PROMPT_ENV }) as NodeJS.ProcessEnv,
     repoRoot,
   )
   const fetchEnv = fetchSpawn.env

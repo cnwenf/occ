@@ -50,6 +50,20 @@
  *  3. Official `air` mutates the freshly-built object in place
  *     (`n[o]=void 0`); OCC builds the same result immutably (spread) per the
  *     repo immutability rule. Observably identical.
+ *  4. OCC HARDENING (309 review dataflow-02, security-positive): official
+ *     `air`'s default set is only `{GIT_NO_REPLACE_OBJECTS:"1"}`. OCC adds
+ *     `GIT_CONFIG_PARAMETERS: GIT_CONFIG_PARAMETERS_BASE` (the official `p`
+ *     alias-neutralizer join) and `GIT_TERMINAL_PROMPT: "0"` as defaults,
+ *     because the merged builder feeds the NETWORK sinks (worktree fetches,
+ *     the item-56 promisor pre-fetch) — the review probe showed a malicious
+ *     `.git/config` `alias.remote-*` executing under the stock production
+ *     fetch env. `GIT_ALLOW_PROTOCOL:"/"` is deliberately NOT defaulted: it
+ *     disables EVERY transport and would break the very fetch sinks this
+ *     builder feeds; callers that want it (item-56 inForce overlay) pass it
+ *     explicitly and then also get the per-transport neutralizers via `Y`.
+ *     Caller overrides still win (defaults merge first). Precedents for
+ *     declared security-positive OCC deviations: `--plugin-url` HTTPS-only,
+ *     OCC-side `strictAllowlist` enforcement.
  */
 
 /** A git subprocess environment: keys map to string values, or undefined to
@@ -329,13 +343,25 @@ export function buildHardenedGitEnv(
  * other git op) and scrubs `GIT_LFS_SKIP_SMUDGE` / `GIT_NO_LAZY_FETCH` to
  * undefined unless the caller explicitly provided them. Lighter than `Ts`:
  * no locale / ssh / hardened-set layering and no PATH sanitization.
+ *
+ * OCC deviation #4 (309 review dataflow-02): the default set ALSO carries
+ * `GIT_CONFIG_PARAMETERS: GIT_CONFIG_PARAMETERS_BASE` + `GIT_TERMINAL_PROMPT:
+ * "0"` — this builder feeds the network sinks (worktree fetches, item-56
+ * promisor pre-fetch), which must not be the least-hardened git env in the
+ * routine. See the module header for the full rationale (incl. why
+ * GIT_ALLOW_PROTOCOL is NOT defaulted).
  */
 export function buildMergedGitEnv(
   overrides: GitEnv = {},
   options: GitEnvOptions = {},
 ): GitEnv {
   const merged = mergeAndScrubGitEnv(
-    { GIT_NO_REPLACE_OBJECTS: '1' },
+    {
+      GIT_NO_REPLACE_OBJECTS: '1',
+      // OCC hardening defaults (deviation #4, review dataflow-02).
+      GIT_CONFIG_PARAMETERS: GIT_CONFIG_PARAMETERS_BASE,
+      GIT_TERMINAL_PROMPT: '0',
+    },
     overrides,
     options,
   )
