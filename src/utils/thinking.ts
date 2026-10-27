@@ -38,7 +38,7 @@ export function hasUltrathinkKeyword(text: string): boolean {
   return /\bultrathink\b/i.test(text)
 }
 
-/** Official `Nce`'s keyword argument (v311 @246987781). */
+/** Official `Nce`'s keyword argument, inside `da(e,"ultrathink")` (v311 @246987782). */
 const ULTRATHINK_KEYWORD = 'ultrathink'
 
 /**

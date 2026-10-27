@@ -9,11 +9,13 @@ import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
 import { Box, color, Link, Text, useInput, useTheme } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { AuthenticationCancelledError, captureServerTokenData, performMCPOAuthFlow, revokeServerTokens } from '../../services/mcp/auth.js';
+import { AuthenticationCancelledError, captureServerTokenData, getServerKey, performMCPOAuthFlow, revokeServerTokens } from '../../services/mcp/auth.js';
 import { reauthenticateWithSafeOrdering } from '../../services/mcp/reauthOrdering.js';
 import { clearServerCache } from '../../services/mcp/client.js';
+import { getMcpConfigByName, isMcpServerAllowedByPolicy, isMcpServerDisabled } from '../../services/mcp/config.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
 import { getDisplayConfig, redactMcpErrorDetail } from '../../services/mcp/redaction.js';
+import { isXaaEnabled } from '../../services/mcp/xaaIdpLogin.js';
 import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer, resolveUnexpandedMcpServers } from '../../services/mcp/utils.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { getOauthAccountInfo } from '../../utils/auth.js';

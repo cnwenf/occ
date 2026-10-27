@@ -11,7 +11,7 @@ import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
  *   `finally{...,He.setTurnEffort(null,null),...}`      (v311 @256711626)
  *
  * The value that reaches the API is computed inline in `buildUserMessage`
- * (v311 @257665050):
+ * (v311 @257665029; `...fe&&{effort:fe}` @257665292):
  *   `let fe = xe && eU(Ke) && q!==void 0 && Nce(q).length>0
  *             && jnr(n.options.mainLoopModel, yg(n)) ? "xhigh" : void 0;
  *    if(fe) g("ultrathink_boost");

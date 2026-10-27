@@ -32,9 +32,9 @@ import {
  * Official gate `jnr`/`REt` (@243588108 / @243587988, byte-verified):
  *   `function REt(e,n){return ITt()&&!_e()&&ce(e)&&Zqr(e)&&typeof _S(e,n)==="string"&&_S(e,n,{turnEffort:"xhigh"})==="xhigh"}`
  *   `function jnr(e,n){return REt(e,n)&&h(AH(e,n))<h("xhigh")}`
- *   `function ce(e){return QS(e)&&!Rt()&&dA()===void 0}`
- *   `function Zqr(e){return fot(e,Je(e))}`  // per_turn_effort capability
- *   `function h(e){return ma.indexOf(e)}`   // effort ordinal
+ *   `function ce(e){return QS(e)&&!Rt()&&dA()===void 0}`   (@243581799)
+ *   `function Zqr(e){return fot(e,Je(e))}`  // per_turn_effort (@243587952)
+ *   `function h(e){return ma.indexOf(e)}`   // effort ordinal (@243580076)
  *   `var ma=["low","medium","high","xhigh","max"]`   (@239566818)
  *
  * `per_turn_effort` catalog membership (v311 model registry, byte-verified at

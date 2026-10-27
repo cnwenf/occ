@@ -36,8 +36,8 @@ import {
  *    }catch(h){l(h);return}}`
  *
  * Official gate `REt`/`jnr` (v311 @243587988 / @243588108, byte-verified):
- *   `function ce(e){return QS(e)&&!Rt()&&dA()===void 0}`
- *   `function Zqr(e){return fot(e,Je(e))}`
+ *   `function ce(e){return QS(e)&&!Rt()&&dA()===void 0}`       (@243581799)
+ *   `function Zqr(e){return fot(e,Je(e))}`                     (@243587952)
  *   `function REt(e,n){return ITt()&&!_e()&&ce(e)&&Zqr(e)
  *      &&typeof _S(e,n)==="string"&&_S(e,n,{turnEffort:"xhigh"})==="xhigh"}`
  *   `function jnr(e,n){return REt(e,n)&&h(AH(e,n))<h("xhigh")}`

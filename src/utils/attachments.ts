@@ -1635,7 +1635,7 @@ export function getDateChangeAttachments(
 }
 
 /**
- * Official `gwr` (v311 @251728372, byte-verified verbatim):
+ * Official `gwr` (v311 @251728314, byte-verified verbatim):
  *   `function gwr(e){if(!ITt()||!e||!Wci(e))return[];
  *      return a("tengu_ultrathink",{}),[{type:"ultrathink_effort"}]}`
  *

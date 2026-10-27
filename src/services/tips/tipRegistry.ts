@@ -115,7 +115,9 @@ async function isMarketplacePluginRelevant(
  *        &&Jt("localSettings")&&pe("flagSettings")?.outputStyle===void 0
  *        &&pe("policySettings")?.outputStyle===void 0&&await ayt()===null}`
  *
- * Official content template (byte-verified @266639753):
+ * Official content template (byte-verified @266639745; the shipped constant is
+ * this template evaluated — hex-compared byte-identical to it, 67 chars /
+ * 68 bytes, middle dot `charCodeAt(34) === 0xB7`):
  *   ``R$n=`${"Want Claude to teach as it works?"} \xB7 /${"config"} outputStyle=explanatory`;``
  *
  * Official threshold (byte-verified @278455253): `var J=2`.

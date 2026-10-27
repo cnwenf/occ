@@ -8,7 +8,8 @@ import {
 
 /**
  * claude-code 2.1.311 triage-T1 item 2 — the `explanatory-output-style`
- * spinner tip, registered in v311 (byte-verified @278472840):
+ * spinner tip, registered in v311 (byte-verified @278472840; the v310 binary
+ * has zero `explanatory-output-style` hits, so this tip is new in 2.1.311):
  *
  *   `{id:"explanatory-output-style",priority:1,providerAgnostic:!0,
  *      content:async()=>R$n,cooldownSessions:15,maxLifetimeShows:3,
@@ -17,7 +18,7 @@ import {
  *        &&Jt("localSettings")&&pe("flagSettings")?.outputStyle===void 0
  *        &&pe("policySettings")?.outputStyle===void 0&&await ayt()===null}`
  *
- * The content template `R$n` (byte-verified @266639753) is
+ * The content template `R$n` (byte-verified @266639745) is
  *   ``R$n=`${"Want Claude to teach as it works?"} \xB7 /${"config"} outputStyle=explanatory`;``
  * so the shipped literal is
  *   `Want Claude to teach as it works? · /config outputStyle=explanatory`

@@ -3,7 +3,9 @@
  * gates the `explanatory-output-style` spinner tip.
  *
  * Official keeps the count on the tip-context host and absorbs the transcript
- * incrementally (v311 @275870968 / @275871404, byte-verified verbatim):
+ * incrementally (v311 @275870968 `explanationRequestCount:` field /
+ * @275871074 `_absorbNewSessionSignals` / @275871404 `_absorbSessionSignals`,
+ * all byte-verified verbatim):
  *
  *   `{...,explanationRequestCount:this._explanationRequestIds.size,...}`
  *
@@ -49,7 +51,10 @@
  * applies whenever the field is present.
  */
 
-/** Official `z` (v311 @238958489) — `<ide_opened_file>` / `<ide_selection>`. */
+/**
+ * Official `var z=` (v311 @238958482; the regex literal starts @238958488) —
+ * `<ide_opened_file>` / `<ide_selection>`. Byte-identical to the binary.
+ */
 const IDE_ATTACHMENT_BLOCK_PATTERN =
   /<(ide_opened_file|ide_selection)(?:\s[^>]*)?>[\s\S]*?<\/\1>\n?/g
 
