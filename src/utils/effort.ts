@@ -11,6 +11,7 @@ import { getAntModelOverrideConfig, resolveAntModel } from './model/antModels.js
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
 import { clampEffortToCap, clampEffortValue, getSettingsEffortCap } from './effort/cap.js'
+import { getTurnEffort } from './effort/turnEffort.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
 export type { EffortLevel }
@@ -25,6 +26,17 @@ export const EFFORT_LEVELS = [
 ] as const satisfies readonly EffortLevel[]
 
 export type EffortValue = EffortLevel | number
+
+/**
+ * claude-code 2.1.311 (triage-T4-sweep item 65): official's effort ordinal —
+ *   `function h(e){return ma.indexOf(e)}`          (v311 @243580076)
+ *   `var ma=["low","medium","high","xhigh","max"]` (v311 @239566822)
+ * used by the ultrathink gate `jnr`'s headroom check `h(AH(e,n))<h("xhigh")`.
+ * Returns -1 for a level outside EFFORT_LEVELS.
+ */
+export function effortOrdinal(level: EffortLevel): number {
+  return EFFORT_LEVELS.indexOf(level)
+}
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -369,13 +381,35 @@ export function getEffortEnvOverride(): EffortValue | null | undefined {
  *      `dF` (number → 'high') before clamping.
  *   3. The result runs through official `P(e,n)`: cap clamp (`lF`) first,
  *      then the max→high / xhigh→high capability downgrades.
- * OCC reductions: no launch pin (`uF`/`jN`) and no turnEffort parameter exist
- * in OCC's pipeline; the `Nh(e)` model-support gate is applied at OCC's call
- * sites (pre-existing structure, unchanged).
+ * OCC reductions: no launch pin (`uF`/`jN`) exists in OCC's pipeline; the
+ * `Nh(e)` model-support gate is applied at OCC's call sites (pre-existing
+ * structure, unchanged).
+ *
+ * 2.1.311 (triage-T4-sweep item 65): the `turnEffort` slot is now threaded,
+ * matching official `_S` @243587340 —
+ *   `function _S(e,n,{turnEffort:r,hookEffortValue:s,carriedEffort:f=R(e)}={}){
+ *      ...let m=u??(u===null?E:void 0)??r??n??E;...}`
+ * Official places `turnEffort` AFTER the env override and BEFORE the
+ * app-state value. OCC applies it as a FLOOR at the same precedence position
+ * (env override still wins outright) because OCC's boost seam
+ * (utils/attachments.ts) has no access to the React appState `effortValue`
+ * slot, so its headroom check resolves against the model default instead of
+ * the user's live /effort pick. As a plain `?? r ??` override that gap could
+ * DOWNGRADE a user-selected 'max' to 'xhigh'; as a floor it cannot. Where
+ * official's gate is fully informed the two forms are observably identical —
+ * `jnr` only ever sets turnEffort when the current effort is strictly below
+ * 'xhigh', so "override with xhigh" and "raise to at least xhigh" coincide.
+ * It defaults to the live turn-effort slot so the existing API call site
+ * (services/api/claude.ts) picks up an ultrathink boost without threading a
+ * new parameter; callers that need the un-boosted resolution (the boost gate
+ * itself) pass `null` explicitly — `undefined` would re-trigger the default.
+ * The official `hookEffortValue` / `carriedEffort` slots are still absent
+ * from OCC.
  */
 export function resolveAppliedEffort(
   model: string,
   appStateEffortValue: EffortValue | undefined,
+  turnEffort: EffortValue | null = getTurnEffort() ?? null,
 ): EffortValue | undefined {
   const envOverride = getEffortEnvOverride()
   const hasSettingsCap = getSettingsEffortCap(model) !== null
@@ -388,6 +422,12 @@ export function resolveAppliedEffort(
     (envOverride === null ? modelDefault : undefined) ??
     appStateEffortValue ??
     modelDefault
+  if (turnEffort !== null && envOverride === undefined) {
+    resolved =
+      resolved === undefined
+        ? turnEffort
+        : raiseToTurnEffortFloor(resolved, turnEffort)
+  }
   if (typeof resolved === 'number' && hasSettingsCap) {
     // Official dF: any numeric effort normalizes to 'high' (no ant branch)
     // before the cap clamp.
@@ -426,12 +466,18 @@ export function resolveAppliedEffort(
  * Note Q0 differs from convertEffortValueToLevel: NO ant numeric buckets —
  * any non-string (numeric) value normalizes straight to 'high', byte-faithful
  * to the official normalizer.
+ *
+ * 2.1.311 (item 65): `turnEffort` mirrors official `kWe`'s third parameter.
+ * Omit it to fold in the live turn-effort slot; pass `null` to resolve with no
+ * turn effort at all (the boost gate needs the un-boosted level — see
+ * `resolveAppliedEffort`).
  */
 export function getSentEffortLevel(
   model: string,
   appStateEffortValue: EffortValue | undefined,
+  turnEffort: EffortValue | null = getTurnEffort() ?? null,
 ): EffortLevel | undefined {
-  const applied = resolveAppliedEffort(model, appStateEffortValue)
+  const applied = resolveAppliedEffort(model, appStateEffortValue, turnEffort)
   if (applied === undefined) {
     return undefined
   }
@@ -444,6 +490,21 @@ function normalizeSentEffortLevel(value: EffortValue): EffortLevel {
     return isEffortLevel(value) ? value : 'high'
   }
   return 'high'
+}
+
+/**
+ * Raise `value` to `floor` when the floor outranks it, otherwise return
+ * `value` unchanged. Both sides normalize through official `Q0` first so a
+ * numeric (ant) effort compares as 'high'. See the `resolveAppliedEffort`
+ * docblock for why OCC floors the turn effort instead of overriding with it.
+ */
+function raiseToTurnEffortFloor(
+  value: EffortValue,
+  floor: EffortValue,
+): EffortValue {
+  const valueLevel = normalizeSentEffortLevel(value)
+  const floorLevel = normalizeSentEffortLevel(floor)
+  return effortOrdinal(floorLevel) > effortOrdinal(valueLevel) ? floor : value
 }
 
 /**

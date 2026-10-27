@@ -71,6 +71,13 @@ import {
 } from './settings/settings.js'
 import { sleep } from './sleep.js'
 import { isInITerm2 } from './swarm/backends/detection.js'
+// CC 2.1.311 Item 12: the subagent occupant index consulted before an agent
+// worktree is deleted (see cleanupAgentWorktree below for the official bytes).
+import {
+  type AgentTaskRecord,
+  type TaskRegistry,
+  isTerminalAgentTaskStatus,
+} from './taskRegistry.js'
 
 const VALID_WORKTREE_SLUG_SEGMENT = /^[a-zA-Z0-9._-]+$/
 const MAX_WORKTREE_SLUG_LENGTH = 64
@@ -1686,6 +1693,358 @@ export async function shouldRemoveUnchangedAgentWorktree(params: {
     return false
   }
   return isWorktreeStatusClean(worktreePath)
+}
+
+/* ------------------------------------------------------------------------
+ * CC 2.1.311 Item 12 — do not remove an agent worktree while another
+ * (background) subagent task still runs inside it.
+ *
+ * Official v311 cleanup core, byte-verified @256785050..@256786500:
+ *
+ *   if(W&&(V===void 0||E===void 0))return t(`Hook-based agent worktree kept
+ *     at: ${r}`),{worktreePath:r};
+ *   if(d4n(q.get(ye)))return t(`Agent worktree kept at ${r}: backgrounded
+ *     owner awaits keepalive, resume pending`),{worktreePath:r,worktreeBranch:_};
+ *   if(v||V!==void 0){
+ *     let F=(te)=>Nn(q.all(),E===void 0?[r]:[r,E],te),
+ *         ee=()=>F()??F((te)=>te.id!==ye&&Gt(te,q)),
+ *         J=ee(),
+ *         j=<async dirty check>,
+ *         oe=J??ee();
+ *     if(oe){
+ *       if(t(`Agent worktree ${r} is still the working directory of ${oe.type}
+ *         task ${oe.id}; kept`),
+ *         a("tengu_agent_worktree_kept",{reason:Go(oe.status)?b("parked_task")
+ *           :b("live_task"),task_type:c(oe.type),
+ *           seen:J?b("before_check"):b("after_check"),changed:j}),
+ *         C)Fn({worktreePath:r,gitRoot:C,taskRegistry:q,findOccupant:F});
+ *       return{worktreePath:r,worktreeBranch:_}}
+ *     if(!j&&(await Jde(r,_,C,W??!1,"agent_tool")).outcome==="removed")...
+ *
+ * `Fn`/`Ht` (@256753600) re-arm the cleanup once no live task is left in the
+ * worktree; OCC has no worktree-lock subsystem or agentSettled/taskEvicted
+ * event bus, so the re-arm is a bounded poll instead of a subscription (see
+ * `runDeferredAgentWorktreeCleanup`).
+ * ------------------------------------------------------------------------ */
+
+/** Official event name — v310: 0 hits, v311: 2 (@125785316 table, @256785765). */
+export const AGENT_WORKTREE_KEPT_EVENT = 'tengu_agent_worktree_kept'
+
+/** Poll cadence while a re-armed cleanup waits for its occupant to leave. */
+const DEFERRED_CLEANUP_POLL_INTERVAL_MS = 1000
+
+/**
+ * Upper bound on a re-armed cleanup's wait. Giving up keeps the worktree
+ * (fail-closed: never delete a directory a task may still be in), so the bound
+ * only caps how long a leaked tree waits to be reclaimed.
+ */
+const DEFERRED_CLEANUP_MAX_WAIT_MS = 6 * 60 * 60 * 1000
+
+export interface AgentWorktreeCleanupParams {
+  readonly worktreePath: string
+  readonly worktreeBranch?: string
+  readonly headCommit?: string
+  readonly gitRoot?: string
+  readonly hookBased?: boolean
+  /** This agent's own task id — official `ye`, excluded from the second scan. */
+  readonly agentId: string
+  readonly taskRegistry: TaskRegistry
+  /**
+   * Official `d4n(q.get(ye))`: this agent was backgrounded, its own run is
+   * marked complete, and it still owns live background work — so its worktree
+   * has to survive for the work that is still running in it.
+   */
+  readonly isOwnerAwaitingKeepalive?: boolean
+}
+
+export interface AgentWorktreeCleanupDeps {
+  /** `shouldRemoveUnchangedAgentWorktree` — true means "unchanged, remove". */
+  readonly shouldRemoveUnchanged: (params: {
+    worktreePath: string
+    headCommit?: string
+  }) => Promise<boolean>
+  /** `removeAgentWorktree`. */
+  readonly removeWorktree: (
+    worktreePath: string,
+    worktreeBranch?: string,
+    gitRoot?: string,
+  ) => Promise<boolean>
+  /** `logForDebugging` at the default level. */
+  readonly log: (message: string) => void
+  /** `logEvent`. */
+  readonly logEvent: (
+    name: string,
+    metadata: Record<string, string | number | boolean>,
+  ) => void
+  /** Runs only after an actual removal — clears the resumable metadata. */
+  readonly onRemoved?: () => void
+  /** Official `Fn` — schedule the deferred cleanup for an occupied tree. */
+  readonly rearm?: (
+    params: DeferredAgentWorktreeCleanupParams,
+  ) => void | Promise<void>
+}
+
+export interface AgentWorktreeCleanupResult {
+  readonly worktreePath?: string
+  readonly worktreeBranch?: string
+}
+
+export interface DeferredAgentWorktreeCleanupParams
+  extends AgentWorktreeCleanupParams {
+  readonly cleanupDeps: AgentWorktreeCleanupDeps
+  readonly pollIntervalMs?: number
+  readonly maxWaitMs?: number
+  readonly isPathPresent?: (path: string) => boolean
+}
+
+/**
+ * Official `Gt` (@256753600) reduced to what OCC tracks:
+ *   function Gt(n,e){return!Go(n.status)||d4n(n)||Vde(n.id,e)}
+ * A terminal task still counts when it is parked (backgrounded with live owned
+ * work — official `d4n`). Official `Vde` (a terminal parent that still owns a
+ * live child agent) needs no separate case here: OCC registers the child with
+ * the inherited worktree cwd, so the plain scan already sees it.
+ */
+function isOccupantRelevant(task: AgentTaskRecord): boolean {
+  return !isTerminalAgentTaskStatus(task.status) || task.parked === true
+}
+
+/**
+ * Official `ee=()=>F()??F((te)=>te.id!==ye&&Gt(te,q))` — first any
+ * non-terminal task inside the worktree, then (over every status) any *other*
+ * task that is still relevant.
+ */
+function findWorktreeOccupant(
+  params: AgentWorktreeCleanupParams,
+): AgentTaskRecord | undefined {
+  const { taskRegistry, worktreePath, agentId } = params
+  const roots = [worktreePath]
+  return (
+    taskRegistry.findOccupant(roots) ??
+    taskRegistry.findOccupant(
+      roots,
+      task => task.id !== agentId && isOccupantRelevant(task),
+    )
+  )
+}
+
+/**
+ * Arm the official `Fn` deferred cleanup without letting a scheduling failure
+ * undo the keep decision. The tree is already retained; losing the re-arm only
+ * means it waits for the ephemeral-slug sweeper instead of being reclaimed
+ * promptly, which is the fail-closed outcome. Both the synchronous throw and
+ * the asynchronous rejection are handled so no rejection goes unobserved.
+ */
+function armDeferredCleanup(
+  params: AgentWorktreeCleanupParams,
+  deps: AgentWorktreeCleanupDeps,
+): void {
+  if (deps.rearm === undefined) return
+  const logFailure = (error: unknown): void => {
+    deps.log(
+      `Failed to re-arm deferred agent worktree cleanup for ${params.worktreePath}: ${errorMessage(error)}`,
+    )
+  }
+  try {
+    void Promise.resolve(
+      deps.rearm({ ...params, cleanupDeps: deps }),
+    ).catch(logFailure)
+  } catch (error) {
+    logFailure(error)
+  }
+}
+
+/** Keep an occupied worktree: official verbatim log + telemetry + re-arm. */
+function keepOccupiedWorktree(
+  params: AgentWorktreeCleanupParams,
+  deps: AgentWorktreeCleanupDeps,
+  occupant: AgentTaskRecord,
+  seenBeforeCheck: boolean,
+  changed: boolean,
+): AgentWorktreeCleanupResult {
+  const { worktreePath, worktreeBranch } = params
+  deps.log(
+    `Agent worktree ${worktreePath} is still the working directory of ${occupant.type} task ${occupant.id}; kept`,
+  )
+  deps.logEvent(AGENT_WORKTREE_KEPT_EVENT, {
+    reason: isTerminalAgentTaskStatus(occupant.status)
+      ? 'parked_task'
+      : 'live_task',
+    task_type: occupant.type,
+    seen: seenBeforeCheck ? 'before_check' : 'after_check',
+    changed,
+  })
+  armDeferredCleanup(params, deps)
+  return { worktreePath, worktreeBranch }
+}
+
+/**
+ * Decide the fate of a finished agent's worktree. Injectable deps keep the
+ * decision logic unit-testable without ever spawning a real git worktree;
+ * AgentTool's `cleanupWorktreeIfNeeded` is the thin production wiring.
+ */
+export async function cleanupAgentWorktree(
+  params: AgentWorktreeCleanupParams,
+  deps: AgentWorktreeCleanupDeps,
+): Promise<AgentWorktreeCleanupResult> {
+  const { worktreePath, worktreeBranch, hookBased } = params
+  if (hookBased) {
+    // Hook-based worktrees are always kept since we can't detect VCS changes.
+    deps.log(`Hook-based agent worktree kept at: ${worktreePath}`)
+    return { worktreePath }
+  }
+  if (params.isOwnerAwaitingKeepalive) {
+    deps.log(
+      `Agent worktree kept at ${worktreePath}: backgrounded owner awaits keepalive, resume pending`,
+    )
+    return { worktreePath, worktreeBranch }
+  }
+  // Occupants are scanned BEFORE and AFTER the async dirty check: a subagent
+  // can be spawned inside the worktree while the git probe is in flight.
+  const occupantBeforeCheck = findWorktreeOccupant(params)
+  const isUnchanged = await deps.shouldRemoveUnchanged({
+    worktreePath,
+    headCommit: params.headCommit,
+  })
+  const occupant = occupantBeforeCheck ?? findWorktreeOccupant(params)
+  if (occupant !== undefined) {
+    return keepOccupiedWorktree(
+      params,
+      deps,
+      occupant,
+      occupantBeforeCheck !== undefined,
+      !isUnchanged,
+    )
+  }
+  if (isUnchanged) {
+    await deps.removeWorktree(worktreePath, worktreeBranch, params.gitRoot)
+    deps.onRemoved?.()
+    return {}
+  }
+  deps.log(`Agent worktree has changes, keeping: ${worktreePath}`)
+  return { worktreePath, worktreeBranch }
+}
+
+/**
+ * A poll that never holds the event loop open. The deferred cleanup is pure
+ * housekeeping: if the process is exiting, dropping it is the right outcome
+ * (the ephemeral-slug sweeper reclaims the tree on a later run).
+ */
+function sleepDetached(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref?.()
+  })
+}
+
+/** Worktrees with a deferred cleanup already polling. Guards double-arming. */
+const armedDeferredCleanups = new Set<string>()
+
+/**
+ * Official `Fn` (@256753600) — arm the deferred cleanup for an occupied
+ * worktree. Idempotent per path: arming twice runs one poller, so the tree is
+ * removed at most once.
+ */
+export function rearmAgentWorktreeCleanup(
+  params: DeferredAgentWorktreeCleanupParams,
+): Promise<void> {
+  const { worktreePath } = params
+  if (armedDeferredCleanups.has(worktreePath)) {
+    return Promise.resolve()
+  }
+  armedDeferredCleanups.add(worktreePath)
+  return runDeferredAgentWorktreeCleanup(params).finally(() => {
+    armedDeferredCleanups.delete(worktreePath)
+  })
+}
+
+/**
+ * Wait until no tracked task is left inside the worktree, then re-run the full
+ * cleanup decision (which re-scans, so a task that arrived meanwhile simply
+ * re-arms). Official `Ht` does this off agentSettled/taskEvicted events; OCC
+ * polls because it has no equivalent bus.
+ */
+export async function runDeferredAgentWorktreeCleanup(
+  params: DeferredAgentWorktreeCleanupParams,
+): Promise<void> {
+  const {
+    worktreePath,
+    cleanupDeps,
+    pollIntervalMs = DEFERRED_CLEANUP_POLL_INTERVAL_MS,
+    maxWaitMs = DEFERRED_CLEANUP_MAX_WAIT_MS,
+    isPathPresent = existsSync,
+  } = params
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    if (!isPathPresent(worktreePath)) return
+    if (findWorktreeOccupant(params) === undefined) break
+    await sleepDetached(pollIntervalMs)
+  }
+  if (!isPathPresent(worktreePath)) return
+  if (findWorktreeOccupant(params) !== undefined) {
+    // Fail-closed: never delete a tree a task may still be working in.
+    logForDebugging(
+      `Deferred agent worktree cleanup stopped waiting for tasks to leave: ${worktreePath}`,
+      { level: 'warn' },
+    )
+    return
+  }
+  await cleanupAgentWorktree(params, cleanupDeps)
+}
+
+/** Poll cadence while a parked occupant record waits for its owned work. */
+const PARKED_OCCUPANT_POLL_INTERVAL_MS = 1000
+
+/**
+ * Upper bound on a parked occupant record. On expiry the record is KEPT
+ * (fail-closed): dropping it would let an ancestor's cleanup delete a
+ * directory work is still running in.
+ */
+const PARKED_OCCUPANT_MAX_WAIT_MS = 6 * 60 * 60 * 1000
+
+export interface ParkedOccupantReleaseParams {
+  /** The parked task's id. */
+  readonly agentId: string
+  readonly taskRegistry: TaskRegistry
+  /** True while the parked task still owns live background work. */
+  readonly hasOwnedWork: () => boolean
+  readonly pollIntervalMs?: number
+  readonly maxWaitMs?: number
+}
+
+/**
+ * Release a *parked* occupant record once the work it owns has settled.
+ *
+ * Official counterpart: the worktree-lock release `iye` (@252014431), which the
+ * cleanup subscribes to and which fires when the backgrounded owner's live work
+ * drains. OCC has no lock subsystem, so this polls `hasOwnedWork` and drops the
+ * record when it goes false — that is what lets an ancestor's re-armed cleanup
+ * finally reclaim the tree instead of waiting it out.
+ */
+export async function releaseParkedWorktreeOccupant(
+  params: ParkedOccupantReleaseParams,
+): Promise<void> {
+  const {
+    agentId,
+    taskRegistry,
+    hasOwnedWork,
+    pollIntervalMs = PARKED_OCCUPANT_POLL_INTERVAL_MS,
+    maxWaitMs = PARKED_OCCUPANT_MAX_WAIT_MS,
+  } = params
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline && hasOwnedWork()) {
+    await sleepDetached(pollIntervalMs)
+  }
+  // Fail-closed: if the owned work is still live at the deadline, the record
+  // stays so no ancestor cleanup can delete the directory it runs in.
+  if (hasOwnedWork()) {
+    logForDebugging(
+      `Parked agent task ${agentId} still owns live work; its worktree occupant record was kept`,
+      { level: 'warn' },
+    )
+    return
+  }
+  taskRegistry.unregisterAgentTask(agentId)
 }
 
 /**

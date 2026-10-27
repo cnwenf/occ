@@ -7,6 +7,7 @@ import { Box, Text } from '../../../ink.js';
 import type { Question } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import { truncateToWidth } from '../../../utils/format.js';
 import { isScreenReaderEnabled } from '../../../utils/screenReader.js';
+import { jsonStringify } from '../../../utils/slowOperations.js';
 type Props = {
   questions: Question[];
   currentQuestionIndex: number;
@@ -14,7 +15,7 @@ type Props = {
   hideSubmitTab?: boolean;
 };
 export function QuestionNavigationBar(t0) {
-  const $ = _c(41);
+  const $ = _c(51);
   const {
     questions,
     currentQuestionIndex,
@@ -98,6 +99,52 @@ export function QuestionNavigationBar(t0) {
     t2 = $[4];
   }
   const tabDisplayTexts = t2;
+  if (srEnabled) {
+    let t8;
+    let t9;
+    if ($[41] !== answers || $[42] !== questions) {
+      let t10;
+      if ($[43] !== answers) {
+        t10 = (q_2, index_3) => {
+          const label = q_2?.header || `Q${index_3 + 1}`;
+          const display = label.includes(",") || /answered/i.test(label) ? jsonStringify(label) : label;
+          return getAnswerValue(answers, q_2?.question) ? `${display} (answered)` : display;
+        };
+        $[43] = answers;
+        $[44] = t10;
+      } else {
+        t10 = $[44];
+      }
+      const labels = questions.map(t10);
+      t8 = questions.length === 1 ? "Question" : "Questions";
+      t9 = labels.join(", ");
+      $[41] = answers;
+      $[42] = questions;
+      $[45] = t8;
+      $[46] = t9;
+    } else {
+      t8 = $[45];
+      t9 = $[46];
+    }
+    const listing = `${t8}: ${t9}`;
+    let t11;
+    if ($[47] !== listing) {
+      t11 = <Text>{listing}</Text>;
+      $[47] = listing;
+      $[48] = t11;
+    } else {
+      t11 = $[48];
+    }
+    let t12;
+    if ($[49] !== t11) {
+      t12 = <Box marginBottom={1}>{t11}</Box>;
+      $[49] = t11;
+      $[50] = t12;
+    } else {
+      t12 = $[50];
+    }
+    return t12;
+  }
   const hideArrows = questions.length === 1 && hideSubmitTab;
   let t3;
   if ($[14] !== currentQuestionIndex || $[15] !== hideArrows) {
@@ -109,19 +156,18 @@ export function QuestionNavigationBar(t0) {
     t3 = $[16];
   }
   let t4;
-  if ($[17] !== answers || $[18] !== currentQuestionIndex || $[19] !== srEnabled || $[20] !== questions || $[21] !== tabDisplayTexts) {
+  if ($[17] !== answers || $[18] !== currentQuestionIndex || $[20] !== questions || $[21] !== tabDisplayTexts) {
     let t5;
-    if ($[23] !== answers || $[24] !== currentQuestionIndex || $[25] !== srEnabled || $[26] !== tabDisplayTexts) {
+    if ($[23] !== answers || $[24] !== currentQuestionIndex || $[26] !== tabDisplayTexts) {
       t5 = (q_1, index_2) => {
         const isSelected = index_2 === currentQuestionIndex;
         const isAnswered = q_1?.question && !!answers[q_1.question];
         const checkbox = isAnswered ? figures.checkboxOn : figures.checkboxOff;
         const displayText = tabDisplayTexts[index_2] || q_1?.header || `Q${index_2 + 1}`;
-        return <Box key={q_1?.question || `question-${index_2}`}>{isSelected ? <Text backgroundColor="permission" color="inverseText">{" "}{checkbox} {srEnabled && isAnswered ? "answered " : ""}{displayText}{" "}</Text> : <Text>{" "}{checkbox} {srEnabled && isAnswered ? "answered " : ""}{displayText}{" "}</Text>}</Box>;
+        return <Box key={q_1?.question || `question-${index_2}`}>{isSelected ? <Text backgroundColor="permission" color="inverseText">{" "}{checkbox} {displayText}{" "}</Text> : <Text>{" "}{checkbox} {displayText}{" "}</Text>}</Box>;
       };
       $[23] = answers;
       $[24] = currentQuestionIndex;
-      $[25] = srEnabled;
       $[26] = tabDisplayTexts;
       $[27] = t5;
     } else {
@@ -130,7 +176,6 @@ export function QuestionNavigationBar(t0) {
     t4 = questions.map(t5);
     $[17] = answers;
     $[18] = currentQuestionIndex;
-    $[19] = srEnabled;
     $[20] = questions;
     $[21] = tabDisplayTexts;
     $[22] = t4;
@@ -178,4 +223,14 @@ function _temp2(header_0) {
 }
 function _temp(q_0, index_0) {
   return q_0?.header || `Q${index_0 + 1}`;
+}
+/**
+ * Mirror of the official SR-listing helper `hp(h,x)` (binary @275627560):
+ *   `function hp(h,x){return x!==void 0&&Object.hasOwn(h,x)?h[x]:void 0}`
+ * Returns the answer VALUE (or undefined). The listing mapper truthiness-tests
+ * this, so an empty-string answer is falsy → NOT "(answered)". The hasOwn guard
+ * avoids prototype-key false positives (e.g. a question keyed "toString").
+ */
+function getAnswerValue(answers: Record<string, string>, question: string | undefined): string | undefined {
+  return question !== undefined && Object.hasOwn(answers, question) ? answers[question] : undefined;
 }

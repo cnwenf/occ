@@ -1,9 +1,24 @@
-import { logEvent } from 'src/services/analytics/index.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from 'src/services/analytics/index.js'
 import { openBrowser } from '../../utils/browser.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { AuthCodeListener } from './auth-code-listener.js'
 import * as client from './client.js'
 import * as crypto from './crypto.js'
+import {
+  AuthCodeRefusedError,
+  shouldThrowAuthCodeRefused,
+} from './errors.js'
+
+// CC 2.1.311 (item 62): re-export so display catch sites (ConsoleOAuthFlow,
+// CLI auth handler) can import from the natural oauth surface.
+export {
+  AuthCodeRefusedError,
+  isInvalidGrantError,
+  shouldThrowAuthCodeRefused,
+} from './errors.js'
 import type {
   OAuthProfileResponse,
   OAuthTokenExchangeResponse,
@@ -136,6 +151,24 @@ export class OAuthService {
         profileInfo.rawProfile,
       )
     } catch (error) {
+      // CC 2.1.311 (item 62): classify the failure — a MANUALLY PASTED code
+      // (!isAutomaticFlow) refused by the token endpoint with invalid_grant
+      // becomes the dedicated AuthCodeRefusedError with its own telemetry
+      // outcome. Binary @243340550: `let u=!h&&_q(c);
+      // if(m("oauth_login",u?"oauth_pasted_code_refused":"oauth_login_failed"),h)
+      // this.authCodeListener?.handleErrorRedirect(); ... throw u?new GRe:c`.
+      // Browser-redirect failures keep the error-redirect path and rethrow
+      // the original error. The outcome markers are fixed literals — no
+      // request/response material is logged.
+      const isPastedRefusal = shouldThrowAuthCodeRefused({
+        isAutomaticFlow,
+        error,
+      })
+      logEvent('tengu_oauth_login', {
+        outcome: (isPastedRefusal
+          ? 'oauth_pasted_code_refused'
+          : 'oauth_login_failed') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
       // If we have a pending response, send an error redirect before closing —
       // but never after the success redirect already went out (the browser
       // keeps the success page; the failure is still logged and rethrown).
@@ -149,7 +182,7 @@ export class OAuthService {
       } else if (isAutomaticFlow) {
         this.authCodeListener?.handleErrorRedirect()
       }
-      throw error
+      throw isPastedRefusal ? new AuthCodeRefusedError() : error
     } finally {
       // Always cleanup
       this.authCodeListener?.close()

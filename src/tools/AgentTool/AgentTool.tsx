@@ -14,6 +14,9 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
 import { resolveQueryPromptId } from '../../services/api/promptId.js';
 import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
+// CC 2.1.311 Item 12: the official `d4n(q.get(ye))` keep-gate ("backgrounded
+// owner awaits keepalive") reduces to OCC's existing live-owned-work predicate.
+import { hasLiveOwnedBackgroundWork } from '../../tasks/LocalAgentTask/notificationReasons.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, getRemoteTaskSessionUrl, registerRemoteAgentTask } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { assembleToolPool } from '../../tools.js';
 import { asAgentId } from '../../types/ids.js';
@@ -36,12 +39,16 @@ import { sleep } from '../../utils/sleep.js';
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js';
 import { asSystemPrompt } from '../../utils/systemPromptType.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
+// CC 2.1.311 Item 12: the process-wide subagent occupant index (official `q`,
+// the tool-use-context taskRegistry). See getProcessTaskRegistry's doc for why
+// OCC carries it process-wide instead of on the context.
+import { getProcessTaskRegistry } from '../../utils/taskRegistry.js';
 import { getParentSessionId, isTeammate } from '../../utils/teammate.js';
 import { isInProcessTeammate } from '../../utils/teammateContext.js';
 import { teleportToRemote } from '../../utils/teleport.js';
 import { getAssistantMessageContentLength } from '../../utils/tokens.js';
 import { createAgentId } from '../../utils/uuid.js';
-import { createAgentWorktree, removeAgentWorktree, shouldRemoveUnchangedAgentWorktree } from '../../utils/worktree.js';
+import { cleanupAgentWorktree, createAgentWorktree, rearmAgentWorktreeCleanup, releaseParkedWorktreeOccupant, removeAgentWorktree, shouldRemoveUnchangedAgentWorktree } from '../../utils/worktree.js';
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
@@ -80,6 +87,12 @@ function getAutoBackgroundMs(): number {
   // B8 (2.1.198): subagents run in background by default (120s auto-background threshold).
   return 120_000;
 }
+
+// CC 2.1.311 Item 12: the `type` value this tool records in the occupant index.
+// It is what the official prints and reports —
+//   `Agent worktree ${r} is still the working directory of ${oe.type} task ${oe.id}; kept`
+//   a("tengu_agent_worktree_kept",{...,task_type:c(oe.type),...})
+const LOCAL_AGENT_TASK_TYPE = 'local_agent';
 
 // Multi-agent type constants are defined inline inside gated blocks to enable dead code elimination
 
@@ -749,11 +762,88 @@ export const AgentTool = buildTool({
     const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath;
     const wrapWithCwd = <T,>(fn: () => T): T => cwdOverridePath ? runWithCwdOverride(cwdOverridePath, fn) : fn();
 
+    // CC 2.1.311 Item 12: index this subagent by the directory it runs in, so
+    // an ancestor's worktree cleanup can tell that a task is still working
+    // inside that directory and keep it. Registered for every spawn —
+    // foreground, background, forked — because the official scans the whole
+    // registry (`Nn(q.all(), …)`) without regard to how the task started. The
+    // cwd is the override when there is one (worktree isolation / KAIROS cwd),
+    // otherwise the ambient cwd, which is how a nested subagent inherits its
+    // ancestor's worktree path (the official `Vde` parent-owns-live-child case
+    // then falls out of the plain scan for free).
+    const taskRegistry = getProcessTaskRegistry();
+    taskRegistry.registerAgentTask({
+      id: earlyAgentId,
+      type: LOCAL_AGENT_TASK_TYPE,
+      status: 'running',
+      cwd: cwdOverridePath ?? getCwd()
+    });
+
+    /**
+     * Official `d4n(q.get(ye))` (@253114479): this agent was backgrounded, its
+     * own run is marked complete, and it still owns live background work (a
+     * shell/monitor or workflow task) — so the worktree has to survive for
+     * whatever is still running inside it. OCC's equivalent predicate is
+     * `hasLiveOwnedBackgroundWork` (official `WZr`), already used by the
+     * completion-notification reason gates.
+     */
+    const isOwnerAwaitingKeepalive = (): boolean => {
+      const appState = toolUseContext.getAppState();
+      const ownerTask = appState.tasks?.[earlyAgentId];
+      if (!isLocalAgentTask(ownerTask)) return false;
+      if (ownerTask.isBackgrounded !== true || ownerTask.status !== 'completed') return false;
+      return hasLiveOwnedBackgroundWork(ownerTask, appState);
+    };
+
+    /** The `d4n` live-owned-work half on its own, for any tracked agent id. */
+    const hasOwnedBackgroundWork = (agentId: string): boolean => {
+      const appState = toolUseContext.getAppState();
+      const task = appState.tasks?.[agentId];
+      return isLocalAgentTask(task) && hasLiveOwnedBackgroundWork(task, appState);
+    };
+
+    /**
+     * Settle this agent's occupant record. Either drop it from the index, or —
+     * when it was backgrounded and still owns live work (official `d4n`) —
+     * leave it behind as a *parked* occupant so an ANCESTOR's worktree cleanup
+     * keeps the directory that work is still running in (that is what makes the
+     * official `parked_task` telemetry value reachable). The owner's own cleanup
+     * excludes it by id, so this never keeps its own tree alive twice over.
+     *
+     * `releaseParkedWorktreeOccupant` is the OCC stand-in for the official
+     * worktree-lock release `iye` (@252014431): it drops the parked record once
+     * the owned work drains, which is what lets the ancestor's re-armed cleanup
+     * reclaim its tree. Idempotent — a second settle finds no record (or an
+     * already-parked one) and does nothing.
+     */
+    const settleOwnAgentTaskRecord = (ownerAwaitingKeepalive: boolean): void => {
+      const record = taskRegistry.getAgentTask(earlyAgentId);
+      if (record === undefined) return;
+      if (!ownerAwaitingKeepalive) {
+        taskRegistry.unregisterAgentTask(earlyAgentId);
+        return;
+      }
+      if (record.parked === true) return;
+      taskRegistry.updateAgentTask(earlyAgentId, {
+        status: 'completed',
+        parked: true
+      });
+      void releaseParkedWorktreeOccupant({
+        agentId: earlyAgentId,
+        taskRegistry,
+        hasOwnedWork: () => hasOwnedBackgroundWork(earlyAgentId)
+      }).catch(error => logForDebugging(`Failed to release parked worktree occupant ${earlyAgentId}: ${errorMessage(error)}`));
+    };
+
     // Helper to clean up worktree after agent completes
     const cleanupWorktreeIfNeeded = async (): Promise<{
       worktreePath?: string;
       worktreeBranch?: string;
     }> => {
+      // This agent has settled. Runs before the `worktreeInfo` guard because
+      // every spawn is registered, worktree or not.
+      const ownerAwaitingKeepalive = isOwnerAwaitingKeepalive();
+      settleOwnAgentTaskRecord(ownerAwaitingKeepalive);
       if (!worktreeInfo) return {};
       const {
         worktreePath,
@@ -765,34 +855,42 @@ export const AgentTool = buildTool({
       // Null out to make idempotent — guards against double-call if code
       // between cleanup and end of try throws into catch
       worktreeInfo = null;
-      if (hookBased) {
-        // Hook-based worktrees are always kept since we can't detect VCS changes
-        logForDebugging(`Hook-based agent worktree kept at: ${worktreePath}`);
-        return {
-          worktreePath
-        };
-      }
-      // CC 2.1.306 (#P8) "unchanged 必清": previously this whole block was
-      // gated on `headCommit` being present, so any path that failed to record
-      // a creation baseline leaked the worktree. `shouldRemoveUnchangedAgentWorktree`
-      // falls back to an ephemeral-slug + status-clean probe when headCommit is
-      // missing (fail-closed otherwise).
-      if (await shouldRemoveUnchangedAgentWorktree({ worktreePath, headCommit })) {
-        await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot);
+      // CC 2.1.311 Item 12: the decision itself lives in cleanupAgentWorktree
+      // (src/utils/worktree.ts) next to the official bytes it ports — hook-based
+      // keep, backgrounded-owner keep, occupant scan before AND after the async
+      // dirty check, `tengu_agent_worktree_kept` telemetry and the re-armed
+      // deferred cleanup. Deps are injected there so the logic is unit-testable
+      // without spawning a real git worktree.
+      return cleanupAgentWorktree({
+        worktreePath,
+        worktreeBranch,
+        headCommit,
+        gitRoot,
+        hookBased,
+        agentId: earlyAgentId,
+        taskRegistry,
+        isOwnerAwaitingKeepalive: ownerAwaitingKeepalive
+      }, {
+        // CC 2.1.306 (#P8) "unchanged 必清": previously this whole block was
+        // gated on `headCommit` being present, so any path that failed to record
+        // a creation baseline leaked the worktree. `shouldRemoveUnchangedAgentWorktree`
+        // falls back to an ephemeral-slug + status-clean probe when headCommit is
+        // missing (fail-closed otherwise).
+        shouldRemoveUnchanged: shouldRemoveUnchangedAgentWorktree,
+        removeWorktree: (path, branch, root) => removeAgentWorktree(path, branch, root),
+        log: message => logForDebugging(message),
+        logEvent: (name, eventMetadata) => logEvent(name, eventMetadata as Record<string, AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS>),
         // Clear worktreePath from metadata so resume doesn't try to use
         // a deleted directory. Fire-and-forget to match runAgent's
         // writeAgentMetadata handling.
-        void writeAgentMetadata(asAgentId(earlyAgentId), {
-          agentType: selectedAgent.agentType,
-          description
-        }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`));
-        return {};
-      }
-      logForDebugging(`Agent worktree has changes, keeping: ${worktreePath}`);
-      return {
-        worktreePath,
-        worktreeBranch
-      };
+        onRemoved: () => {
+          void writeAgentMetadata(asAgentId(earlyAgentId), {
+            agentType: selectedAgent.agentType,
+            description
+          }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`));
+        },
+        rearm: rearmAgentWorktreeCleanup
+      });
     };
     // Official 2.1.283 prompt-id inheritance (@210571017):
     // `Ht=Wve(e.messages,e.agentContext)` — the parent turn's prompt id is

@@ -7,6 +7,7 @@ import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
 import { getSettingsWithErrors } from './settings/settings.js'
+import { findKeywordTriggerPositions } from './ultraplan/keyword.js'
 
 export type ThinkingConfig =
   | { type: 'adaptive' }
@@ -26,36 +27,39 @@ export function isUltrathinkEnabled(): boolean {
 
 /**
  * Check if text contains the "ultrathink" keyword.
+ *
+ * 2.1.311 (triage-T4-sweep item 66): stays naive on purpose. Official keeps
+ * TWO separate scanners and only the position one gained filtering —
+ *   `function Wci(e){return/\bultrathink\b/i.test(e)}`  (v311 @242287678)
+ *   `function Nce(e){return da(e,"ultrathink")}`        (v311 @246987759)
+ * so `hasUltrathinkKeyword` ≡ `Wci` must NOT skip quoted/path occurrences.
  */
 export function hasUltrathinkKeyword(text: string): boolean {
   return /\bultrathink\b/i.test(text)
 }
 
+/** Official `Nce`'s keyword argument (v311 @246987781). */
+const ULTRATHINK_KEYWORD = 'ultrathink'
+
 /**
  * Find positions of "ultrathink" keyword in text (for UI highlighting/notification)
+ *
+ * 2.1.311 (triage-T4-sweep item 66): official `Nce` is `da(e,"ultrathink")`
+ * (@246987759) — the SAME position-filtering routine `da` (@246986898) that
+ * ultraplan/ultrareview/ultracode use, which skips occurrences inside paired
+ * delimiters (backticks, quotes, tag-like angles, braces, brackets, parens),
+ * in path/identifier context (`/`, `\`, `-`, `.`+word), before a `?`, and in
+ * slash-command input. OCC already carries a byte-faithful `da` port in
+ * utils/ultraplan/keyword.js, so this delegates to it rather than keeping the
+ * pre-311 unfiltered `matchAll` scan (which rainbow-highlighted and boosted on
+ * `what does \`ultrathink\` mean`).
  */
 export function findThinkingTriggerPositions(text: string): Array<{
   word: string
   start: number
   end: number
 }> {
-  const positions: Array<{ word: string; start: number; end: number }> = []
-  // Fresh /g literal each call — String.prototype.matchAll copies lastIndex
-  // from the source regex, so a shared instance would leak state from
-  // hasUltrathinkKeyword's .test() into this call on the next render.
-  const matches = text.matchAll(/\bultrathink\b/gi)
-
-  for (const match of matches) {
-    if (match.index !== undefined) {
-      positions.push({
-        word: match[0],
-        start: match.index,
-        end: match.index + match[0].length,
-      })
-    }
-  }
-
-  return positions
+  return findKeywordTriggerPositions(text, ULTRATHINK_KEYWORD)
 }
 
 const RAINBOW_COLORS: Array<keyof Theme> = [

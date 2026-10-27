@@ -14,10 +14,12 @@ import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text, useTerminalFocus } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
 import { type AutoModeDenial, getAutoModeDenials, removeAutoModeDenial } from '../../../utils/autoModeDenials.js';
+import { logError } from '../../../utils/log.js';
 import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../utils/permissions/PermissionRule.js';
 import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js';
 import { deletePermissionRule, getAllowRules, getAskRules, getDenyRules, permissionRuleSourceDisplayString } from '../../../utils/permissions/permissions.js';
 import type { UnreachableRule } from '../../../utils/permissions/shadowedRuleDetection.js';
+import { pushScreenReaderAnnouncement } from '../../../utils/screenReader.js';
 import { jsonStringify } from '../../../utils/slowOperations.js';
 import { Pane } from '../../design-system/Pane.js';
 import { Tab, Tabs, useTabHeaderFocus, useTabsWidth } from '../../design-system/Tabs.js';
@@ -35,6 +37,45 @@ type TabType = 'recent' | 'allow' | 'ask' | 'deny' | 'workspace';
 type RuleSourceTextProps = {
   rule: PermissionRule;
 };
+
+/**
+ * v2.1.311 PORT #61 — delete a permission rule, then announce the outcome to
+ * screen readers IMMEDIATELY while keeping the buffered visual message.
+ *
+ * Official v311 handler (binary @284334700): `K0`=pushScreenReaderAnnouncement,
+ * `A`=setChanges (visual buffer), `he`=chalk, `l`=logError. On success it
+ * buffers `Deleted <behavior> rule <bold(value)>` and announces
+ * `[Deleted <behavior> rule <plain(value)>]`; on failure it logs, buffers
+ * `Could not delete <bold(value)> — the rule is unchanged` and announces
+ * `[Could not delete <plain(value)> — the rule is unchanged]`. The SR brackets
+ * carry the PLAIN (unstyled) value; only the visual message is bolded. Both
+ * branches resolve to void so the caller's synchronous cleanup still runs.
+ *
+ * Extracted verbatim from the component's memoized delete closure into this
+ * module-level helper — behavior identical, unit-testable without an AppState
+ * render harness. The em dash is the literal U+2014 the binary ships (—).
+ */
+export function runPermissionRuleDelete({
+  rule,
+  initialContext,
+  setToolPermissionContext,
+  appendChange,
+}: Parameters<typeof deletePermissionRule>[0] & {
+  appendChange: (message: string) => void;
+}): Promise<void> {
+  const plainValue = permissionRuleValueToString(rule.ruleValue);
+  return deletePermissionRule({ rule, initialContext, setToolPermissionContext })
+    .then(() => {
+      appendChange(`Deleted ${rule.ruleBehavior} rule ${chalk.bold(plainValue)}`);
+      pushScreenReaderAnnouncement(`[Deleted ${rule.ruleBehavior} rule ${plainValue}]`);
+    })
+    .catch((error: unknown) => {
+      logError(error);
+      appendChange(`Could not delete ${chalk.bold(plainValue)} — the rule is unchanged`);
+      pushScreenReaderAnnouncement(`[Could not delete ${plainValue} — the rule is unchanged]`);
+    });
+}
+
 function RuleSourceText(t0) {
   const $ = _c(4);
   const {
@@ -902,7 +943,7 @@ export function PermissionRuleList(t0) {
         }
       }
       setLastFocusedRuleKey(nextFocusKey);
-      deletePermissionRule({
+      runPermissionRuleDelete({
         rule: selectedRule,
         initialContext: toolPermissionContext,
         setToolPermissionContext(toolPermissionContext_0) {
@@ -910,9 +951,11 @@ export function PermissionRuleList(t0) {
             ...prev_1,
             toolPermissionContext: toolPermissionContext_0
           }));
+        },
+        appendChange(message) {
+          setChanges(prev_2 => [...prev_2, message]);
         }
       });
-      setChanges(prev_2 => [...prev_2, `Deleted ${selectedRule.ruleBehavior} rule ${chalk.bold(permissionRuleValueToString(selectedRule.ruleValue))}`]);
       setSelectedRule(undefined);
     };
     $[36] = getRulesOptions;

@@ -15,6 +15,14 @@ import {
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
+// WP-B (triage-T1.md Item 5, official v311): LIVE compact-after-long-context-
+// credits-refusal path (statically imported — independent of the dormant
+// REACTIVE_COMPACT gate below). Official wiring @257496863:
+// `if(!ve.needsFollowUp&&bd(I,Mt,M))Jt=!0,ss=I;`
+import {
+  shouldWithholdLongContextCreditsRefusal,
+  tryCompactAfterLongContextRefusal,
+} from './services/compact/reactiveCompact.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 // DORMANT in the shipped build (OCC-98 acceptance finding #6 / dataflow d113):
 // `REACTIVE_COMPACT` is NOT in src/utils/featureFlags.ts FEATURE_ALLOWLIST →
@@ -119,7 +127,10 @@ import {
   tokenCountWithEstimation,
 } from './utils/tokens.js'
 import { createContextRoom } from './utils/contextRoom.js'
-import { ESCALATED_MAX_TOKENS } from './utils/context.js'
+import {
+  ESCALATED_MAX_TOKENS,
+  getContextWindowForModel,
+} from './utils/context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
 import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
@@ -692,6 +703,10 @@ async function* queryLoop(
     // loop-exit signal. If false after streaming, we're done (modulo stop-hook retry).
     const toolUseBlocks: ToolUseBlock[] = []
     let needsFollowUp = false
+    // WP-B (Item 5, official v311 @257496863 `Jt=!0,ss=I`): remembers the
+    // withheld 1M-credits refusal so the post-loop compact-and-continue
+    // branch can recognize it (official merge `Q=E!==void 0&&E===ss`).
+    let withheldCreditsRefusal: AssistantMessage | undefined
     // Official 2.1.273: per-turn tool-duration collection (`mo.toolDurations`,
     // fresh [] each iteration; `if(je.toolDuration)mo.toolDurations.push(...)`
     // at both stream-executor consumption points).
@@ -1003,6 +1018,20 @@ async function* queryLoop(
             }
             if (reactiveCompact?.isWithheldPromptTooLong(message as Message)) {
               withheld = true
+            }
+            // WP-B (Item 5, official bd @257405921): withhold the 1M-credits
+            // refusal (standard window, gates open) — the post-loop branch
+            // attempts compact-and-continue instead of surfacing the fatal.
+            if (
+              !needsFollowUp &&
+              shouldWithholdLongContextCreditsRefusal({
+                message: message as Message,
+                contextWindow: getContextWindowForModel(currentModel),
+                querySource,
+              })
+            ) {
+              withheld = true
+              withheldCreditsRefusal = message as AssistantMessage
             }
             if (
               mediaRecoveryEnabled &&
@@ -1465,6 +1494,92 @@ async function* queryLoop(
         yield lastMessage
         void executeStopFailureHooks(lastMessage, toolUseContext)
         return { reason: 'prompt_too_long' }
+      }
+
+      // WP-B (Item 5, official v311 @257496863/@257505460): the withheld
+      // 1M-credits refusal gets ONE post-loop compact-and-continue attempt.
+      // Success resumes the loop once (hasAttemptedReactiveCompact latch —
+      // the next refusal falls to still_refused and surfaces); failure
+      // surfaces the fatal refusal and ends the turn through the normal
+      // end-of-turn isApiErrorMessage path below (official `break e` →
+      // `if(Q)yield E`); abort exits with the interruption message.
+      if (
+        lastMessage !== undefined &&
+        lastMessage === withheldCreditsRefusal
+      ) {
+        const refusalAttempt = await tryCompactAfterLongContextRefusal({
+          hasAttempted: hasAttemptedReactiveCompact,
+          querySource,
+          aborted: toolUseContext.abortController.signal.aborted,
+          consecutiveRapidRefills: 0,
+          messages: messagesForQuery,
+          cacheSafeParams: {
+            systemPrompt,
+            userContext,
+            systemContext,
+            toolUseContext,
+            forkContextMessages: messagesForQuery,
+          },
+        })
+        if (refusalAttempt.kind === 'compacted') {
+          // Official success telemetry: bare event, no outcome field.
+          logEvent('tengu_compact_after_long_context_refusal', {})
+          const compacted = refusalAttempt.result
+          // task_budget carryover — same as the dormant reactive branch.
+          if (params.taskBudget) {
+            const preCompactContext =
+              finalContextTokensFromLastResponse(messagesForQuery)
+            taskBudgetRemaining = Math.max(
+              0,
+              (taskBudgetRemaining ?? params.taskBudget.total) -
+                preCompactContext,
+            )
+          }
+          compacted.summaryMessages = backfillMessagePromptId(
+            compacted.summaryMessages,
+            messagesForQuery,
+          )
+          const postCompactMessages = buildPostCompactMessages(compacted)
+          for (const msg of postCompactMessages) {
+            yield msg
+          }
+          const next: State = {
+            messages: postCompactMessages,
+            toolUseContext,
+            autoCompactTracking: undefined,
+            maxOutputTokensRecoveryCount,
+            hasAttemptedReactiveCompact: true,
+            maxOutputTokensOverride: undefined,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            consecutiveStopHookBlocks: 0,
+            turnCount,
+            thinkingOnlyNudged,
+            malformedToolUseRetryCount,
+            transition: { reason: 'reactive_compact_retry' },
+          }
+          state = next
+          continue
+        }
+        logEvent('tengu_compact_after_long_context_refusal', {
+          outcome:
+            refusalAttempt.outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        })
+        if (refusalAttempt.outcome === 'aborted') {
+          if (toolUseContext.abortController.signal.reason !== 'interrupt') {
+            yield stampSendNowCut(
+              createUserInterruptionMessage({
+                toolUse: hasToolUseBlocks(assistantMessages),
+              }),
+              toolUseContext.abortController.signal,
+            )
+          }
+          return { reason: 'aborted_streaming' }
+        }
+        // still_refused / not_compacted / too_few_groups /
+        // rapid_refill_breaker: surface the withheld fatal refusal once;
+        // the end-of-turn path below runs the stop-failure hooks and exits.
+        yield lastMessage
       }
 
       // Check for max_output_tokens and inject recovery message. The error

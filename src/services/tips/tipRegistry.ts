@@ -1,12 +1,15 @@
 import chalk from 'chalk'
 import { CLI_BINARY_NAME } from '../../constants/cli.js'
+import { getOutputStyleConfig } from '../../constants/outputStyles.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { fileHistoryEnabled } from 'src/utils/fileHistory.js'
+import { isSettingSourceEnabled } from 'src/utils/settings/constants.js'
 import {
   getInitialSettings,
   getSettings_DEPRECATED,
   getSettingsForSource,
 } from 'src/utils/settings/settings.js'
+import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { shouldOfferTerminalSetup } from '../../commands/terminalSetup/terminalSetup.js'
 import {
   isFocusViewEnabled,

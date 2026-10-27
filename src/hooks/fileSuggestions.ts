@@ -66,6 +66,27 @@ let cachedTrackedDirs: string[] = []
 let ignorePatternsCache: ReturnType<typeof ignore> | null = null
 let ignorePatternsCacheKey: string | null = null
 
+// CC 2.1.311 (ITEM 11): `.ignore`/`.rgignore` negation re-includes for the
+// @-file picker. Official state (@263867357 in the 2.1.311 linux-x64 ELF):
+// `ignoreReincludeGlobs:[],lastReincludedFiles:[],reincludeRetryAtMs:0`,
+// reset in `fvo` (@263867910). Populated by loadRipgrepIgnorePatterns via
+// deriveIgnoreReincludeGlobs (official `U`); consumed by the background
+// untracked fetch (official `ae` @263877300).
+let ignoreReincludeGlobs: string[] = []
+let lastReincludedFiles: string[] = []
+let reincludeRetryAtMs = 0
+
+/** Official fetch timeout: `AbortSignal.timeout(1e4)` (@263877300). */
+const REINCLUDE_FETCH_TIMEOUT_MS = 10_000
+/** Official failure backoff: `se=300000` (@263874800). */
+const REINCLUDE_RETRY_BACKOFF_MS = 300_000
+/** Official `v=[".git",".svn",".hg",".bzr",".jj",".sl"]` (@263872950). */
+const VCS_DIRS = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl']
+/** Official `Q=v.flatMap(e=>["--glob",`!${e}`])`. */
+const VCS_DIR_GLOB_ARGS = VCS_DIRS.flatMap(dir => ['--glob', `!${dir}`])
+/** Official chunk-yield budget `jAn=4` inside the G() filter (@263871008). */
+const IGNORE_FILTER_CHUNK_MS = 4
+
 // Throttle state for background refresh. .git/index mtime triggers an
 // immediate refresh when tracked files change (add/checkout/commit/rm).
 // The time floor still refreshes every 5s to pick up untracked files,

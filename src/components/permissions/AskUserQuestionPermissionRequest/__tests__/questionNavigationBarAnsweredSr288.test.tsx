@@ -13,21 +13,24 @@ import { renderToStringIsolated } from '../../../CustomSelect/__tests__/renderIs
 import { QuestionNavigationBar } from '../QuestionNavigationBar.js'
 
 /**
- * v2.1.288 gap entry #67 — Screen reader: question dialogs now say "answered"
- * beside the checkbox for answered questions.
+ * v2.1.288 gap entry #67 — Screen reader: question dialogs now surface which
+ * questions are answered.
  *
- * Official v288 (binary @229288327): `var iXe="answered ";` (TRAILING SPACE).
- * Tab renderer (binary @~229289600):
- *   let bo=Qo?.key&&!!H[Qo.key];            // isAnswered
- *   let vo=bo?Z.checkboxOn:Z.checkboxOff;
- *   ...children:[vo," ",Pe&&bo?iXe:"",un]   // Pe=Ye() = isScreenReaderEnabled()
- * The label is a sibling text node between the checkbox and the display text,
- * gated on the component-scope SR flag. Official added `Pe` to BOTH memo dep
- * arrays (cache w(38)→w(41)); OCC mirrors with `srEnabled` in both memo blocks
- * (_c(39)→_c(41)).
+ * SUPERSEDED IN v2.1.311 (PORT #64). v288 official rendered an inline
+ * `iXe="answered "` label between the checkbox and the display text
+ * (binary @229288327, tab renderer @~229289600). In v311 the official
+ * QuestionNavigationBar (`Sk` @275627750) REPLACED that surface: when SR is
+ * on it EARLY-RETURNS a single listing —
+ *   `Questions: Auth (answered), Lib` —
+ * INSTEAD of the tab bar (`return Jo`), and v311's non-SR tab renderer no
+ * longer contains the inline prefix. Evidence: `(answered)` v310=0 → v311=2
+ * (@129034225, @275628958); the v310 `"answered "` tab-prefix string is gone
+ * from the v311 tab renderer. See questionNavSrListing311.test.tsx for the
+ * full listing contract (singular/plural, quoting, Q-fallback).
  *
- * SR-ON cases assert on the SR flat-render serialization (what a screen reader
- * consumes); SR-OFF asserts the visible-mode layout is unchanged.
+ * These tests therefore assert the v311 SR listing on the SR-ON path, and
+ * keep the v288 SR-OFF guarantee: the visible-mode tab bar never shows
+ * "answered" anywhere.
  */
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -109,8 +112,8 @@ async function renderSrStripped(
 
 /**
  * Re-render driver: mounts with `answers={}`, then swaps in the answered map
- * after `changeMs`. Guards the memo-cache slot renumbering — a stale-cache bug
- * shows as the "answered " label NOT appearing after the answers prop changes.
+ * after `changeMs`. Guards the SR listing memo slots — a stale-cache bug shows
+ * as the " (answered)" suffix NOT appearing after the answers prop changes.
  */
 function AnswersChangeDriver({
   questions,
@@ -159,16 +162,16 @@ const q2: Question = {
 
 const TWO_QUESTIONS = [q1, q2]
 
-// Official label — verbatim `iXe="answered ";` with trailing space. Adjacency
-// assertions bake the trailing space in: "answered" + " " + displayText.
-const ANSWERED_ON = `${figures.checkboxOn} answered Auth`
-const ANSWERED_ON_2 = `${figures.checkboxOn} answered Lib`
+// v311 listing strings (binary `Sk` @275627750): header word + ", "-joined
+// labels; answered labels get the " (answered)" suffix (@275628958).
+const LISTING_ONE_ANSWERED = 'Questions: Auth (answered), Lib'
+const LISTING_BOTH_ANSWERED = 'Questions: Auth (answered), Lib (answered)'
 
-describe('v2.1.288 #67: QuestionNavigationBar SR "answered" label', () => {
+describe('v2.1.288 #67 → v2.1.311 #64: QuestionNavigationBar SR "answered" surface', () => {
   beforeEach(() => setSR(false))
   afterEach(() => setSR(false))
 
-  test('SR ON + answered question → label sits between checkbox and display text', async () => {
+  test('SR ON + answered question → the listing marks it "(answered)"', async () => {
     // Arrange
     setSR(true)
     expect(isScreenReaderEnabled()).toBe(true)
@@ -180,14 +183,16 @@ describe('v2.1.288 #67: QuestionNavigationBar SR "answered" label', () => {
         currentQuestionIndex={0}
         answers={{ [q1.question]: 'OAuth' }}
       />,
+      2000,
+      o => o.includes(LISTING_ONE_ANSWERED),
     )
 
-    // Assert — checkboxOn, then "answered " (trailing space preserved by the
-    // adjacent display text), then the tab text.
-    expect(out).toContain(ANSWERED_ON)
+    // Assert — v311 SR listing; the tab bar (and its checkboxes) is replaced.
+    expect(out).toContain(LISTING_ONE_ANSWERED)
+    expect(out).not.toContain(figures.checkboxOn)
   })
 
-  test('SR ON + unanswered question → no "answered" in its tab', async () => {
+  test('SR ON + unanswered question → no "(answered)" suffix for it', async () => {
     // Arrange — q1 answered, q2 NOT answered.
     setSR(true)
 
@@ -198,13 +203,14 @@ describe('v2.1.288 #67: QuestionNavigationBar SR "answered" label', () => {
         currentQuestionIndex={0}
         answers={{ [q1.question]: 'OAuth' }}
       />,
+      2000,
+      o => o.includes(LISTING_ONE_ANSWERED),
     )
 
-    // Assert — exactly one label (the answered tab); the unanswered tab keeps
-    // the bare checkboxOff + display text.
-    expect(out).toContain(ANSWERED_ON)
-    expect(out).not.toContain(`answered Lib`)
-    expect(out.match(/answered/g)?.length ?? 0).toBe(1)
+    // Assert — exactly one suffix (the answered question); the unanswered one
+    // keeps its bare label.
+    expect(out).toContain(LISTING_ONE_ANSWERED)
+    expect(out.match(/\(answered\)/g)?.length ?? 0).toBe(1)
   })
 
   test('SR OFF + answered question → no "answered" anywhere (visible layout unchanged)', async () => {
@@ -228,8 +234,8 @@ describe('v2.1.288 #67: QuestionNavigationBar SR "answered" label', () => {
     expect(out).toContain('Lib')
   })
 
-  test('SR ON → both the selected tab and an unselected answered tab show the label', async () => {
-    // Arrange — ≥2 questions, currentQuestionIndex=0, question 2 answered too.
+  test('SR ON → every answered question gets the suffix in the listing', async () => {
+    // Arrange — ≥2 questions, both answered.
     setSR(true)
 
     // Act
@@ -239,18 +245,18 @@ describe('v2.1.288 #67: QuestionNavigationBar SR "answered" label', () => {
         currentQuestionIndex={0}
         answers={{ [q1.question]: 'OAuth', [q2.question]: 'date-fns' }}
       />,
+      2000,
+      o => o.includes(LISTING_BOTH_ANSWERED),
     )
 
-    // Assert — selected (backgroundColor="permission") branch AND unselected
-    // branch both carry the label.
-    expect(out).toContain(ANSWERED_ON)
-    expect(out).toContain(ANSWERED_ON_2)
+    // Assert
+    expect(out).toContain(LISTING_BOTH_ANSWERED)
   })
 
-  test('memo-cache sanity: label appears after the answers prop changes on a live instance', async () => {
+  test('memo-cache sanity: the listing updates after the answers prop changes on a live instance', async () => {
     // Arrange — first render has NO answers; at +20ms the answers prop changes.
-    // If the memo slot renumbering is broken (stale $[k] pairing), the t4/t5
-    // memos return the cached children and the label never appears.
+    // If the SR listing memo pairing is broken (stale $[k] slots), the cached
+    // listing without "(answered)" is returned and the suffix never appears.
     setSR(true)
     const newAnswers = { [q1.question]: 'OAuth' }
 
@@ -263,10 +269,10 @@ describe('v2.1.288 #67: QuestionNavigationBar SR "answered" label', () => {
         changeMs={20}
       />,
       3000,
-      o => o.includes(ANSWERED_ON),
+      o => o.includes(LISTING_ONE_ANSWERED),
     )
 
     // Assert
-    expect(out).toContain(ANSWERED_ON)
+    expect(out).toContain(LISTING_ONE_ANSWERED)
   })
 })
