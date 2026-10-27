@@ -174,7 +174,7 @@ import { errorMessage, getErrnoCode, isENOENT, TeleportOperationError, toError }
 import { getFsImplementation, safeResolvePath } from 'src/utils/fsOperations.js';
 import { gracefulShutdown, gracefulShutdownSync } from 'src/utils/gracefulShutdown.js';
 import { findClosestSubcommand } from 'src/cli/subcommandSuggestion.js';
-import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
+import { applyHookEventsEnvFlags, setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
 import { registerMainThreadAgentHooks } from 'src/utils/hooks/registerFrontmatterHooks.js';
 import { isRestrictedToPluginOnly, isSourceAdminTrusted } from 'src/utils/settings/pluginOnlyPolicy.js';
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js';
@@ -1563,6 +1563,14 @@ async function run(): Promise<CommanderCommand> {
     if (includeHookEvents || isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) {
       setAllHookEventsEnabled(true);
     }
+
+    // CC 2.1.311 — one-shot env-flag application (official `uFs()` @249402502,
+    // called unconditionally right after the setAllHookEventsEnabled gate:
+    // `if(et||i.CLAUDE_CODE_REMOTE)cFs(!0);if(uFs(),we){…}` @258725286).
+    // Enables the UserPromptSubmit start/end hook-event sub-flag when
+    // CLAUDE_CODE_EMIT_USER_PROMPT_SUBMIT_HOOK_EVENTS is truthy, then always
+    // deletes the env var so child processes do not inherit it.
+    applyHookEventsEnvFlags();
 
     // Auto-set input/output formats, verbose mode, and print mode when SDK URL is provided
     if (sdkUrl) {
