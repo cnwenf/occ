@@ -89,13 +89,16 @@ const DELETED_VISUAL = `Deleted allow rule ${chalk.bold(PLAIN)}`
 const COULD_NOT_DELETE_SR = `[Could not delete ${PLAIN} — the rule is unchanged]`
 const COULD_NOT_DELETE_VISUAL = `Could not delete ${chalk.bold(PLAIN)} — the rule is unchanged`
 
-function makeArgs(overrides?: Partial<DeleteArgs>): DeleteArgs {
+function makeArgs(
+  overrides?: Partial<DeleteArgs & { appendChange: (message: string) => void }>,
+): DeleteArgs & { appendChange: (message: string) => void } {
   return {
     rule: RULE,
     initialContext: getEmptyToolPermissionContext(),
     setToolPermissionContext: () => {},
+    appendChange: () => {},
     ...overrides,
-  } as DeleteArgs
+  } as DeleteArgs & { appendChange: (message: string) => void }
 }
 
 describe('v2.1.311 #61: permission-rule delete SR announcements', () => {

@@ -44,15 +44,30 @@ type RefusalAttempt = Awaited<
 type RefusalParams = Parameters<
   typeof realReactive.tryCompactAfterLongContextRefusal
 >[0]
+type RefusalDeps = Parameters<
+  typeof realReactive.tryCompactAfterLongContextRefusal
+>[1]
 
 let compactCalls: { hasAttempted: boolean; aborted: boolean }[] = []
 let compactMode: 'succeed' | 'fail' | 'abort' = 'succeed'
+
+// Capture the REAL function reference BEFORE mock.module patches the live
+// bindings — the delegate below must not recurse into the fake.
+const realTryCompact = realReactive.tryCompactAfterLongContextRefusal
 
 mock.module('../services/compact/reactiveCompact.js', () => ({
   ...realReactive,
   tryCompactAfterLongContextRefusal: async (
     params: RefusalParams,
+    deps?: RefusalDeps,
   ): Promise<RefusalAttempt> => {
+    // Delegate to the REAL implementation when deps are injected — sibling
+    // unit tests (reactiveCompactCredits311) call through this same mocked
+    // registry entry with an injected `compact` spy. query.ts itself calls
+    // without deps and gets the fake below.
+    if (deps !== undefined) {
+      return realTryCompact(params, deps)
+    }
     compactCalls.push({
       hasAttempted: params.hasAttempted,
       aborted: params.aborted,

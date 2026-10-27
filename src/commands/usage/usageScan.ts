@@ -17,7 +17,8 @@
  *     (`Ke=300000`) with >=4 (`Ge`) distinct sessions; subagent_heavy:
  *     sessions with >=3 (`Fe`) subagent requests or subagent cost share
  *     >0.5 (`He`); cron: sessions active in >=8 (`qe`) distinct hours.
- *     Thresholds: cache miss uncached >1e5 (`ve`), long context r>150000
+ *     Thresholds: cache miss uncached+recached >1e5 (`Ne`; CC 2.1.311 —
+ *     v310 `re` used uncached alone), long context r>150000
  *     (`Ue`); always-on / large-tool-result costs are the request cost
  *     minus output cost, scaled by the token share (min 1).
  *   - Pct mapper `h` @236999640: behaviors kept when
@@ -55,6 +56,20 @@
  * binary @256635621 region), the `ie` finalize peakParallel field, and the
  * `wYe` window orchestrator (`computeUsageWindows`) feeding the
  * recommendation catalog in usageRecommendations.ts.
+ *
+ * CC 2.1.311 (triage-T3 Item 44 — prompt-cache churn): the record type gains
+ * `recached` (official `Vt` @258292184 `recached:0`; v310 = 0 hits, v311 = 6
+ * hits of the `recached` token). Per stream (key = isSubagent) the scan keeps
+ * the previous record and stamps cache churn (official aggregation @258289975
+ * region): identical cached/cacheCreate/uncached inherit the previous
+ * recached (retry/duplicate), else
+ * `recached = min(cacheCreate, max(0, prev.cached + prev.cacheCreate −
+ * cur.cached))`. A `"subtype":"compact_boundary"` line clears the map
+ * (official `lt` marker @258281637 + `u.clear()` @258290994 region; absent
+ * from the v310 scanner). The cache-miss bucket becomes
+ * `uncached + recached > 1e5` (official `ie` @258294109); the long-context
+ * bucket stays `cached+cacheCreate+uncached > 150000` — recached is NOT
+ * added there (it is a subset of cacheCreate).
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises'
@@ -115,6 +130,10 @@ export interface ScanRecord {
   sessionId: string
   cached: number
   cacheCreate: number
+  /** CC 2.1.311 (official `Vt` @258292184): prompt-cache churn tokens —
+   * the part of this request's cacheCreate that re-caches content the
+   * previous same-stream request already had cached. */
+  recached: number
   uncached: number
   output: number
   isSubagent: boolean
@@ -141,6 +160,40 @@ export function weightedCost(record: ScanRecord): number {
     record.modelTier
   )
 }
+
+/**
+ * CC 2.1.311 — official per-stream prev-record aggregation (@258289975
+ * region): identical cached/cacheCreate/uncached to the previous record
+ * (retry / duplicate) inherit its recached; otherwise recached is the cache
+ * churn `min(cacheCreate, max(0, prev.cached + prev.cacheCreate −
+ * cur.cached))`. No previous record → the parsed `recached: 0` stands.
+ * Immutable adaptation: returns a NEW record (the official mutates the
+ * scan-local `S` in place; same observable result, no shared-state risk).
+ */
+export function computeRecached(
+  prev: ScanRecord | undefined,
+  current: ScanRecord,
+): ScanRecord {
+  if (!prev) return current
+  const isIdentical =
+    prev.cached === current.cached &&
+    prev.cacheCreate === current.cacheCreate &&
+    prev.uncached === current.uncached
+  if (isIdentical) {
+    return { ...current, recached: prev.recached }
+  }
+  return {
+    ...current,
+    recached: Math.min(
+      current.cacheCreate,
+      Math.max(0, prev.cached + prev.cacheCreate - current.cached),
+    ),
+  }
+}
+
+/** CC 2.1.311 — official `lt=[d.encode('"subtype":"compact_boundary"')]`
+ * (@258281637): recached tracking never crosses a compaction boundary. */
+const COMPACT_BOUNDARY_MARKER = '"subtype":"compact_boundary"'
 
 /** Official `Z` — per-file scan state. */
 export interface ScanState {
@@ -288,7 +341,9 @@ export function accumulateRequest(acc: WindowAccumulator, record: ScanRecord): v
   addAttribution(acc.byMcp, record.attributionMcpServer, cost)
 
   const contextTokens = record.cached + record.cacheCreate + record.uncached
-  if (record.uncached > CACHE_MISS_UNCACHED_TOKENS) {
+  // CC 2.1.311 (official `ie` @258294109): `n.uncached+n.recached>Ne` —
+  // v310 `re` used `n.uncached>xe` (same 1e5 constant).
+  if (record.uncached + record.recached > CACHE_MISS_UNCACHED_TOKENS) {
     acc.behaviors.cache_miss.cost += cost
     acc.behaviors.cache_miss.count++
   }
@@ -511,6 +566,9 @@ export function parseAssistantRecord(
     sessionId: String(parsed.sessionId ?? ''),
     cached,
     cacheCreate,
+    // CC 2.1.311 (official `Vt` @258292184): parsed records start at 0;
+    // the scan loop's prev-record tracking stamps the churn value.
+    recached: 0,
     uncached,
     output,
     isSubagent: parsed.isSidechain === true,
@@ -996,13 +1054,23 @@ export async function scanTranscriptFile(
   }
   const state = createScanState()
   const records: ScanRecord[] = []
+  // CC 2.1.311 — official `u = Map<isSubagent, previousRecord>` (per-file
+  // scope); `if(k(m,lt,f)){u.clear();return}` resets it at compaction
+  // boundaries (@258290994 region).
+  const prevByStream = new Map<boolean, ScanRecord>()
   for (const line of content.split('\n')) {
     if (line === '') continue
     const record = parseAssistantRecord(line, filePath)
     if (record !== null) {
       applyRequestRecord(state, record)
-      if (evidence) noteAssistantEvidence(evidence, record, line)
-      if (record.ts >= cutoff) records.push(record)
+      const finalRecord = computeRecached(prevByStream.get(record.isSubagent), record)
+      prevByStream.set(record.isSubagent, finalRecord)
+      if (evidence) noteAssistantEvidence(evidence, finalRecord, line)
+      if (finalRecord.ts >= cutoff) records.push(finalRecord)
+      continue
+    }
+    if (line.includes(COMPACT_BOUNDARY_MARKER)) {
+      prevByStream.clear()
       continue
     }
     applyUserLine(state, line)

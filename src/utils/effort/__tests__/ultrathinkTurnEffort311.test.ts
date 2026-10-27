@@ -21,7 +21,8 @@ import {
  * claude-code 2.1.311 triage-T4-sweep item 65 — ultrathink raises the turn's
  * reasoning effort to `xhigh`.
  *
- * Official v311 handler `ql` (@257370026, byte-verified):
+ * Official v311 handler `ql` (@257369783, byte-verified; absent from the v310
+ * binary, so it is new in 2.1.311):
  *   `function ql(e,n,r,s){try{if(!(jnr(n,r)&&e.some(...Nce(S.preExpansionValue).length>0)))return;
  *     let y=tn({type:"ultrathink_effort"},s);
  *     return g("ultrathink_boost"),a("tengu_ultrathink",{}),
@@ -34,11 +35,14 @@ import {
  *   `function ce(e){return QS(e)&&!Rt()&&dA()===void 0}`
  *   `function Zqr(e){return fot(e,Je(e))}`  // per_turn_effort capability
  *   `function h(e){return ma.indexOf(e)}`   // effort ordinal
- *   `var ma=["low","medium","high","xhigh","max"]`   (@239566822)
+ *   `var ma=["low","medium","high","xhigh","max"]`   (@239566818)
  *
  * `per_turn_effort` catalog membership (v311 model registry, byte-verified at
- * @239158610 haiku-5-5, @239163900 sonnet-5-5, @239170413 opus-5-5,
- * @239172489 fable-5-1) is exactly the four models the triage doc lists.
+ * @239158609 `{id:"claude-haiku-5-5"…}`, @239163899 `{id:"claude-sonnet-5-5"…}`,
+ * @239170412 `{id:"claude-opus-5-5"…}`, @239172488 `{id:"claude-fable-5-1"…}`)
+ * is exactly the four models the triage doc lists. The fifth `"per_turn_effort"`
+ * string in the binary (@239178434) is the capability-NAME enum `$ts=[…]`, not
+ * a fifth model — verified, so the allowlist below is complete.
  */
 
 const SAVED_EFFORT_ENV = process.env.CLAUDE_CODE_EFFORT_LEVEL

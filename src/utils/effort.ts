@@ -30,7 +30,7 @@ export type EffortValue = EffortLevel | number
 /**
  * claude-code 2.1.311 (triage-T4-sweep item 65): official's effort ordinal —
  *   `function h(e){return ma.indexOf(e)}`          (v311 @243580076)
- *   `var ma=["low","medium","high","xhigh","max"]` (v311 @239566822)
+ *   `var ma=["low","medium","high","xhigh","max"]` (v311 @239566818)
  * used by the ultrathink gate `jnr`'s headroom check `h(AH(e,n))<h("xhigh")`.
  * Returns -1 for a level outside EFFORT_LEVELS.
  */

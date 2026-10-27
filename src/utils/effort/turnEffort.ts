@@ -51,11 +51,14 @@ export function getTurnEffort(): EffortLevel | undefined {
  *     return jTn(n,"per_turn_effort",e)===!0||QS?.(n,e)===!0}`
  *
  * OCC reduction: the capability probe is the catalog `per_turn_effort` entry.
- * The v311 model registry lists it for exactly four models (byte-verified):
- *   claude-haiku-5-5  @239158610
- *   claude-sonnet-5-5 @239163900
- *   claude-opus-5-5   @239170413
- *   claude-fable-5-1  @239172489
+ * The v311 model registry lists it for exactly four models (byte-verified —
+ * each offset is the `"per_turn_effort"` string inside that entry's
+ * `capabilities` array; the fifth binary hit @239178434 is the capability-NAME
+ * enum `$ts=[…]`, not a model, so this list is complete):
+ *   claude-haiku-5-5  @239158609
+ *   claude-sonnet-5-5 @239163899
+ *   claude-opus-5-5   @239170412
+ *   claude-fable-5-1  @239172488
  * No default-true fallback: official requires an explicit catalog entry, so
  * an unknown model string does not gain per-turn effort. The 1M-beta
  * exclusion is dropped — OCC has no sticky-beta conversation latch to read.

@@ -253,6 +253,7 @@ import { useAwaySummary } from 'src/hooks/useAwaySummary.js';
 import { useChromeExtensionNotification } from 'src/hooks/useChromeExtensionNotification.js';
 import { useOfficialMarketplaceNotification } from 'src/hooks/useOfficialMarketplaceNotification.js';
 import { usePromptsFromClaudeInChrome } from 'src/hooks/usePromptsFromClaudeInChrome.js';
+import { absorbExplanationRequests } from 'src/services/tips/explanationRequests.js';
 import { getTipToShowOnSpinner, recordShownTip } from 'src/services/tips/tipScheduler.js';
 import type { Theme } from 'src/utils/theme.js';
 import { checkAndDisableBypassPermissionsIfNeeded, checkAndDisableAutoModeIfNeeded, useKickOffCheckAndDisableBypassPermissionsIfNeeded, useKickOffCheckAndDisableAutoModeIfNeeded } from 'src/utils/permissions/bypassPermissionsKillswitch.js';
@@ -1662,7 +1663,11 @@ export function REPL({
     void getTipToShowOnSpinner({
       theme,
       readFileState: readFileState.current,
-      bashTools: bashTools.current
+      bashTools: bashTools.current,
+      // 2.1.311 #2: official `_absorbNewSessionSignals()` scans the transcript
+      // incrementally and exposes `_explanationRequestIds.size` on the tip
+      // context, which gates the `explanatory-output-style` tip at >= 2.
+      explanationRequestCount: absorbExplanationRequests(messagesRef.current)
     }).then(async tip => {
       if (tip) {
         const content = await tip.content({

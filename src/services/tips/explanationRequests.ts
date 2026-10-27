@@ -54,7 +54,7 @@ const IDE_ATTACHMENT_BLOCK_PATTERN =
   /<(ide_opened_file|ide_selection)(?:\s[^>]*)?>[\s\S]*?<\/\1>\n?/g
 
 /**
- * Official `mSs`'s detector (v311 @257317076, byte-verbatim). Non-global, so
+ * Official `mSs`'s detector (v311 @257317005, byte-verbatim). Non-global, so
  * `.test()` carries no `lastIndex` state between calls.
  */
 const EXPLANATION_REQUEST_PATTERN =
@@ -82,7 +82,7 @@ export function stripIdeAttachmentBlocks(text: string): string {
 }
 
 /**
- * Official `mSs` (v311 @257316920, byte-verbatim):
+ * Official `mSs` (v311 @257316911, byte-verbatim):
  *   `function mSs(e){let n=e.toLowerCase().replace(/’/g,"'")
  *      .replace(/\s+/g," ").trim();return/<detector>/.test(n)}`
  *

@@ -632,6 +632,118 @@ export async function maybeInstallIDEExtension(
   }
 }
 
+/**
+ * Docs URL for manually installing the VS Code extension.
+ * Official v311 `Jln` @251640884 region (byte-verified).
+ */
+export const IDE_INSTALL_DOCS_URL =
+  'https://code.claude.com/docs/en/vs-code#install-the-extension'
+
+/**
+ * Why auto-install would be skipped, or null when it is allowed.
+ * Official v311 `MNr()` @251640820 (byte-verified):
+ *   if(i.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL)
+ *     return"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL is set";
+ *   if(!(ue().autoInstallIdeExtension??!0))
+ *     return"the autoInstallIdeExtension setting is off";
+ *   return null
+ * The env check uses OCC's established isEnvTruthy semantics (same as
+ * initializeIdeIntegration below); the official reads the raw env var.
+ */
+export function getIdeInstallSkipReason(): string | null {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL)) {
+    return 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL is set'
+  }
+  if (!(getGlobalConfig().autoInstallIdeExtension ?? true)) {
+    return 'the autoInstallIdeExtension setting is off'
+  }
+  return null
+}
+
+export type IdeInstallResultMessageOptions = {
+  /** Skip reason override; when omitted, getIdeInstallSkipReason() is used. */
+  skipReason?: string | null
+  /**
+   * Remote-workspace fallback reason. Official reads `Rt()` (a generic
+   * workspace-is-remote predicate); OCC has no equivalent, so per the WP-H
+   * brief this is a boolean parameter producing the same byte-exact reason
+   * string "this session's workspace is remote".
+   */
+  workspaceIsRemote?: boolean
+  /** Emphasis function (chalk.bold at the call site); identity by default so the mapper stays pure. */
+  bold?: (s: string) => string
+}
+
+/**
+ * Map an install result to the user-facing /ide message.
+ * Official v311 `We` fulfilled handler @284842600 (byte-verified):
+ *   let d=he.bold(t);let E=`To install it yourself, see ${Jln}`;
+ *   if(D?.installed)i(D.previouslyInstalled
+ *     ?`The Claude Code extension is installed in ${d}. Reload the ${t} window (Developer: Reload Window), then run /ide again.`
+ *     :`Installed the Claude Code extension in ${d}.`);
+ *   else if(D?.error)i(`Couldn't install the Claude Code extension in ${d}:\n${D.error}\n${E}`);
+ *   else{let v=MNr()??(Rt()?"this session's workspace is remote":null);
+ *     i(`Didn't install the Claude Code extension in ${d}${v?` because ${v}`:""}.\n${E}`)}
+ * A null result follows the optional chaining (D?.installed / D?.error) into
+ * the didn't-install branch. Error/didn't-install messages contain REAL
+ * newlines before the trailer. The display name is bolded in the first
+ * sentence only — the reload-window clause uses the plain name.
+ */
+export function formatIdeInstallResultMessage(
+  result: IDEExtensionInstallationStatus | null,
+  displayName: string,
+  options: IdeInstallResultMessageOptions = {},
+): string {
+  const { skipReason, workspaceIsRemote = false, bold = (s: string) => s } =
+    options
+  const boldName = bold(displayName)
+  const trailer = `To install it yourself, see ${IDE_INSTALL_DOCS_URL}`
+  if (result?.installed) {
+    return result.previouslyInstalled
+      ? `The Claude Code extension is installed in ${boldName}. Reload the ${displayName} window (Developer: Reload Window), then run /ide again.`
+      : `Installed the Claude Code extension in ${boldName}.`
+  }
+  if (result?.error) {
+    return `Couldn't install the Claude Code extension in ${boldName}:\n${result.error}\n${trailer}`
+  }
+  const reason =
+    (skipReason === undefined ? getIdeInstallSkipReason() : skipReason) ??
+    (workspaceIsRemote ? "this session's workspace is remote" : null)
+  return `Didn't install the Claude Code extension in ${boldName}${reason ? ` because ${reason}` : ''}.\n${trailer}`
+}
+
+/**
+ * JetBrains branch of the official v311 `gn` handler @284843700
+ * (byte-verified): the plugin cannot be auto-installed, so /ide reports the
+ * plugin as not running (trailing newline included):
+ *   i(`Couldn't find the Claude Code plugin running in ${he.bold(h)}.\n${he.bold(`restart ${h}`)} completely and run /ide again.\n`)
+ */
+export function formatJetBrainsPluginNotRunningMessage(
+  displayName: string,
+  bold: (s: string) => string = (s: string) => s,
+): string {
+  return `Couldn't find the Claude Code plugin running in ${bold(displayName)}.\n${bold(`restart ${displayName}`)} completely and run /ide again.\n`
+}
+
+/**
+ * Pending-UI message. Official v311 `We`:
+ *   const R=`Installing the Claude Code extension in ${t}…`
+ * (`…` is U+2026; the display name is NOT bolded here.)
+ */
+export function formatIdeInstallPendingMessage(displayName: string): string {
+  return `Installing the Claude Code extension in ${displayName}…`
+}
+
+/**
+ * Cancel ("stop waiting") system message. Official v311 `We`:
+ *   k=()=>i(`Still installing the Claude Code extension in ${t}. /status shows the result when it finishes.`,{display:"system"})
+ */
+export function formatIdeInstallStillInstallingMessage(
+  displayName: string,
+): string {
+  return `Still installing the Claude Code extension in ${displayName}. /status shows the result when it finishes.`
+}
+
 let currentIDESearch: AbortController | null = null
 
 export async function findAvailableIDE(): Promise<DetectedIDEInfo | null> {

@@ -42,6 +42,7 @@ function makeRecord(overrides: Partial<ScanRecord> = {}): ScanRecord {
     sessionId: 's1',
     cached: 0,
     cacheCreate: 0,
+    recached: 0,
     uncached: 0,
     output: 0,
     isSubagent: false,

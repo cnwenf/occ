@@ -423,13 +423,18 @@ describe('2.1.311 ITEM 11 — .ignore negation re-include behavior', () => {
     ).toBe(true)
 
     // The merge still ran — git untracked succeeded, re-include contributed 0.
-    expect(
-      capturedLogs.some(log =>
-        /\[FileIndex\] background untracked fetch: \d+ files \(0 re-included by \.ignore\)/.test(
-          log,
+    // (The merge waits on the real git spawn, so poll rather than assert
+    // synchronously right after the fast re-include failure log.)
+    const sawMergeLog = await pollUntil(
+      async () =>
+        capturedLogs.some(log =>
+          /\[FileIndex\] background untracked fetch: \d+ files \(0 re-included by \.ignore\)/.test(
+            log,
+          ),
         ),
-      ),
-    ).toBe(true)
+      4000,
+    )
+    expect(sawMergeLog).toBe(true)
 
     // Backoff: retryAt ≈ now + 300000 (official `se` @263874800).
     const state = reincludeState()

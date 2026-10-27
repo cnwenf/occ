@@ -380,8 +380,8 @@ export function MessageSelector({
               </Box> : <Select isDisabled={isRestoring} options={getRestoreOptions(!!canRestoreCode_0)} defaultFocusValue={canRestoreCode_0 ? 'both' : 'conversation'} onFocus={value => setSelectedRestoreOption(value as RestoreOption)} onChange={value_0 => onSelectRestoreOption(value_0 as RestoreOption)} onCancel={() => preselectedMessage ? onClose() : setMessageToRestore(undefined)} />}
             {canRestoreCode_0 && <Box marginBottom={1}>
                 <Text dimColor>
-                  {figures.warning} Rewinding does not affect files edited
-                  manually or via bash.
+                  {/* CC 2.1.311 (#47 @238723235): verbatim official warning — byte-identical to `vls`. */}
+                  {figures.warning} {'Restored files go back whole, losing later changes by anyone. Bash changes to other files are not undone.'}
                 </Text>
               </Box>}
           </>}
@@ -435,7 +435,7 @@ export function MessageSelector({
       </Box>
     </Box>;
 }
-function getRestoreOptionConversationText(option: RestoreOption): string {
+export function getRestoreOptionConversationText(option: RestoreOption): string {
   switch (option) {
     case 'summarize':
       return 'Messages after this point will be summarized.';
@@ -443,7 +443,8 @@ function getRestoreOptionConversationText(option: RestoreOption): string {
       return 'Preceding messages will be summarized. This and subsequent messages will remain unchanged — you will stay at the end of the conversation.';
     case 'both':
     case 'conversation':
-      return 'The conversation will be forked.';
+      // CC 2.1.311 (#46 @274784505): verbatim official `zje` both/conversation case.
+      return 'This message and everything after it will be removed.';
     case 'code':
     case 'nevermind':
       return 'The conversation will be unchanged.';

@@ -347,10 +347,21 @@ class ShellCommandImpl implements ShellCommand {
         result.stderr,
       )
     } else if (code === SIGTERM) {
-      result.stderr = prependStderr(
-        `Command timed out after ${formatDuration(this.#timeout)}`,
-        result.stderr,
-      )
+      // CC 2.1.311 #56 (WP-Q): official exit-note builder q() @ v311:248737200
+      // (identical in v310 @246959519) routes the timeout note to STDOUT in
+      // file mode when not backgrounded (`stdoutToFile && !#t` ⇒
+      // `G.stdout = H ? `${Se}\n${H}` : Se`), and to stderr otherwise.
+      // BashTool's kill path throws ShellError('', stdout, …) whose
+      // getErrorParts surface delivers stdout to the model — the pre-311 OCC
+      // prependStderr placement dropped the note entirely. The killed-for-
+      // size branch above already matches official (it only fires while
+      // backgrounded, #t=true ⇒ stderr path) and stays unchanged.
+      const note = `Command timed out after ${formatDuration(this.#timeout)}`
+      if (this.taskOutput.stdoutToFile && !this.#backgroundTaskId) {
+        result.stdout = result.stdout ? `${note}\n${result.stdout}` : note
+      } else {
+        result.stderr = prependStderr(note, result.stderr)
+      }
     }
 
     const resultResolver = this.#resultResolver

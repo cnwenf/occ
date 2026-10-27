@@ -32,7 +32,8 @@
  */
 import { feature } from 'src/utils/featureFlags.js';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
-import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
+import { copyFile, open, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
+import type { FileHandle } from 'fs/promises';
 import * as React from 'react';
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
@@ -43,7 +44,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import type { SetToolJSXFn, ToolCallProgress, ToolUseContext, ValidationResult } from '../../Tool.js';
 import { buildTool, type ToolDef } from '../../Tool.js';
 import { backgroundExistingForegroundTask, markTaskNotified, registerForeground, spawnShellTask, unregisterForeground } from '../../tasks/LocalShellTask/LocalShellTask.js';
-import { runInBackgroundDescription } from '../../tasks/LocalShellTask/backgroundDeadline.js';
+import { computeBackgroundDeadlineMs, runInBackgroundDescription } from '../../tasks/LocalShellTask/backgroundDeadline.js';
 import type { AgentId } from '../../types/ids.js';
 import type { AssistantMessage } from '../../types/message.js';
 import { parseForSecurity } from '../../utils/bash/ast.js';
@@ -53,7 +54,7 @@ import { detectCodeIndexingFromCommand } from '../../utils/codeIndexing.js';
 import { areBackgroundTasksDisabled, isEnvTruthy } from '../../utils/envUtils.js';
 import { errorMessage as getErrorMessage, ShellError } from '../../utils/errors.js';
 import { logForDebugging } from '../../utils/debug.js';
-import { truncate } from '../../utils/format.js';
+import { formatDuration, truncate } from '../../utils/format.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { getCwd } from '../../utils/cwd.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
@@ -65,10 +66,11 @@ import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
-import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
+import { getTaskOutputPath, MAX_TASK_OUTPUT_BYTES } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
 import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
+import { TASK_STOP_TOOL_NAME } from '../TaskStopTool/prompt.js';
 import {
   getStdoutWithGitTail,
   trackGitOperations,
@@ -376,6 +378,108 @@ function getCommandTypeForLogging(command: string): AnalyticsMetadata_I_VERIFIED
     }
   }
   return 'other' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS;
+}
+// CC 2.1.311 #56 (WP-Q): "shell command timeout: show output-so-far and that
+// it's still running." Constants byte-verified against the official linux-x64
+// v311 binary (/tmp/cc-diff-311/v311/package/claude, read-only, never executed):
+//   S_e=2000  @246927100 — max bytes re-read from the task output file
+//   zSt=12000 @248622655 — max decoded chars kept (`bl` tail @238638620)
+const OUTPUT_SO_FAR_MAX_BYTES = 2000;
+const OUTPUT_SO_FAR_MAX_CHARS = 12000;
+
+type OutputFileTail = {
+  content: string;
+  omittedBytes: number;
+};
+
+/**
+ * Official `aVe` @245245798 (v311): read the last `maxBytes` of the task
+ * output file (capped at MAX_TASK_OUTPUT_BYTES, official lzt=5GB), skipping
+ * leading UTF-8 continuation bytes so the tail starts on a character
+ * boundary. ENOENT ⇒ empty tail; other errors propagate to the caller's
+ * catch (official qFr logs a warning and returns '').
+ */
+async function readOutputFileTail(filePath: string, maxBytes: number): Promise<OutputFileTail> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(filePath, 'r');
+    const stats = await handle.stat();
+    const size = Math.min(stats.size, MAX_TASK_OUTPUT_BYTES);
+    const start = Math.max(0, size - maxBytes);
+    const buffer = Buffer.allocUnsafe(size - start);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, start + filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    let skipped = 0;
+    while (start > 0 && skipped < filled && ((buffer[skipped] ?? 0) & 192) === 128) skipped++;
+    return {
+      content: buffer.toString('utf8', skipped, filled),
+      omittedBytes: start + skipped
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { content: '', omittedBytes: 0 };
+    }
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+/**
+ * Official `bl` @238638620 + `C3t` @238638892 (v311): keep the last
+ * `maxChars` UTF-16 code units, dropping a leading lone low surrogate and
+ * normalizing through a utf16le round-trip.
+ */
+function tailChars(text: string, maxChars: number): string {
+  if (maxChars <= 0) return '';
+  if (text.length <= maxChars) return text;
+  const slice = text.slice(-maxChars);
+  const first = slice.charCodeAt(0);
+  const aligned = first >= 56320 && first <= 57343 ? slice.slice(1) : slice;
+  return Buffer.from(aligned, 'utf16le').toString('utf16le');
+}
+
+/** Official `sLe` @248625671 (v311): cap the tail and prefix the omission header. */
+function formatOutputSoFar(tail: OutputFileTail, fullPath: string): string {
+  const capped = tailChars(tail.content, OUTPUT_SO_FAR_MAX_CHARS);
+  const omitted = tail.omittedBytes > 0 || capped.length < tail.content.length;
+  const trimmed = capped.replace(/^\n+/, '').trimEnd();
+  return omitted ? `[… earlier output omitted; full output: ${fullPath}]\n${trimmed}` : trimmed;
+}
+
+/**
+ * Official `qFr` @253153111 (v311): the output-so-far of an auto-backgrounded
+ * task. Drops the first (possibly partial) line when bytes were omitted,
+ * falls back to the raw tail when the drop empties it, and returns '' with a
+ * warn log when the file is unreadable ("output so far unreadable",
+ * v310=0 → v311=2 occurrences).
+ */
+export async function readBackgroundOutputSoFar(backgroundTaskId: string): Promise<string> {
+  try {
+    const fullPath = getTaskOutputPath(backgroundTaskId);
+    const tail = await readOutputFileTail(fullPath, OUTPUT_SO_FAR_MAX_BYTES);
+    const content = tail.omittedBytes > 0 ? tail.content.slice(tail.content.indexOf('\n') + 1) : tail.content;
+    return formatOutputSoFar({ ...tail, content: content || tail.content }, fullPath);
+  } catch (error) {
+    logForDebugging(`LocalShellTask ${backgroundTaskId}: output so far unreadable: ${String(error)}`, { level: 'warn' });
+    return '';
+  }
+}
+
+/**
+ * Official Oe clause of `OLr` @251496383 (v311): "If it is still running
+ * after ${an(Ae,{hideTrailingZeros:!0})} in the background, it will be
+ * stopped and you will be notified." Ae=ZFr(void 0) ⇒ computeBackground-
+ * DeadlineMs(); undefined when the deadline subsystem is disabled.
+ */
+function backgroundDeadlineLine(): string | undefined {
+  const deadlineMs = computeBackgroundDeadlineMs();
+  if (deadlineMs === undefined) return undefined;
+  return `If it is still running after ${formatDuration(deadlineMs, { hideTrailingZeros: true })} in the background, it will be stopped and you will be notified.`;
 }
 const outputSchema = lazySchema(() => z.object({
   stdout: z.string().describe('The standard output of the command'),
@@ -709,18 +813,36 @@ export const BashTool = buildTool({
         // (`…Output is being written to: ${n}.` @228322900 region,
         // byte-verified); V and be are `r?void 0:…` — the manual variant
         // gets NO notice/interim clauses, so nothing else is appended.
-        backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}.`;
+        // CC 2.1.311 #56 (WP-Q): official v311 `OLr` @251496383 composes the
+        // manual variant (r=true) as [Q, Oe].filter(Boolean).join(" ") — base
+        // plus the background-deadline line ONLY (notice we, still-running
+        // Ee, warning and interim hint De are all excluded for r=true).
+        backgroundInfo = [`Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}.`, backgroundDeadlineLine()].filter(Boolean).join(' ');
       } else if (timedOutAfterMs !== undefined) {
-        // 2.1.210 #26: when a command hits its timeout and is auto-backgrounded,
-        // tell the model the timeout value + where to find interim output. Mirrors
-        // the official binary chain (backgroundedByUser → timedOutAfterMs → generic):
-        //   else if(l!==void 0)p=`Command did not complete within its
-        //   ${Math.max(1,Math.round(l/1000))}s timeout and was moved to the
-        //   background (ID: ${s}). Output is being written to: ${f}. You will be
-        //   notified when it completes. To check interim output, use ${Mi} on
-        //   that file path.`  (l=timeoutMs, s=backgroundTaskId, f=outputPath,
-        //   Mi="Read")
-        backgroundInfo = `Command did not complete within its ${Math.max(1, Math.round(timedOutAfterMs / 1000))}s timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use Read on that file path.`;
+        // 2.1.210 #26 → CC 2.1.311 #56 (WP-Q): rebuilt as the official v311
+        // `OLr` timeout composition @251496383 (byte-verified; the v310 `pIr`
+        // @249970898 baseline was the single-template message). Order,
+        // join(' '): [Q base, notice(we), deadline line(Oe), still-running
+        // line(Ee), no-output warning, interim hint(De)].
+        //   Ee (v310=0 → v311=2 @124557352/@251498022): "It is running now:
+        //   do not start a second copy while it runs. If it is no longer
+        //   needed, stop it with ${Yl}."  Yl="TaskStop" @246947125 — OCC's
+        //   stop surface carries the same user-facing name
+        //   (TASK_STOP_TOOL_NAME='TaskStop'), so the string ships verbatim.
+        //   Warning (v310=0 → v311=2 @124557792/@251498557), gated on the
+        //   official mapper's noOutputSeenAtTimeout = timedOutAfterMs defined
+        //   && normalized stdout empty (@253219662).
+        // The K anti-poll gate (Se=!r&&!s&&!h&&y===void 0&&!H&&s1r()) is
+        // always false here because y (timedOutAfterMs) is defined, so
+        // notice/hint use the plain variants regardless of K. Staged OLr
+        // params with no OCC counterpart: backgroundedToDeliverMessage(s),
+        // backgroundedByTurnAbort(h), reapedAtFinalResponse(H),
+        // subagentCapApplied(S — OCC has no async-subagent foreground bash
+        // cap), Mf().backgroundShellsKeptElsewhere.
+        const timeoutSeconds = Math.max(1, Math.round(timedOutAfterMs / 1000));
+        const stillRunningLine = `It is running now: do not start a second copy while it runs. If it is no longer needed, stop it with ${TASK_STOP_TOOL_NAME}.`;
+        const noOutputWarning = processedStdout ? undefined : 'No output had been read from it when it was moved. A program that buffers its output, or a pipe into one such as tail, can keep the output file empty until the command finishes.';
+        backgroundInfo = [`Command did not complete within its ${timeoutSeconds}s timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}.`, 'You will be notified when it completes.', backgroundDeadlineLine(), stillRunningLine, noOutputWarning, 'To check interim output, use Read on that file path.'].filter(Boolean).join(' ');
       } else {
         // CC 2.1.300 #41: rebuilt as the official v300 `qpr` K-gated
         // assembly `[H, V, Se, be].filter(Boolean).join(" ")` (@228322900
@@ -818,6 +940,17 @@ export const BashTool = buildTool({
 
       // Get the final result from the generator's return value
       result = generatorResult.value;
+      // CC 2.1.311 #56 (WP-Q): official v311 caller re-reads the output file
+      // for auto-backgrounded timeouts @253224774 (byte-verified; v310 has NO
+      // such re-read — its two `timedOutAfterMs!==` hits @251688271/
+      // @262900412 are tengu_bash_task_ack analytics only):
+      //   Ge={...Ge,stdout:await qFr(Ge.backgroundTaskId,S_e)}
+      // gated on backgroundTaskId!==undefined && timedOutAfterMs!==undefined
+      // && innerCall!==true. OCC has no innerCall concept (no nested
+      // bash-tool invocation path), so that disjunct is omitted.
+      if (result.backgroundTaskId !== undefined && result.timedOutAfterMs !== undefined) {
+        result = { ...result, stdout: await readBackgroundOutputSoFar(result.backgroundTaskId) };
+      }
       // 2.1.205 #8: append the output-file tail so a PR URL printed beyond the
       // ~30K inline limit is still scanned by trackGitOperations.
       const stdoutForGitTracking = await getStdoutWithGitTail(

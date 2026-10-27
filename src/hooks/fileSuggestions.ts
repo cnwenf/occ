@@ -117,6 +117,10 @@ export function clearFileSuggestionCaches(): void {
   indexBuildComplete.clear()
   ignorePatternsCache = null
   ignorePatternsCacheKey = null
+  // Official `fvo` reset (@263867910) clears the ITEM 11 re-include state.
+  ignoreReincludeGlobs = []
+  lastReincludedFiles = []
+  reincludeRetryAtMs = 0
   lastRefreshMs = 0
   lastGitIndexMtime = null
   loadedTrackedSignature = null
@@ -220,6 +224,166 @@ async function mergeUntrackedIntoNormalizedCache(
 }
 
 /**
+ * CC 2.1.311 (ITEM 11) re-include derivation — faithful port of the official
+ * `U(e,i)` (@263869960 in the 2.1.311 linux-x64 binary) with its helpers:
+ *
+ *   M(e)=!e.startsWith("/")&&!e.replace(/\/+$/,"").includes("/")
+ *   W(e)=e.replace(/[[\]{}*?\\]/g,"\\$&").replace(/^[!#]/,"\\$&")
+ *   q(e,i): i===""→e; e.startsWith("/")→`${i}${e}`; M(e)→`${i}/**\/${e}`;
+ *           else `${i}/${e}`
+ *   U(e,i): per line — `p=c.endsWith("\\ ")?c:c.trimEnd()`; skip ""/#;
+ *           `u=p.startsWith("!")`, `f=u?p.slice(1):p`, skip f===""; `g=q(f,r)`;
+ *           negated → `o=true; n.push(g); if(!g.endsWith("**")){m=g.replace
+ *           (/\/+$/,""); s.push(M(m)?`**\/${m}/**`:`${m}/**`)}`;
+ *           else `n.push(`!${g}`)`; returns
+ *           `{hasNegation:o,augmentations:s,rules:n}`.
+ */
+type ReincludeDerivation = {
+  hasNegation: boolean
+  augmentations: string[]
+  rules: string[]
+}
+
+/** Official `M`: no leading slash and no interior slash (trailing stripped). */
+function isBareName(pattern: string): boolean {
+  return !pattern.startsWith('/') && !pattern.replace(/\/+$/, '').includes('/')
+}
+
+/** Official `W`: escape glob metacharacters (dot is NOT escaped). */
+function escapeGlobChars(dir: string): string {
+  return dir.replace(/[[\]{}*?\\]/g, '\\$&').replace(/^[!#]/, '\\$&')
+}
+
+/** Official `q`: anchor a pattern under its ignore file's relative dir. */
+function anchorPatternToDir(pattern: string, escapedDir: string): string {
+  if (escapedDir === '') return pattern
+  if (pattern.startsWith('/')) return `${escapedDir}${pattern}`
+  if (isBareName(pattern)) return `${escapedDir}/**/${pattern}`
+  return `${escapedDir}/${pattern}`
+}
+
+/**
+ * Derive the rg `--glob` whitelist set for one ignore file's patterns.
+ * Exported for unit tests (mirrors official `U` exactly).
+ */
+export function deriveIgnoreReincludeGlobs(
+  patterns: readonly string[],
+  relDir: string,
+): ReincludeDerivation {
+  const escapedDir = escapeGlobChars(relDir)
+  let hasNegation = false
+  const augmentations: string[] = []
+  const rules: string[] = []
+  for (const rawLine of patterns) {
+    // A trailing escaped space is significant — official keeps it untrimmed.
+    const line = rawLine.endsWith('\\ ') ? rawLine : rawLine.trimEnd()
+    if (line === '' || line.startsWith('#')) continue
+    const isNegation = line.startsWith('!')
+    const body = isNegation ? line.slice(1) : line
+    if (body === '') continue
+    const anchored = anchorPatternToDir(body, escapedDir)
+    if (isNegation) {
+      hasNegation = true
+      rules.push(anchored)
+      if (!anchored.endsWith('**')) {
+        const stripped = anchored.replace(/\/+$/, '')
+        augmentations.push(
+          isBareName(stripped) ? `**/${stripped}/**` : `${stripped}/**`,
+        )
+      }
+    } else {
+      rules.push(`!${anchored}`)
+    }
+  }
+  return { hasNegation, augmentations, rules }
+}
+
+/** Test-only snapshot of the ITEM 11 re-include state (copies, not aliases). */
+export function _getReincludeStateForTesting(): {
+  ignoreReincludeGlobs: string[]
+  lastReincludedFiles: string[]
+  reincludeRetryAtMs: number
+} {
+  return {
+    ignoreReincludeGlobs: [...ignoreReincludeGlobs],
+    lastReincludedFiles: [...lastReincludedFiles],
+    reincludeRetryAtMs,
+  }
+}
+
+/**
+ * Official `G(e,i)` (@263871008): keep a path when the `ignore` package's
+ * STATIC `isPathValid` rejects it (absolute / `..` paths can't be tested) or
+ * the instance doesn't ignore it, yielding to the event loop every 256 paths
+ * once the 4ms chunk budget (`jAn`) is spent. Used at BOTH filter sites.
+ */
+async function filterIgnoredPaths(
+  ig: ReturnType<typeof ignore>,
+  paths: readonly string[],
+): Promise<string[]> {
+  const kept: string[] = []
+  let chunkStart = performance.now()
+  for (let i = 0; i < paths.length; i++) {
+    const candidate = paths[i]!
+    if (!ignore.isPathValid(candidate) || !ig.ignores(candidate)) {
+      kept.push(candidate)
+    }
+    if (
+      (i & 255) === 255 &&
+      performance.now() - chunkStart > IGNORE_FILTER_CHUNK_MS
+    ) {
+      await yieldToEventLoop()
+      chunkStart = performance.now()
+    }
+  }
+  return kept
+}
+
+/**
+ * Official re-include fetch (@263877300):
+ * `w5(["--files","--hidden",...globs.flatMap(u=>["--glob",u]),...Q],".",
+ *  AbortSignal.timeout(1e4),{cwd:repoRoot,rejectOnPartial:!0})`.
+ * OCC deviation: `ripGrep` takes no cwd/rejectOnPartial options, so repoRoot
+ * is passed as the target and results are relativized back to repoRoot-
+ * relative form. Failure semantics verbatim: the log line is UNCONDITIONAL,
+ * the backoff write is cacheGeneration-guarded, and the failure RETURNS the
+ * previous `lastReincludedFiles`.
+ */
+async function fetchReincludedFiles(
+  repoRoot: string,
+  generation: number,
+): Promise<string[]> {
+  const args = [
+    '--files',
+    '--hidden',
+    ...ignoreReincludeGlobs.flatMap(glob => ['--glob', glob]),
+    ...VCS_DIR_GLOB_ARGS,
+  ]
+  try {
+    const listed = await ripGrep(
+      args,
+      repoRoot,
+      AbortSignal.timeout(REINCLUDE_FETCH_TIMEOUT_MS),
+    )
+    const files = listed.map(f =>
+      path.relative(repoRoot, f).replaceAll(path.sep, '/'),
+    )
+    if (generation === cacheGeneration) {
+      lastReincludedFiles = files
+    }
+    return files
+  } catch (error) {
+    logForDebugging(
+      `[FileIndex] .ignore re-include listing failed: ${errorMessage(error)}`,
+    )
+    if (generation === cacheGeneration) {
+      reincludeRetryAtMs = Date.now() + REINCLUDE_RETRY_BACKOFF_MS
+    }
+    return lastReincludedFiles
+  }
+}
+
+/**
  * Load ripgrep-specific ignore patterns from .ignore or .rgignore files
  * Returns an ignore instance if patterns were found, null otherwise
  * Results are cached per repoRoot:cwd combination
@@ -241,6 +405,12 @@ async function loadRipgrepIgnorePatterns(
 
   const ig = ignore()
   let hasPatterns = false
+  // CC 2.1.311 (ITEM 11): accumulate the per-file re-include derivations.
+  // Official: `f||=k.hasNegation; g.push(...k.augmentations); m.push(...k.rules)`
+  // then `ignoreReincludeGlobs = f ? [...g,...m] : []`.
+  let hasNegation = false
+  const augmentations: string[] = []
+  const reincludeRules: string[] = []
 
   const paths = directories.flatMap(dir =>
     ignoreFiles.map(f => path.join(dir, f)),
@@ -250,21 +420,85 @@ async function loadRipgrepIgnorePatterns(
   )
   for (const [i, content] of contents.entries()) {
     if (content === null) continue
-    ig.add(
-      filterValidIgnorePatterns(
-        splitIgnorePatternLines(content),
-        'file_suggestions_ignore',
-      ),
+    const patterns = filterValidIgnorePatterns(
+      splitIgnorePatternLines(content),
+      'file_suggestions_ignore',
     )
+    ig.add(patterns)
     hasPatterns = true
-    logForDebugging(`[FileIndex] loaded ignore patterns from ${paths[i]}`)
+    // Official `k=U(b, path.relative(repoRoot, path.dirname(file))
+    //   .replaceAll(path.sep,"/"))` — U consumes the SAME filtered list.
+    const ignoreFilePath = paths[i]!
+    const derived = deriveIgnoreReincludeGlobs(
+      patterns,
+      path
+        .relative(repoRoot, path.dirname(ignoreFilePath))
+        .replaceAll(path.sep, '/'),
+    )
+    hasNegation ||= derived.hasNegation
+    augmentations.push(...derived.augmentations)
+    reincludeRules.push(...derived.rules)
+    logForDebugging(`[FileIndex] loaded ignore patterns from ${ignoreFilePath}`)
   }
+  ignoreReincludeGlobs = hasNegation ? [...augmentations, ...reincludeRules] : []
 
   const result = hasPatterns ? ig : null
   ignorePatternsCache = result
   ignorePatternsCacheKey = cacheKey
 
   return result
+}
+
+/**
+ * CC 2.1.311 (ITEM 11): merge the background git-untracked result with the
+ * `.ignore` re-included listing (official merge tail of `ae` @263877300).
+ * Extracted to keep getFilesUsingGit focused; semantics verbatim:
+ * - `if(u.code!==0)return` — a git failure discards the re-included listing.
+ * - Re-included files are normalized + sorted and PLAIN-APPENDED (no dedup).
+ * - The summary log ALWAYS carries the `(${n} re-included by .ignore)` suffix.
+ */
+async function mergeBackgroundUntracked(
+  untrackedResult: Awaited<ReturnType<typeof execFileNoThrowWithCwd>>,
+  reincludedFiles: readonly string[],
+  repoRoot: string,
+  cwd: string,
+): Promise<void> {
+  if (untrackedResult.code !== 0) {
+    return
+  }
+  const rawUntrackedFiles = untrackedResult.stdout
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+  const merged = [...rawUntrackedFiles]
+  for (const reincluded of reincludedFiles
+    .map(f => path.normalize(f).replaceAll(path.sep, '/'))
+    .sort()) {
+    merged.push(reincluded)
+  }
+
+  // Normalize paths BEFORE applying ignore patterns (consistent with tracked files)
+  let normalizedUntracked = normalizeGitPaths(merged, repoRoot, cwd)
+
+  // Apply .ignore/.rgignore patterns to normalized untracked files (official
+  // G() filter — negation whitelists keep the re-included files).
+  const ignorePatterns = await loadRipgrepIgnorePatterns(repoRoot, cwd)
+  if (ignorePatterns && normalizedUntracked.length > 0) {
+    const beforeCount = normalizedUntracked.length
+    normalizedUntracked = await filterIgnoredPaths(
+      ignorePatterns,
+      normalizedUntracked,
+    )
+    logForDebugging(
+      `[FileIndex] applied ignore patterns to untracked: ${beforeCount} -> ${normalizedUntracked.length} files`,
+    )
+  }
+
+  logForDebugging(
+    `[FileIndex] background untracked fetch: ${normalizedUntracked.length} files (${reincludedFiles.length} re-included by .ignore)`,
+  )
+  // Pass already-normalized files directly to merge function
+  void mergeUntrackedIntoNormalizedCache(normalizedUntracked)
 }
 
 /**
@@ -320,7 +554,12 @@ async function getFilesUsingGit(
     const ignorePatterns = await loadRipgrepIgnorePatterns(repoRoot, cwd)
     if (ignorePatterns) {
       const beforeCount = normalizedTracked.length
-      normalizedTracked = ignorePatterns.filter(normalizedTracked)
+      // CC 2.1.311 (ITEM 11): official G() filter (@263871008) — paths the
+      // `ignore` package can't test (absolute / `..`) are KEPT.
+      normalizedTracked = await filterIgnoredPaths(
+        ignorePatterns,
+        normalizedTracked,
+      )
       logForDebugging(
         `[FileIndex] applied ignore patterns: ${beforeCount} -> ${normalizedTracked.length} files`,
       )
@@ -354,46 +593,34 @@ async function getFilesUsingGit(
         : ['-c', 'core.quotepath=false', 'ls-files', '--others']
 
       const generation = cacheGeneration
-      untrackedFetchPromise = execFileNoThrowWithCwd(gitExe(), untrackedArgs, {
-        timeout: 10000,
-        cwd: repoRoot,
-      })
-        .then(async untrackedResult => {
+      // CC 2.1.311 (ITEM 11): official gate `c=n&&e.ignoreReincludeGlobs.length>0`
+      // — the re-include fetch runs only when gitignore is respected AND the
+      // loader derived negation globs; while the 5-minute backoff is active it
+      // serves the last successful listing ([] after a first failure).
+      const reincludeActive =
+        respectGitignore && ignoreReincludeGlobs.length > 0
+      const reincludePromise =
+        reincludeActive && Date.now() >= reincludeRetryAtMs
+          ? fetchReincludedFiles(repoRoot, generation)
+          : Promise.resolve(reincludeActive ? [...lastReincludedFiles] : [])
+
+      untrackedFetchPromise = Promise.all([
+        execFileNoThrowWithCwd(gitExe(), untrackedArgs, {
+          timeout: 10000,
+          cwd: repoRoot,
+        }),
+        reincludePromise,
+      ])
+        .then(async ([untrackedResult, reincludedFiles]) => {
           if (generation !== cacheGeneration) {
             return // Cache was cleared; don't merge stale untracked files
           }
-          if (untrackedResult.code === 0) {
-            const rawUntrackedFiles = untrackedResult.stdout
-              .trim()
-              .split('\n')
-              .filter(Boolean)
-
-            // Normalize paths BEFORE applying ignore patterns (consistent with tracked files)
-            let normalizedUntracked = normalizeGitPaths(
-              rawUntrackedFiles,
-              repoRoot,
-              cwd,
-            )
-
-            // Apply .ignore/.rgignore patterns to normalized untracked files
-            const ignorePatterns = await loadRipgrepIgnorePatterns(
-              repoRoot,
-              cwd,
-            )
-            if (ignorePatterns && normalizedUntracked.length > 0) {
-              const beforeCount = normalizedUntracked.length
-              normalizedUntracked = ignorePatterns.filter(normalizedUntracked)
-              logForDebugging(
-                `[FileIndex] applied ignore patterns to untracked: ${beforeCount} -> ${normalizedUntracked.length} files`,
-              )
-            }
-
-            logForDebugging(
-              `[FileIndex] background untracked fetch: ${normalizedUntracked.length} files`,
-            )
-            // Pass already-normalized files directly to merge function
-            void mergeUntrackedIntoNormalizedCache(normalizedUntracked)
-          }
+          await mergeBackgroundUntracked(
+            untrackedResult,
+            reincludedFiles,
+            repoRoot,
+            cwd,
+          )
         })
         .catch(error => {
           logForDebugging(

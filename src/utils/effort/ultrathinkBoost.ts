@@ -19,7 +19,11 @@ import {
  * claude-code 2.1.311 triage-T4-sweep item 65 — "ultrathink" raises the
  * current turn's reasoning effort to `xhigh`.
  *
- * Official handler `ql` (v311 @257370026, byte-verified verbatim):
+ * Official handler `ql` (v311 @257369783–257370243, byte-verified verbatim;
+ * anchors inside it: `g("ultrathink_boost")` @257370056,
+ * `a("tengu_ultrathink",{})` @257370078, `setTurnEffort("xhigh")` @257370113.
+ * The v310 binary has zero `g("ultrathink_boost")` hits — this handler is new
+ * in 2.1.311):
  *   `function ql(e,n,r,s){try{
  *      if(!(jnr(n,r)&&e.some((S)=>S.mode==="prompt"&&!S.isMeta
  *        &&S.shouldQuery!==!1&&Pd(S.origin)&&!S.textNotTyped
