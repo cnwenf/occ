@@ -26,6 +26,7 @@ import { formatRelativeTimeAgo, truncate } from '../utils/format.js';
 import type { Theme } from '../utils/theme.js';
 import { Divider } from './design-system/Divider.js';
 type RestoreOption = 'both' | 'conversation' | 'code' | 'summarize' | 'summarize_up_to' | 'nevermind';
+export type { RestoreOption };
 function isSummarizeOption(option: RestoreOption | null): option is 'summarize' | 'summarize_up_to' {
   return option === 'summarize' || option === 'summarize_up_to';
 }
@@ -34,7 +35,15 @@ type Props = {
   onPreRestore: () => void;
   onRestoreMessage: (message: UserMessage) => Promise<void>;
   onRestoreCode: (message: UserMessage) => Promise<void>;
-  onSummarize: (message: UserMessage, feedback?: string, direction?: PartialCompactDirection) => Promise<void>;
+  /**
+   * CC 2.1.311 item 35: OPTIONAL — the official pass-through gate
+   * (v311 @274792948) sends `void 0` when DISABLE_COMPACT is env-truthy, and
+   * the official menu (`aWe` @274778600) gates both summarize options on the
+   * handler's presence (`if(Z) zr.push({value:"summarize",…}),zr.push({value:
+   * "summarize_up_to",…})`). Undefined ⇒ no "Summarize from here" /
+   * "Summarize up to here" rows in the rewind menu.
+   */
+  onSummarize?: (message: UserMessage, feedback?: string, direction?: PartialCompactDirection) => Promise<void>;
   onClose: () => void;
   /** Skip pick-list, land on confirm. Caller ran skip-check first. Esc closes fully (no back-to-list). */
   preselectedMessage?: UserMessage;
@@ -47,6 +56,78 @@ type Props = {
   rowCountingMs?: number;
 };
 const MAX_VISIBLE_MESSAGES = 7;
+/** Shared inline-context input props for the summarize options. */
+type SummarizeInputProps = {
+  type: 'input';
+  placeholder: string;
+  initialValue: string;
+  allowEmptySubmitToCancel: boolean;
+  showLabelWithValue: boolean;
+  labelValueSeparator: string;
+};
+type BuildRestoreOptionsParams = {
+  canRestoreCode: boolean;
+  /**
+   * CC 2.1.311 item 35: whether the caller supplied an onSummarize handler.
+   * Official v311 `aWe` @274778600 gates BOTH summarize options on the
+   * handler's presence (`if(Z) zr.push({value:"summarize",…}),zr.push({value:
+   * "summarize_up_to",…})`); the REPL withholds the handler (void 0) when
+   * DISABLE_COMPACT is env-truthy, so the menu omits them.
+   */
+  hasSummarizeHandler: boolean;
+  /** Pre-existing OCC divergence: summarize_up_to stays ant-only. */
+  isAntBuild: boolean;
+  summarizeInputProps: SummarizeInputProps;
+  onChangeSummarizeFrom: (value: string) => void;
+  onChangeSummarizeUpTo: (value: string) => void;
+};
+/**
+ * Pure restore-option list builder (extracted from getRestoreOptions for
+ * unit-testability; option order and labels unchanged from the official).
+ */
+export function buildRestoreOptions({
+  canRestoreCode,
+  hasSummarizeHandler,
+  isAntBuild,
+  summarizeInputProps,
+  onChangeSummarizeFrom,
+  onChangeSummarizeUpTo
+}: BuildRestoreOptionsParams): OptionWithDescription<RestoreOption>[] {
+  const baseOptions: OptionWithDescription<RestoreOption>[] = canRestoreCode ? [{
+    value: 'both',
+    label: 'Restore code and conversation'
+  }, {
+    value: 'conversation',
+    label: 'Restore conversation'
+  }, {
+    value: 'code',
+    label: 'Restore code'
+  }] : [{
+    value: 'conversation',
+    label: 'Restore conversation'
+  }];
+  if (hasSummarizeHandler) {
+    baseOptions.push({
+      value: 'summarize',
+      label: 'Summarize from here',
+      ...summarizeInputProps,
+      onChange: onChangeSummarizeFrom
+    });
+    if (isAntBuild) {
+      baseOptions.push({
+        value: 'summarize_up_to',
+        label: 'Summarize up to here',
+        ...summarizeInputProps,
+        onChange: onChangeSummarizeUpTo
+      });
+    }
+  }
+  baseOptions.push({
+    value: 'nevermind',
+    label: 'Never mind'
+  });
+  return baseOptions;
+}
 export function MessageSelector({
   messages,
   onPreRestore,
@@ -96,46 +177,24 @@ export function MessageSelector({
 
   // Generate options with summarize as input type for inline context
   function getRestoreOptions(canRestoreCode: boolean): OptionWithDescription<RestoreOption>[] {
-    const baseOptions: OptionWithDescription<RestoreOption>[] = canRestoreCode ? [{
-      value: 'both',
-      label: 'Restore code and conversation'
-    }, {
-      value: 'conversation',
-      label: 'Restore conversation'
-    }, {
-      value: 'code',
-      label: 'Restore code'
-    }] : [{
-      value: 'conversation',
-      label: 'Restore conversation'
-    }];
-    const summarizeInputProps = {
-      type: 'input' as const,
-      placeholder: 'add context (optional)',
-      initialValue: '',
-      allowEmptySubmitToCancel: true,
-      showLabelWithValue: true,
-      labelValueSeparator: ': '
-    };
-    baseOptions.push({
-      value: 'summarize',
-      label: 'Summarize from here',
-      ...summarizeInputProps,
-      onChange: setSummarizeFromFeedback
+    return buildRestoreOptions({
+      canRestoreCode,
+      // CC 2.1.311 item 35: the summarize rows exist only when the caller
+      // supplied a handler — the REPL passes undefined when DISABLE_COMPACT
+      // is env-truthy (official v311 gate @274792948 → `if(Z)` @274778600).
+      hasSummarizeHandler: onSummarize !== undefined,
+      isAntBuild: ("external" as string) === 'ant',
+      summarizeInputProps: {
+        type: 'input' as const,
+        placeholder: 'add context (optional)',
+        initialValue: '',
+        allowEmptySubmitToCancel: true,
+        showLabelWithValue: true,
+        labelValueSeparator: ': '
+      },
+      onChangeSummarizeFrom: setSummarizeFromFeedback,
+      onChangeSummarizeUpTo: setSummarizeUpToFeedback
     });
-    if (("external" as string) === 'ant') {
-      baseOptions.push({
-        value: 'summarize_up_to',
-        label: 'Summarize up to here',
-        ...summarizeInputProps,
-        onChange: setSummarizeUpToFeedback
-      });
-    }
-    baseOptions.push({
-      value: 'nevermind',
-      label: 'Never mind'
-    });
-    return baseOptions;
   }
 
   // Log when selector is opened
@@ -192,6 +251,13 @@ export function MessageSelector({
       return;
     }
     if (isSummarizeOption(option)) {
+      // Unreachable through the UI — the summarize rows are only rendered when
+      // onSummarize was provided (CC 2.1.311 item 35 gate). Explicit guard so
+      // the optional prop can never be invoked as undefined.
+      if (!onSummarize) {
+        setError('Summarize is unavailable in this session.');
+        return;
+      }
       onPreRestore();
       setIsRestoring(true);
       setRestoringOption(option);

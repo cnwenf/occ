@@ -5357,7 +5357,16 @@ export function REPL({
                 fileHistory: updater(prev.fileHistory)
               }));
             }, message.uuid);
-          }} onSummarize={async (message: UserMessage, feedback?: string, direction: PartialCompactDirection = 'from') => {
+          }} onSummarize={
+            // CC 2.1.311 item 35 (official v311 @274792948, byte-verified):
+            // `onSummarize: x.runsNoModelTurn || Le(process.env.DISABLE_COMPACT) ? void 0 : x.handleSummarize`
+            // — when DISABLE_COMPACT is env-truthy the rewind menu must not
+            // offer "Summarize from here"/"Summarize up to here". `Le` is the
+            // official env-truthy parser (@238646027); isEnvTruthy is OCC's
+            // byte-equivalent. `runsNoModelTurn` has no OCC analogue (OCC's
+            // turn/controller model differs) — only the DISABLE_COMPACT half
+            // of the guard is portable; read at render time like the official.
+            isEnvTruthy(process.env.DISABLE_COMPACT) ? undefined : async (message: UserMessage, feedback?: string, direction: PartialCompactDirection = 'from') => {
             // Project snipped messages so the compact model
             // doesn't summarize content that was intentionally removed.
             const compactMessages = getMessagesAfterCompactBoundary(messages);
