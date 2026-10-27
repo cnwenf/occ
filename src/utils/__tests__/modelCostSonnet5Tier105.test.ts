@@ -133,13 +133,16 @@ describe('/model picker Default row (official Nci alignment)', () => {
   test('PAYG default shows the resolved default model tier pricing', () => {
     // OCC-135 Gap C: official 2.1.280 `cv` (@193434108) resolves firstParty
     // PAYG (no subscriber, no ant, no env override) to the MERGED Opus
-    // default — claude-opus-5-5[1m], rendered as the marketing name — not
-    // claude-sonnet-5. Pricing suffix follows the resolved model's tier
-    // (COST_TIER_4_20_CACHE_READ_0_20 = $4/$20).
+    // default — claude-opus-5-5[1m], rendered via the display name (official
+    // v311 `tee`→`os`→`lT`) — not claude-sonnet-5. Pricing suffix follows the
+    // resolved model's tier (COST_TIER_4_20_CACHE_READ_0_20 = $4/$20).
+    // 2.1.311 (WP-X): opus-5-5 is native-1M, so `lT` drops the "(1M context)"
+    // label → the picker shows plain "Opus 5.5" (lT/Gk @242271504, a2 @242248082).
     const option = getDefaultOptionForUser()
     expect(option.value).toBeNull()
     expect(option.description).toContain('Use the default model (currently ')
-    expect(option.description).toContain('Opus 5.5 (1M context)')
+    expect(option.description).toContain('Opus 5.5')
+    expect(option.description).not.toContain('(1M context)')
     expect(option.description.endsWith(' · $4/$20 per Mtok')).toBe(true)
   })
 

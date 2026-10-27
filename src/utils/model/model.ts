@@ -22,6 +22,7 @@ import {
 import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
+import { ALL_MODEL_CONFIGS, type ModelKey } from './configs.js'
 import { formatModelPricing, getOpus46CostTier, getOpus55CostTier } from '../modelCost.js'
 import {
   getEnforceAvailableModels,
@@ -770,28 +771,100 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
 }
 
 // @[MODEL LAUNCH]: Add display name cases for the new model (base + [1m] variant if applicable).
+// 2.1.311 (WP-X gap item 69): native-1M models no longer render the
+// "(1M context)" label. Official v311 `lT`/`Gk` @242271504 (byte-verified):
+//   function lT(e){return Gk(Je(e,{identity:!0}),a2(e).endsWith("[1m]"))}
+//   function Gk(e,n){let r=$l(e);if(!r)return null;
+//     let s=n&&r.context?.supports_1m_suffix?" (1M context)":"";
+//     return r.display_name+s}
+// vs v310 `Vk`/`Mk` @240811212 (OLD: label for ANY raw `[1m]` name):
+//   function Vk(e){return Mk(Xe(e,{identity:!0}),e.endsWith("[1m]"))}
+// The delta is `a2(...)` wrapping the suffix check: `a2` strips `[1m]` iff
+// the base is native-1M, so native-1M variants reach the label gate WITHOUT
+// the suffix and render as the plain base display name.
+
+/**
+ * Canonical ids of the native-1M models OCC knows, mirroring the official
+ * v311 embedded catalog's `native_1m:!0` set (11 entries, byte-verified —
+ * flag region @239158365…239173583; the catalog is IDENTICAL in v310/v311)
+ * plus the hardcoded `claude-mythos-preview` (`kK={window:1e6,native_1m:!0}`
+ * @242281038 via `p5t` @239045033). Restricted to ids OCC has model strings
+ * for: the official set also contains claude-mythos-5 / claude-mythos-5-1
+ * (and mythos-preview via `kK`), but OCC's catalog has no mythos strings
+ * (see configs.ts — mythos canonicalizes to fable), so they are omitted.
+ * Derived from ALL_MODEL_CONFIGS firstParty ids — the same source
+ * getModelStrings() builds from — and built exactly once.
+ */
+const NATIVE_1M_MODEL_KEYS: readonly ModelKey[] = Object.freeze([
+  'haiku55',
+  'sonnet5',
+  'sonnet55',
+  'opus47',
+  'opus48',
+  'opus5',
+  'opus55',
+  'fable5',
+  'fable51',
+] as const)
+
+const NATIVE_1M_CANONICAL_IDS: ReadonlySet<string> = new Set(
+  NATIVE_1M_MODEL_KEYS.map((key) => ALL_MODEL_CONFIGS[key].firstParty),
+)
+
+/** Official `FH` @242277243: `e.replace(/\[1m\]/gi,"")` — every marker, any case. */
+const ONE_M_MARKER_PATTERN = /\[1m\]/gi
+
+/**
+ * Official v311 `a2` @242248082 (byte-verified):
+ *   function a2(e){let n=FH(e);return n!==e&&wC(n,{byItsOwnName:!0})?n:e}
+ * Strips every `[1m]` marker (case-insensitive, matching `FH`'s
+ * `/\[1m\]/gi` @242277243) IFF the resulting base is a native-1M model —
+ * `wC`→`up`→`EK`→`Xk` (@242277243 region, `Xk(e){return
+ * xr(e)?.native_1m===!0}`) resolve ONLY for native-1M catalog entries;
+ * otherwise the input is returned unchanged. Pure; never throws.
+ */
+export function stripNative1mSuffix(model: string): string {
+  const stripped = model.replace(ONE_M_MARKER_PATTERN, '')
+  if (stripped === model) {
+    return model
+  }
+  return isNative1mModel(stripped) ? stripped : model
+}
+
+/**
+ * `Xk`-equivalent native-1M predicate restricted to OCC-known ids:
+ * canonicalize (official `Ht`/`Je` unify 1P/3P spellings and case — OCC's
+ * getCanonicalName is the standing equivalent) then test catalog membership.
+ */
+function isNative1mModel(model: string): boolean {
+  return NATIVE_1M_CANONICAL_IDS.has(getCanonicalName(model))
+}
+
 /**
  * Returns a human-readable display name for known public models, or null
  * if the model is not recognized as a public model.
+ *
+ * 2.1.311: the input is normalized through `stripNative1mSuffix` first
+ * (official `lT` resolves `Je(e,{identity:!0})` after `a2` gates the
+ * label), so a native-1M `[1m]` variant resolves to its base display name
+ * with NO "(1M context)" label. Suffix-only (non-native) models — sonnet
+ * 4/4.5/4.6, opus 4.6 — keep their `[1m]` label cases.
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
+  return resolveKnownModelDisplayName(stripNative1mSuffix(model))
+}
+
+/** Known-model display table (extracted to keep each function focused). */
+function resolveKnownModelDisplayName(model: ModelName): string | null {
   switch (model) {
     case getModelStrings().opus55:
       return 'Opus 5.5'
-    case getModelStrings().opus55 + '[1m]':
-      return 'Opus 5.5 (1M context)'
     case getModelStrings().opus5:
       return 'Opus 5'
-    case getModelStrings().opus5 + '[1m]':
-      return 'Opus 5 (1M context)'
     case getModelStrings().opus48:
       return 'Opus 4.8'
-    case getModelStrings().opus48 + '[1m]':
-      return 'Opus 4.8 (1M context)'
     case getModelStrings().opus47:
       return 'Opus 4.7'
-    case getModelStrings().opus47 + '[1m]':
-      return 'Opus 4.7 (1M context)'
     case getModelStrings().opus46:
       return 'Opus 4.6'
     case getModelStrings().opus46 + '[1m]':
@@ -802,12 +875,8 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Opus 4.1'
     case getModelStrings().opus40:
       return 'Opus 4'
-    case getModelStrings().sonnet55 + '[1m]':
-      return 'Sonnet 5.5 (1M context)'
     case getModelStrings().sonnet55:
       return 'Sonnet 5.5'
-    case getModelStrings().sonnet5 + '[1m]':
-      return 'Sonnet 5 (1M context)'
     case getModelStrings().sonnet5:
       return 'Sonnet 5'
     case getModelStrings().sonnet46 + '[1m]':
@@ -830,8 +899,6 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Fable 5.1'
     case getModelStrings().fable5:
       return 'Fable 5'
-    case getModelStrings().haiku55 + '[1m]':
-      return 'Haiku 5.5 (1M context)'
     case getModelStrings().haiku55:
       return 'Haiku 5.5'
     case getModelStrings().haiku45:
