@@ -152,7 +152,7 @@ async function deleteItem(item: PurgeItem): Promise<string | null> {
   return null
 }
 
-function printPlan(label: string, items: PurgeItem[], warnings: string[]): void {
+export function printPlan(label: string, items: PurgeItem[], warnings: string[]): void {
   // eslint-disable-next-line no-console
   console.log(`Purge plan for ${label}`)
   if (items.length === 0) {
@@ -167,6 +167,12 @@ function printPlan(label: string, items: PurgeItem[], warnings: string[]): void 
     // eslint-disable-next-line no-console
     console.log(`  warning: ${warning}`)
   }
+  // CC 2.1.311 item 76 (WP30) — official `ne` (@128068013 / @269429458) ends
+  // the plan with `P(`\nPurging deletes data only on this computer, not
+  // anything stored by Anthropic.`)`. v310 stopped after the warnings; this
+  // appends the verbatim data-locality disclaimer so users know purge is local.
+  // eslint-disable-next-line no-console
+  console.log(`\nPurging deletes data only on this computer, not anything stored by Anthropic.`)
 }
 
 export async function purgeProjectHandler(
