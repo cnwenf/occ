@@ -9,19 +9,25 @@ import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
 import { Box, color, Link, Text, useInput, useTheme } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { AuthenticationCancelledError, captureServerTokenData, getServerKey, performMCPOAuthFlow, revokeServerTokens } from '../../services/mcp/auth.js';
+import { AuthenticationCancelledError, captureServerTokenData, ClaudeAuthProvider, getServerKey, performMCPOAuthFlow, revokeServerTokens } from '../../services/mcp/auth.js';
 import { reauthenticateWithSafeOrdering } from '../../services/mcp/reauthOrdering.js';
 import { clearServerCache } from '../../services/mcp/client.js';
 import { getMcpConfigByName, isMcpServerAllowedByPolicy, isMcpServerDisabled } from '../../services/mcp/config.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
 import { getDisplayConfig, redactMcpErrorDetail } from '../../services/mcp/redaction.js';
+import type { McpHTTPServerConfig, McpSSEServerConfig } from '../../services/mcp/types.js';
 import { isXaaEnabled } from '../../services/mcp/xaaIdpLogin.js';
 import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer, resolveUnexpandedMcpServers } from '../../services/mcp/utils.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { getOauthAccountInfo } from '../../utils/auth.js';
 import { openBrowser } from '../../utils/browser.js';
 import { errorMessage } from '../../utils/errors.js';
+import { isFirstPartyAnthropicHost } from '../../utils/firstPartyEndpoint.js';
 import { logMCPDebug } from '../../utils/log.js';
+import { getAPIProvider } from '../../utils/model/providers.js';
+import { getSecureStorage } from '../../utils/secureStorage/index.js';
+import { isTransientReadFailure } from '../../utils/secureStorage/transientRead.js';
+import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js';
 import { capitalize } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Select } from '../CustomSelect/index.js';
@@ -42,6 +48,169 @@ type Props = {
   }) => void;
   borderless?: boolean;
 };
+
+// ---------------------------------------------------------------------------
+// 2.1.311 WP-M (triage items 41 + 42) — pure auth-row derivers.
+//
+// Byte-verified against the official v311 ELF (/tmp/cc-diff-311):
+// - three-state auth row @283701600:
+//     _n ? <success/>+"authenticated"
+//        : Mn ? <dimColor/>+"not signed in"
+//             : <error/>+"not authenticated"
+//   with Mn = Li(client) && toolCount>0 (@283699050).
+// - credential predicates @242617486+:
+//     Li(e)  = e.type==="connected" || e.type==="cached"
+//     lEn(e) = Object.keys(e).some(n => n.toLowerCase()==="authorization")
+//     mee(e) = (nW() && e.oauth?.xaa) || e.headersHelper
+//              || (e.headers && Object.keys(e.headers).length>0)
+//              || (oF(e.url) && Un())
+//     oF(url)= https + api.anthropic.com + pathname in the hosted-MCP list
+//   and Zot(e,n) = G0(e) || _d(e) || (oF(e.url) && Un() && n) where
+//   n = vd()!==null (session access token present).
+// These functions are pure (env-derived inputs are injectable) so they can be
+// unit-tested without Ink; the component wires them to the live env below.
+// ---------------------------------------------------------------------------
+
+/** Path prefixes on api.anthropic.com that host first-party MCP endpoints (binary `oF`). */
+const ANTHROPIC_HOSTED_MCP_PATHS = ['/v1/design/', '/v1/claude/test/', '/v1/pages/mcp'] as const;
+
+export type AuthRowState = 'authenticated' | 'not-signed-in' | 'not-authenticated';
+
+/** Structural view of the remote-server config fields the credential predicates need. */
+export type CredentialBearingConfig = {
+  url?: string;
+  headers?: Record<string, string>;
+  headersHelper?: string;
+  oauth?: {
+    xaa?: boolean;
+  } | undefined;
+};
+
+/** Injectable env-derived inputs so the predicate stays unit-testable. */
+export type CredentialEnvOverrides = {
+  xaaEnabled?: boolean;
+  hasSessionToken?: boolean;
+};
+
+/** Binary `lEn`: an Authorization header exists (case-insensitive key match). */
+export function hasAuthorizationHeader(headers: Record<string, string> | undefined): boolean {
+  return Object.keys(headers ?? {}).some(key => key.toLowerCase() === 'authorization');
+}
+
+/** Binary `mee` 2nd disjunct: the headers record carries at least one entry. */
+export function hasNonEmptyHeaders(headers: Record<string, string> | undefined): boolean {
+  return Object.keys(headers ?? {}).length > 0;
+}
+
+/** Binary `Li`: client types that count as "connectable" for the middle auth-row state. */
+export function isConnectableClientType(clientType: string): boolean {
+  return clientType === 'connected' || clientType === 'cached';
+}
+
+/** True for https api.anthropic.com URLs on a hosted-MCP path (binary `oF`). */
+function isAnthropicHostedMcpUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  let pathname: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    pathname = parsed.pathname;
+  } catch {
+    return false;
+  }
+  if (!isFirstPartyAnthropicHost(url)) return false;
+  return ANTHROPIC_HOSTED_MCP_PATHS.some(prefix => pathname.startsWith(prefix));
+}
+
+/**
+ * Binary `Zot`/`mee` composite: does the stored config itself carry usable
+ * credentials (headersHelper, non-empty headers, XAA opt-in, or a first-party
+ * anthropic-hosted MCP url backed by a session token)?
+ */
+export function configCarriesCredentials(config: CredentialBearingConfig, overrides: CredentialEnvOverrides = {}): boolean {
+  const xaaEnabled = overrides.xaaEnabled ?? isXaaEnabled();
+  if (xaaEnabled && config.oauth?.xaa) return true;
+  if (config.headersHelper) return true;
+  if (hasNonEmptyHeaders(config.headers)) return true;
+  const hasSessionToken = overrides.hasSessionToken ?? (getAPIProvider() === 'firstParty' && getSessionIngressAuthToken() !== null);
+  if (isAnthropicHostedMcpUrl(config.url) && hasSessionToken) return true;
+  return false;
+}
+
+export type AuthRowInput = {
+  isAuthenticated: boolean;
+  clientType: string;
+  toolCount: number;
+  configType: string;
+};
+
+/**
+ * Three-state auth row (binary @283699050/@283701600). Credentials win;
+ * otherwise a connectable server with tools but NO credentials is
+ * "not signed in" (item 42: v310 wrongly rendered it "authenticated").
+ */
+export function deriveAuthRowState({
+  isAuthenticated,
+  clientType,
+  toolCount,
+  configType
+}: AuthRowInput): AuthRowState {
+  if (isAuthenticated) return 'authenticated';
+  const isConnectableWithTools = isConnectableClientType(clientType) && toolCount > 0;
+  if (isConnectableWithTools && configType !== 'claudeai-proxy') return 'not-signed-in';
+  return 'not-authenticated';
+}
+
+export type ReconnectGateInput = {
+  priorClientType: string;
+  isServerDisabled: boolean;
+  isAllowedByPolicy: boolean;
+  hasStoredConfig: boolean;
+};
+
+/**
+ * Binary `hn` reconnect gate (@283694400): only reconnect after a clear when
+ * the server was previously usable, is not disabled, is policy-allowed, and
+ * its config is still stored — otherwise leave it in the cleared state.
+ */
+export function shouldAttemptReconnectAfterClear({
+  priorClientType,
+  isServerDisabled,
+  isAllowedByPolicy,
+  hasStoredConfig
+}: ReconnectGateInput): boolean {
+  if (priorClientType === 'failed' || priorClientType === 'disabled') return false;
+  if (isServerDisabled) return false;
+  if (!isAllowedByPolicy) return false;
+  return hasStoredConfig;
+}
+
+/**
+ * v311 clear-auth validation (binary `phr` @276058333): the sign-in data was
+ * only really cleared when the credential store is readable AND no entry for
+ * this server's key survives (transient read failure counts as NOT cleared).
+ */
+async function wasSignInDataCleared(serverName: string, config: McpSSEServerConfig | McpHTTPServerConfig): Promise<boolean> {
+  let storageData: unknown;
+  try {
+    storageData = getSecureStorage().read();
+  } catch {
+    return false;
+  }
+  if (isTransientReadFailure(storageData)) return false;
+  const serverKey = getServerKey(serverName, config);
+  const storedEntry = (storageData as {
+    mcpOAuth?: Record<string, unknown>;
+  } | null)?.mcpOAuth?.[serverKey];
+  if (storedEntry !== undefined) return false;
+  try {
+    const tokens = await new ClaudeAuthProvider(serverName, config).tokens();
+    return tokens === null || tokens === undefined;
+  } catch {
+    return false;
+  }
+}
+
 export function MCPRemoteServerMenu({
   server,
   serverToolsCount,
@@ -73,6 +242,9 @@ export function MCPRemoteServerMenu({
   const [authorizationUrl, setAuthorizationUrl] = React.useState<string | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const authAbortControllerRef = useRef<AbortController | null>(null);
+  // 2.1.311 item 41: re-entrancy guard for the clear-auth flow (binary `yt`).
+  // Without it a second Enter could race the first clear's reconnect.
+  const clearAuthInFlightRef = useRef(false);
   const [isClaudeAIAuthenticating, setIsClaudeAIAuthenticating] = useState(false);
   const [claudeAIAuthUrl, setClaudeAIAuthUrl] = useState<string | null>(null);
   const [isClaudeAIClearingAuth, setIsClaudeAIClearingAuth] = useState(false);
@@ -99,10 +271,18 @@ export function MCPRemoteServerMenu({
     }
   }, []);
 
-  // A server is effectively authenticated if:
-  // 1. It has OAuth tokens (server.isAuthenticated), OR
-  // 2. It's connected and has tools (meaning it's working via some auth mechanism)
-  const isEffectivelyAuthenticated = server.isAuthenticated || server.client.type === 'connected' && serverToolsCount > 0;
+  // 2.1.311 item 42: the auth row is CREDENTIAL-based only. v310 also treated
+  // "connected && tools>0" as authenticated, which rendered "authenticated"
+  // for credential-less remote servers; v311 renders "not signed in" for
+  // those (binary `_n = gn || (Mn && creds…)` — the v310 disjunct is gone).
+  const isEffectivelyAuthenticated = Boolean(server.isAuthenticated) || (server.config.type !== 'claudeai-proxy' && configCarriesCredentials(server.config));
+  // Three-state row deriver (binary Mn/_n @283699050, render @283701600).
+  const authRowState = deriveAuthRowState({
+    isAuthenticated: isEffectivelyAuthenticated,
+    clientType: server.client.type,
+    toolCount: serverToolsCount,
+    configType: server.config.type
+  });
   const reconnectMcpServer = useMcpReconnect();
   const handleClaudeAIAuthComplete = React.useCallback(async () => {
     setIsClaudeAIAuthenticating(false);
@@ -327,12 +507,31 @@ export function MCPRemoteServerMenu({
       setCallbackUrlInput('');
     }
   }, [server.isAuthenticated, server.config, server.name, onComplete, reconnectMcpServer, isEffectivelyAuthenticated]);
+  // 2.1.311 item 41: clear-auth now validates the sign-in data was actually
+  // cleared, then RECONNECTS (binary `hn` @283694400) — the row only stays
+  // "failed" when the reconnect genuinely fails. Result messages reuse the
+  // existing handleReconnectResult/handleReconnectError helpers (byte-equal
+  // to the official `vct`/`t8e`).
   const handleClearAuth = async () => {
     if (server.config.type === 'claudeai-proxy') return;
-    if (server.config) {
+    if (clearAuthInFlightRef.current) return;
+    clearAuthInFlightRef.current = true;
+    setIsReconnecting(true);
+    const priorClientType = server.client.type;
+    try {
+      if (!server.config) return;
       // First revoke the authentication tokens and clear all auth state
       await revokeServerTokens(server.name, server.config);
+
+      // v311 `phr` validation: refuse to claim success while sign-in data
+      // is still stored or the credential store could not be read.
+      const signInDataCleared = await wasSignInDataCleared(server.name, server.config as McpSSEServerConfig | McpHTTPServerConfig);
+      if (!signInDataCleared) {
+        onComplete?.(`Authentication for ${server.name} was not cleared: sign-in data is still stored, or the credential store could not be read. Try Clear authentication again.`);
+        return;
+      }
       logEvent('tengu_mcp_auth_config_clear', {});
+      const clearedMessage = `Authentication cleared for ${server.name}.`;
 
       // Disconnect the client and clear the cache
       await clearServerCache(server.name, {
@@ -362,7 +561,38 @@ export function MCPRemoteServerMenu({
           }
         };
       });
-      onComplete?.(`Authentication cleared for ${server.name}.`);
+
+      // Reconnect gate (binary `hn`): only when the server was previously
+      // usable, is enabled, policy-allowed, and still stored in config.
+      const shouldReconnect = shouldAttemptReconnectAfterClear({
+        priorClientType,
+        isServerDisabled: isMcpServerDisabled(server.name),
+        isAllowedByPolicy: isMcpServerAllowedByPolicy(server.name, server.config),
+        hasStoredConfig: getMcpConfigByName(server.name) !== null
+      });
+      if (!shouldReconnect) {
+        onComplete?.(clearedMessage);
+        return;
+      }
+      try {
+        const result = await reconnectMcpServer(server.name);
+        const {
+          message
+        } = handleReconnectResult(result, server.name);
+        onComplete?.(`${clearedMessage} ${message}`);
+      } catch (err) {
+        onComplete?.(`${clearedMessage} ${handleReconnectError(err, server.name)}`);
+      }
+    } catch (err_3) {
+      // Surface redacted detail inline (never raw config/headers/tokens).
+      if (!unmountedRef.current) {
+        setError(redactMcpErrorDetail(server.name, scopedConfig, errorMessage(err_3), resolveUnexpandedMcpServers));
+      }
+    } finally {
+      clearAuthInFlightRef.current = false;
+      if (!unmountedRef.current) {
+        setIsReconnecting(false);
+      }
     }
   };
   if (isAuthenticating) {
@@ -581,8 +811,10 @@ export function MCPRemoteServerMenu({
 
           {server.transport !== 'claudeai-proxy' && <Box>
               <Text bold>Auth: </Text>
-              {isEffectivelyAuthenticated ? <Text>
+              {authRowState === 'authenticated' ? <Text>
                   {color('success', theme)(figures.tick)} authenticated
+                </Text> : authRowState === 'not-signed-in' ? <Text dimColor>
+                  not signed in
                 </Text> : <Text>
                   {color('error', theme)(figures.cross)} not authenticated
                 </Text>}

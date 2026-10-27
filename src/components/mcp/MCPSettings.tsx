@@ -8,7 +8,7 @@ import { useAppState } from '../../state/AppState.js';
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js';
 import { MCPAgentServerMenu } from './MCPAgentServerMenu.js';
 import { MCPListPanel } from './MCPListPanel.js';
-import { MCPRemoteServerMenu } from './MCPRemoteServerMenu.js';
+import { configCarriesCredentials, type CredentialBearingConfig, MCPRemoteServerMenu } from './MCPRemoteServerMenu.js';
 import { MCPStdioServerMenu } from './MCPStdioServerMenu.js';
 import { MCPToolDetailView } from './MCPToolDetailView.js';
 import { MCPToolListView } from './MCPToolListView.js';
@@ -80,8 +80,15 @@ export function MCPSettings(t0) {
             const authProvider = new ClaudeAuthProvider(client_0.name, client_0.config as McpSSEServerConfig | McpHTTPServerConfig);
             const tokens = await authProvider.tokens();
             const hasSessionAuth = getSessionIngressAuthToken() !== null && client_0.type === "connected";
-            const hasToolsAndConnected = client_0.type === "connected" && filterToolsByServer(mcp.tools, client_0.name).length > 0;
-            isAuthenticated = Boolean(tokens) || hasSessionAuth || hasToolsAndConnected;
+            // 2.1.311 item 42: the v310 `hasToolsAndConnected` disjunct is
+            // gone — connected-with-tools does NOT imply authenticated (a
+            // credential-less remote server now renders "not signed in").
+            // Credential-in-config still counts, via computeIsAuthenticated.
+            isAuthenticated = computeIsAuthenticated({
+              hasTokens: Boolean(tokens),
+              hasSessionAuth,
+              config: client_0.config as CredentialBearingConfig
+            });
           }
           const baseInfo = {
             name: client_0.name,
@@ -392,6 +399,28 @@ export function MCPSettings(t0) {
         return t10;
       }
   }
+}
+export type ComputeIsAuthenticatedInput = {
+  hasTokens: boolean;
+  hasSessionAuth: boolean;
+  config: CredentialBearingConfig;
+};
+
+/**
+ * 2.1.311 WP-M item 42 — pure credential-based `isAuthenticated` deriver for
+ * remote (sse/http) servers. v310 also OR-ed in "connected && tools>0", which
+ * made credential-less servers appear "authenticated" in /mcp; v311 keys the
+ * row off real credentials only (stored OAuth tokens, session-ingress auth,
+ * or credentials carried in the config itself — binary `_n = gn || mee/Zot`).
+ */
+export function computeIsAuthenticated({
+  hasTokens,
+  hasSessionAuth,
+  config
+}: ComputeIsAuthenticatedInput): boolean {
+  if (hasTokens) return true;
+  if (hasSessionAuth) return true;
+  return configCarriesCredentials(config);
 }
 function _temp4(a, b) {
   return a.name.localeCompare(b.name);
