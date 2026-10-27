@@ -47,9 +47,7 @@ let savedConfigDir: string | undefined
 let savedSkip: string | undefined
 
 const {
-  appendEntryForTesting,
-  flushSessionStorage,
-  removeTranscriptMessage,
+  getProjectInstanceForTesting,
   resetProjectFlushStateForTesting,
   resetProjectForTesting,
   setSessionFileForTesting,
@@ -119,12 +117,17 @@ describe('CC 2.1.311 item 9 — removal is serialized after queued appends', () 
     const target = randomUUID()
     const file = await writeTranscript([userRow(keep, null), userRow(target, keep)])
     setSessionFileForTesting(file)
+    // Capture ONE Project instance across every await below so a concurrent
+    // test file's resetProjectForTesting() (which nulls the shared singleton)
+    // cannot redirect removeMessageByUuid onto a fresh Project whose
+    // sessionFile === null (→ early-return, target never removed).
+    const project = getProjectInstanceForTesting()
 
     // Act — enqueue an append (fires the 100 ms queue; resolves without
     // waiting for the drain), then remove `target` WITHOUT letting the timer
     // fire or calling flush() in between.
-    const queued = appendEntryForTesting(queuedSummary('queued-append-X'))
-    await removeTranscriptMessage(target)
+    const queued = project.appendEntry(queuedSummary('queued-append-X'))
+    await project.removeMessageByUuid(target)
     await queued
 
     // Assert — drain-first guarantee: the append enqueued ahead of the
@@ -141,12 +144,13 @@ describe('CC 2.1.311 item 9 — removal is serialized after queued appends', () 
     const target = randomUUID()
     const file = await writeTranscript([userRow(keep, null), userRow(target, keep)])
     setSessionFileForTesting(file)
+    const project = getProjectInstanceForTesting()
 
-    const queued = appendEntryForTesting(queuedSummary('append-before-remove'))
-    await removeTranscriptMessage(target)
+    const queued = project.appendEntry(queuedSummary('append-before-remove'))
+    await project.removeMessageByUuid(target)
     await queued
     // A later flush (e.g. graceful shutdown) must not bring `target` back.
-    await flushSessionStorage()
+    await project.flush()
 
     const lines = (await readFile(file, 'utf8'))
       .split('\n')
@@ -166,10 +170,14 @@ describe('CC 2.1.311 item 9 — removal is serialized after queued appends', () 
       userRow(y, x),
     ])
     setSessionFileForTesting(file)
+    const project = getProjectInstanceForTesting()
 
     // Fire both removals without awaiting individually — the chain must
     // serialize them so neither tail-splice clobbers the other.
-    await Promise.all([removeTranscriptMessage(x), removeTranscriptMessage(y)])
+    await Promise.all([
+      project.removeMessageByUuid(x),
+      project.removeMessageByUuid(y),
+    ])
 
     const content = await readFile(file, 'utf8')
     expect(content).toContain(`"uuid":"${a}"`)

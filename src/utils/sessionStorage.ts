@@ -648,6 +648,18 @@ export function setSessionFileForTesting(path: string): void {
 }
 
 /**
+ * @internal Test-only: snapshot the current shared Project instance so a test
+ * can hold the reference across await points without a concurrent test file's
+ * `resetProjectForTesting()` nulling the shared singleton mid-flight. The
+ * returned Project's public methods (`appendEntry`, `removeMessageByUuid`,
+ * `flush`) operate on this stable instance, so a concurrent reset cannot
+ * redirect them onto a fresh Project whose `sessionFile === null`.
+ */
+export function getProjectInstanceForTesting(): Project {
+  return getProject()
+}
+
+/**
  * 2.1.217 #2 — Test-only entry point to call the private `appendEntry`
  * method without going through the full message-insertion pipeline.
  * Used by transcriptWriteWarnings.test.ts to trigger drain-queue writes
