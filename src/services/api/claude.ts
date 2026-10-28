@@ -176,7 +176,12 @@ import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
-import { type EffortValue, modelSupportsEffort } from 'src/utils/effort.js'
+import {
+  type EffortLevel,
+  type EffortValue,
+  isEffortLevel,
+  modelSupportsEffort,
+} from 'src/utils/effort.js'
 import {
   isFastModeAvailable,
   isFastModeCooldown,
@@ -3127,6 +3132,18 @@ async function* queryModel(
 
   const newMessages: AssistantMessage[] = []
   let ttftMs = 0
+  /**
+   * CC 2.1.312 items 9+16 — official `Yh` (v312 @251161309): the effort
+   * level IN FORCE, normalized from the request that was actually sent:
+   * `Yh=typeof My==="string"&&Fw(My)?My:void 0` where `My` is the sent
+   * request's `output_config.effort` and `Fw(e){return Yi.includes(e)}` is
+   * the effort-level predicate (≡ isEffortLevel). Recomputed per attempt
+   * (right after paramsFromContext below) so an effort-refusal retry — which
+   * re-fires WITHOUT `output_config.effort` — emits nothing. Travels on the
+   * message_start stream_event as `sentEffort` and on assistant messages as
+   * `effort` (@251133209/@251146216/@251155160: `...Yh!==void 0&&{effort:Yh}`).
+   */
+  let sentEffort: EffortLevel | undefined 
   let partialMessage: BetaMessage | undefined 
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = []
   let usage: NonNullableUsage = EMPTY_USAGE
@@ -3405,6 +3422,18 @@ async function* queryModel(
 
         const params = paramsFromContext(context)
         captureAPIRequest(params, options.querySource) // Capture for bug reports
+        // CC 2.1.312 items 9+16 — official `Yh` per attempt: only a string
+        // effort level on the wire counts (`typeof My==="string"&&Fw(My)`);
+        // anything else (absent, deleted by the effort-refusal retry, numeric)
+        // leaves sentEffort undefined so message_start carries no value and
+        // the REPL slot resets via `setSentEffort(h.sentEffort??null)`.
+        {
+          const wireEffort = params.output_config?.effort
+          sentEffort =
+            typeof wireEffort === 'string' && isEffortLevel(wireEffort)
+              ? wireEffort
+              : undefined
+        }
         // 2.1.111 (F12): OTEL_LOG_RAW_API_BODIES — dump the request body to a
         // file or OTel log event when enabled. Best-effort, fire-and-forget.
         logRawApiBody('api_request_body', params, {
@@ -3979,6 +4008,11 @@ async function* queryModel(
               ...(process.env.USER_TYPE === 'ant' &&
                 research !== undefined && { research }),
               ...(advisorModel && { advisorModel }),
+              // CC 2.1.312 items 9+16 — official @251133209/@251155160:
+              // `...Yh!==void 0&&{effort:Yh}` on every assistant message; the
+              // REPL stream handler mirrors it into the sentEffort slot
+              // (`if(h.effort!==void 0)te.main.setSentEffort(h.effort)`).
+              ...(sentEffort !== undefined && { effort: sentEffort }),
             }
             newMessages.push(m)
             // #019 (2.1.281): mark the block closed (v281 `pl.add(si)` right
@@ -4092,7 +4126,16 @@ async function* queryModel(
         yield {
           type: 'stream_event',
           event: part,
-          ...(part.type === 'message_start' ? { ttftMs } : undefined),
+          ...(part.type === 'message_start'
+            ? {
+                ttftMs,
+                // CC 2.1.312 items 9+16 — official @251161309:
+                // `...Ki.type==="message_start"?{ttftMs:Zse,
+                //   ...Yh!==void 0&&{sentEffort:Yh},...}` — the in-force
+                // effort rides inside the message_start spread only.
+                ...(sentEffort !== undefined && { sentEffort }),
+              }
+            : undefined),
         }
       }
       // Clear the idle timeout watchdog now that the stream loop has exited
@@ -4612,6 +4655,9 @@ async function* queryModel(
         ...(advisorModel && {
           advisorModel,
         }),
+        // CC 2.1.312 items 9+16 — official @251146216 lineage: assistant
+        // messages carry `...Yh!==void 0&&{effort:Yh}` (see streaming site).
+        ...(sentEffort !== undefined && { effort: sentEffort }),
       }
       newMessages.push(m)
       fallbackMessage = m
@@ -4749,6 +4795,9 @@ async function* queryModel(
           ...(process.env.USER_TYPE === 'ant' &&
             research !== undefined && { research }),
           ...(advisorModel && { advisorModel }),
+          // CC 2.1.312 items 9+16 — official @251146216 lineage: assistant
+          // messages carry `...Yh!==void 0&&{effort:Yh}` (see streaming site).
+          ...(sentEffort !== undefined && { effort: sentEffort }),
         }
         newMessages.push(m)
         fallbackMessage = m

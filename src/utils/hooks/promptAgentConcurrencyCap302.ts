@@ -2,6 +2,13 @@
  * CC 2.1.302 (#035) — "Changed prompt and agent hooks so that at most 12 of
  * one event run at a time; the rest wait their turn."
  *
+ * STATUS (CC 2.1.312 #22): SUPERSEDED at the production call site by
+ * `hookSessionSlots312.ts` (two-tier merge: session cap 24 + overdue cap 12,
+ * retaining this module's per-event stagger cap 12 = official `Wet`). This
+ * module is retained because `hookConcurrencyCap302.test.ts` still pins the
+ * v302 single-tier merge shape and `isPromptOrAgentHook` (official `zB`, the
+ * same predicate the 312 module re-exports). Do not wire new callers here.
+ *
  * Official binary evidence (2.1.302 linux-x64 ELF @246248866, NEW in v302 —
  * v301 lacks ant/Iee/ZRn entirely at the same site):
  *

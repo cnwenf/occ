@@ -15,10 +15,61 @@ import {
   getSentEffortLevel,
   modelSupportsEffort,
 } from '../utils/effort.js'
+import { getSentEffort } from '../utils/effort/sentEffort.js'
+import {
+  getTurnEffort,
+  modelSupportsPerTurnEffort,
+} from '../utils/effort/turnEffort.js'
 import {
   ULTRACODE_EFFORT_DESCRIPTION,
   isUltracodeEnabled,
 } from '../utils/effort/ultracode.js'
+
+/**
+ * CC 2.1.312 item 16 — the mid-task effort-change note ("may wait for your
+ * next message"). Official indicator template UNCHANGED 311→312 (v312 `EH`
+ * @275881776, byte-verified):
+ *
+ *   `function EH(h,x=!1,D=!1,H=!1){if(!h)return;
+ *      return`${D?"effort:":jQ(h)} ${h}${x?" · ultracode":""} · ${H?"may wait for your next message":"/effort"}`}`
+ *
+ * The 4th flag H selects the literal `may wait for your next message` in
+ * place of `/effort`. The 312 caller computes the flag (@276688231):
+ *
+ *   `uT = sentEffort!==null && turnEffort===null
+ *         && sentEffort!==resolvedLevel && JEt(model)`
+ *   `JEt(e){return Tir(e,Je(e))}`  (v312 @243468953)
+ *
+ * `JEt` is the per-turn-effort capability probe (`Tir` = `evn(e,n)&&
+ * !HTt(Us())`, the v311 `fot` lineage) — OCC's modelSupportsPerTurnEffort.
+ * `resolvedLevel` is the SENT resolver's level (the `AH`/`kWe` lineage ≡
+ * getSentEffortLevel): the note means "your /effort pick has NOT been applied
+ * yet — the model still runs at sentEffort and may only pick the new level up
+ * on your next message".
+ *
+ * OCC rendering note: the official clears the note via its own state cycle;
+ * OCC renders the chip as a steady borderText derived per-render, so the note
+ * clears naturally once the model applies the pick (next message_start
+ * rewrites the sentEffort slot → flag goes false → chip reverts to /effort).
+ */
+export const EFFORT_MAY_WAIT_NOTE = 'may wait for your next message'
+
+/** Official `uT` (@276688231) — the 4-term mid-task-change-pending flag. */
+export function isEffortChangePending(
+  model: string,
+  effortValue: EffortValue | undefined,
+): boolean {
+  const sent = getSentEffort()
+  // term 1: `sentEffort!==null` — nothing applied yet → nothing pending
+  if (sent === null) return false
+  // term 2: `turnEffort===null` — an ultrathink boost owns this turn's effort
+  if (getTurnEffort() != null) return false
+  // term 3: `sentEffort!==resolvedLevel` — the pick already matches in-force
+  const resolvedLevel = getSentEffortLevel(model, effortValue)
+  if (resolvedLevel === undefined || sent === resolvedLevel) return false
+  // term 4: `JEt(model)` — the model supports per-turn effort at all
+  return modelSupportsPerTurnEffort(model)
+}
 
 /**
  * Build the text for the effort indicator, e.g. "◐ medium · /effort".
@@ -36,6 +87,7 @@ import {
 export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
+  mayWaitForNextMessage = false,
 ): string | undefined {
   // Ultracode session mode: symbol-mode badge — just "ultracode" in the
   // effortUltra theme color (rgb(135,0,255) = purple). Mirrors the binary's
@@ -59,7 +111,11 @@ export function getEffortNotificationText(
   // outcome.)
   const level = getSentEffortLevel(model, effortValue)
   if (level === undefined) return undefined
-  return `${effortLevelToSymbol(level)} ${level} · /effort`
+  // CC 2.1.312 item 16 — official EH's 4th flag swaps the `/effort` tail for
+  // the literal `may wait for your next message` while a mid-task pick is
+  // pending (see isEffortChangePending). The `!h` falsy-level bail above is
+  // official EH's own guard (`if(!h)return;`), unchanged 311→312.
+  return `${effortLevelToSymbol(level)} ${level} · ${mayWaitForNextMessage ? EFFORT_MAY_WAIT_NOTE : '/effort'}`
 }
 
 export function effortLevelToSymbol(level: EffortLevel): string {
