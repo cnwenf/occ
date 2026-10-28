@@ -527,15 +527,14 @@ export function resolveAutoCompactWindow(
   contextWindow: number,
   override: AutoCompactWindowOverride,
 ): ResolvedAutoCompactWindow {
-  // Official 2.1.296 ceiling branch (byte-verified, `iv`):
-  //   `if(nIt(n)){let _e=iv(e,n.inner,r),{ceiling:ke}=n;
-  //     if(_e.source==="env"||_e.window<=ke)return _e;
-  //     return{window:Math.min(h,ke),configured:ke,source:"settings"}}`
-  // An env-var window is EXEMPT from the subagent ceiling; otherwise the
-  // ceiling only applies when the inherited window is larger than it.
+  // Official ceiling branch, as amended by CC 2.1.312 (item 23, byte-verified):
+  //   v311 `US` @249997782: `if(S.source==="env"||S.window<=w)return S`
+  //   v312 `VS` @249961062: `if(S.window<=w)return S`
+  // The env-var window is NO LONGER exempt from the subagent ceiling; the
+  // ceiling applies whenever the inherited window is larger than it.
   if (isAutoCompactWindowCeiling(override)) {
     const inner = resolveAutoCompactWindow(model, contextWindow, override.inner)
-    if (inner.source === 'env' || inner.window <= override.ceiling) return inner
+    if (inner.window <= override.ceiling) return inner
     return {
       window: Math.min(contextWindow, override.ceiling),
       configured: override.ceiling,
