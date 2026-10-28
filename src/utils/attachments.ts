@@ -121,7 +121,11 @@ import {
   FILE_READ_TOOL_NAME,
 } from 'src/tools/FileReadTool/prompt.js'
 import { getDefaultFileReadingLimits } from 'src/tools/FileReadTool/limits.js'
-import { cacheKeys, type FileStateCache } from './fileStateCache.js'
+import {
+  cacheKeys,
+  type FileState,
+  type FileStateCache,
+} from './fileStateCache.js'
 import {
   createAbortController,
   createChildAbortController,
@@ -2044,6 +2048,20 @@ export function memoryFilesToAttachments(
         isPartialView: isOverBudget || !!memoryFile.contentDiffersFromDisk,
       })
 
+      // CC 2.1.312 (item 4) — official marking site @251721817 (byte-verified):
+      // `…isPartialView:Ae||G.contentDiffersFromDisk,seededFromContext:!0,
+      //  keepContent:!0}),Ae&&k("tengu_quizzical_mango",!0))ze?.markStartOnly(G.path)`
+      // — Ae is the cut flag (≡ isOverBudget here). The `tengu_quizzical_mango`
+      // gate defaults TRUE upstream, so the mark is unconditional in OCC. The
+      // startOnly set is eviction-proof: the Write guard (errorCode 19) keeps
+      // refusing even after this LRU entry is evicted. NOT marked:
+      // contentDiffersFromDisk-only seeds (the official gate is Ae alone) and
+      // the STAGED top-level CLAUDE.md cut (tengu_velvet_possum, default
+      // false upstream — not ported).
+      if (isOverBudget) {
+        toolUseContext.readFileState.markStartOnly(memoryFile.path)
+      }
+
 
       // Fire InstructionsLoaded hook for audit/observability (fire-and-forget)
       if (shouldFireHook && isInstructionsMemoryType(memoryFile.type)) {
@@ -2709,6 +2727,43 @@ async function processMcpResourceAttachments(
 export const processMcpResourceAttachmentsForTesting =
   processMcpResourceAttachments
 
+/**
+ * CC 2.1.312 (item 4) — file-change watcher re-seed, official @251734727
+ * (byte-verified):
+ *   `let mt=e.readFileState.holdsOnlyStartOf(Qe);…
+ *    if(ze.isPartialView||mt){let qt=e.readFileState.get(Qe);if(qt)
+ *      e.readFileState.set(Qe,{...qt,…ze.isPartialView&&{isPartialView:!0},
+ *        …mt&&{contentNotInModelContext:!0}})}`
+ * `mt` (heldOnlyStart) is captured BEFORE the changed-file read (QS.call ≡
+ * FileReadTool.call re-seeds the entry with the fresh content). After the
+ * read, a changed file whose prior entry was a partial view — or that was
+ * startOnly-marked — gets its FRESH entry flagged so it is never treated as
+ * a trusted full read (the attached snippet read does not put the whole file
+ * in the model's context). `contentNotInModelContext:true` keeps
+ * holdsOnlyStartOf true (Yoe combination), so the Write errorCode-19 guard
+ * survives the watcher sweep. Extracted as a pure helper for testability —
+ * getChangedFiles itself needs a full ToolUseContext + live FileReadTool.
+ */
+export function applyChangedFileWatcherReseed(
+  readFileState: FileStateCache,
+  filePath: string,
+  flags: { priorIsPartialView: boolean; heldOnlyStart: boolean },
+): void {
+  const { priorIsPartialView, heldOnlyStart } = flags
+  if (!priorIsPartialView && !heldOnlyStart) {
+    return
+  }
+  const entry: FileState | undefined = readFileState.get(filePath)
+  if (!entry) {
+    return
+  }
+  readFileState.set(filePath, {
+    ...entry,
+    ...(priorIsPartialView && { isPartialView: true }),
+    ...(heldOnlyStart && { contentNotInModelContext: true }),
+  })
+}
+
 export async function getChangedFiles(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
@@ -2751,6 +2806,13 @@ export async function getChangedFiles(
           readsBlocked,
         )
 
+        // CC 2.1.312 (item 4) — official @251734704 captures
+        // `mt=e.readFileState.holdsOnlyStartOf(Qe)` BEFORE the read (QS.call
+        // ≡ FileReadTool.call re-seeds readFileState with the fresh content,
+        // which would otherwise clear the Yoe-based check).
+        const heldOnlyStart =
+          toolUseContext.readFileState.holdsOnlyStartOf(filePath)
+
         // Validate file path is valid
         const isValid = await FileReadTool.validateInput(
           fileInput,
@@ -2769,6 +2831,14 @@ export async function getChangedFiles(
             toolUseContext,
           ),
         )
+        // CC 2.1.312 (item 4) — @251734727: flag the freshly re-seeded entry
+        // when the prior state was a partial view or the file was startOnly
+        // (contentNotInModelContext:true keeps holdsOnlyStartOf true, so the
+        // Write errorCode-19 guard survives this watcher sweep).
+        applyChangedFileWatcherReseed(toolUseContext.readFileState, filePath, {
+          priorIsPartialView: !!fileState.isPartialView,
+          heldOnlyStart,
+        })
         // Extract only the changed section
         if (result.data.type === 'text') {
           const snippet = getSnippetForTwoFileDiff(

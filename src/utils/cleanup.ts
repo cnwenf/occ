@@ -188,6 +188,23 @@ async function tryRmdir(dirPath: string, fsImpl: FsOperations): Promise<void> {
   }
 }
 
+/**
+ * claude-code 2.1.312 (#8) — official `Q` @259855632 (byte-verified from the
+ * v312 linux-x64 ELF, read-only forensics):
+ *   async function Q(e,r){return(await r.lstat(e)).mtimeMs}
+ * Used by the session-dir cleanup rmdir guards so a FRESH empty tool-results
+ * render dir (pdf.ts mkdir's `pdf-<uuid>` moments before pdftoppm's first
+ * write) survives the background sweep. Callers attach the official
+ * `.catch(()=>1/0)` — an lstat failure (e.g. the dir vanished mid-sweep)
+ * yields Infinity, which never compares < cutoff, so the dir is kept.
+ */
+async function getMtimeMs(
+  dirPath: string,
+  fsImpl: FsOperations,
+): Promise<number> {
+  return (await fsImpl.lstat(dirPath)).mtimeMs
+}
+
 export async function cleanupOldSessionFiles(): Promise<CleanupResult> {
   const cutoffDate = getCutoffDate()
   const result: CleanupResult = emptyCleanupResult()
@@ -283,10 +300,35 @@ export async function cleanupOldSessionFiles(): Promise<CleanupResult> {
                 result.errors++
               }
             }
-            await tryRmdir(toolDirPath, fsImpl)
+            // 2.1.312 (#8) — official guard @259860697 (byte-verified):
+            //   if(ne.length>0||await Q(q,n).catch(()=>1/0)<e.getTime())await T(q,n)
+            // rmdir only when the PRE-deletion readdir snapshot (`ne` ≡
+            // toolFiles) still had entries OR the dir's mtime predates the
+            // cutoff — a fresh empty dir (the pdf-<uuid> render dir between
+            // mkdir and pdftoppm's first write) survives the sweep.
+            if (
+              toolFiles.length > 0 ||
+              (await getMtimeMs(toolDirPath, fsImpl).catch(() => Infinity)) <
+                cutoffDate.getTime()
+            ) {
+              await tryRmdir(toolDirPath, fsImpl)
+            }
           }
         }
-        await tryRmdir(toolResultsDir, fsImpl)
+        // 2.1.312 (#8) — official guard @259860697 (byte-verified):
+        //   if(I.length>0||await Q(j,n).catch(()=>1/0)<e.getTime())await T(j,n)
+        // `I` ≡ toolDirs — the tool-results readdir snapshot taken before the
+        // deletion pass; same fresh-empty-dir protection one level up.
+        if (
+          toolDirs.length > 0 ||
+          (await getMtimeMs(toolResultsDir, fsImpl).catch(() => Infinity)) <
+            cutoffDate.getTime()
+        ) {
+          await tryRmdir(toolResultsDir, fsImpl)
+        }
+        // Unpinned (documented): the official's outer session-dir rmdir guard
+        // is not byte-pinned — only the two inner guards above are. tryRmdir
+        // is empty-only, so this stays unconditional (2.1.311 shape).
         await tryRmdir(sessionDir, fsImpl)
       }
     }

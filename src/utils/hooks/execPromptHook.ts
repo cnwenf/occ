@@ -26,6 +26,10 @@ import {
   capHookString,
   hookResponseSchema,
 } from './hookHelpers.js'
+// Aliased: the local derivation below keeps the name `hookTimeoutMs` (it feeds
+// createCombinedAbortSignal + timeout telemetry), so the import must not
+// collide with it.
+import { hookTimeoutMs as computeHookTimeoutMs } from './hookSessionSlots312.js'
 import {
   HOOK_TRANSCRIPT_BUDGET_RATIO,
   truncateHookTranscript,
@@ -154,7 +158,11 @@ export async function execPromptHook(
     )
 
     // Query the model with Haiku
-    const hookTimeoutMs = hook.timeout ? hook.timeout * 1000 : 30000
+    // CC 2.1.312 (#22) — official `let Oe=BM(e,30000)` @251763592
+    // (byte-verified): `BM(e,n){return e.timeout?Math.max(e.timeout,pEr)*1000:n}`
+    // with `pEr=1` @251761428 — a `timeout` under 1 second counts as 1 second;
+    // falsy `timeout` (0/undefined) falls back to the 30000ms event default.
+    const hookTimeoutMs = computeHookTimeoutMs(hook, 30000)
     const hookStartTime = Date.now()
 
     // Combined signal: aborts if either the hook signal or timeout triggers

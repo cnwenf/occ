@@ -31,6 +31,9 @@ import {
   hookResponseSchema,
   registerStructuredOutputEnforcement,
 } from './hookHelpers.js'
+// Aliased: the local derivation below keeps the name `hookTimeoutMs` (it feeds
+// createCombinedAbortSignal), so the import must not collide with it.
+import { hookTimeoutMs as computeHookTimeoutMs } from './hookSessionSlots312.js'
 import { clearSessionHooks } from './sessionHooks.js'
 
 /**
@@ -119,7 +122,11 @@ export async function execAgentHook(
     )
 
     // Setup timeout and combine with parent signal
-    const hookTimeoutMs = hook.timeout ? hook.timeout * 1000 : 60000
+    // CC 2.1.312 (#22) — official `let Oe=BM(e,60000)` @251774554
+    // (byte-verified): `BM(e,n){return e.timeout?Math.max(e.timeout,pEr)*1000:n}`
+    // with `pEr=1` @251761428 — a `timeout` under 1 second counts as 1 second;
+    // falsy `timeout` (0/undefined) falls back to the 60000ms event default.
+    const hookTimeoutMs = computeHookTimeoutMs(hook, 60000)
     const hookAbortController = createAbortController()
 
     // Combine parent signal with timeout, and have it abort our controller

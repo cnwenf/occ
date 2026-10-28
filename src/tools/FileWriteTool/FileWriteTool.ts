@@ -10,10 +10,10 @@ import {
   activateConditionalSkillsForPaths,
   addSkillDirectories,
   discoverSkillDirsForPaths,
+  resolveSkillDiscoveryBase,
 } from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
 import { escapeControlCharsAsEntities } from '../../utils/displayEscape.js'
@@ -52,6 +52,7 @@ import {
   FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
   FILE_NOT_READ_MESSAGE,
   fileNotTextRefusalMessage,
+  FILE_START_ONLY_WRITE_MESSAGE,
   FILE_STATE_CURRENT_NOTE,
   fileStateMatchesDisk,
   fileStateMatchesNormalized,
@@ -487,6 +488,20 @@ export const FileWriteTool = buildTool({
       throw e
     }
 
+    // CC 2.1.312 (item 4) — official @249830441 (byte-verified):
+    // `if(s.readFileState.holdsOnlyStartOf(G))return{result:!1,message:e7o,
+    // errorCode:19}` — checked BEFORE the not-read branch below, and after the
+    // ENOENT early-return (a brand-new file is never refused with 19). The
+    // startOnly set is eviction-proof: losing the LRU entry does not downgrade
+    // this to the generic errorCode-2 refusal (the pre-312 regression).
+    if (toolUseContext.readFileState.holdsOnlyStartOf(fullFilePath)) {
+      return {
+        result: false,
+        message: FILE_START_ONLY_WRITE_MESSAGE,
+        errorCode: 19,
+      }
+    }
+
     const lastRead = toolUseContext.readFileState.get(fullFilePath)
     if (!lastRead || lastRead.isPartialView) {
       const model = getGuardModel(toolUseContext)
@@ -565,8 +580,16 @@ export const FileWriteTool = buildTool({
     }
 
     // Discover skills from this file's path (fire-and-forget, non-blocking)
-    const cwd = getCwd()
-    const newSkillDirs = await discoverSkillDirsForPaths([fullFilePath], cwd)
+    // CC 2.1.312 item 5: stable discovery base — after a cd deeper inside the
+    // same worktree, anchor discovery/activation to the ORIGINAL cwd so skills
+    // dirs above the new cwd stay reachable and paths: keeps matching (official Sq).
+    const { base: skillDiscoveryBase, ctx: skillDiscoveryCtx } =
+      resolveSkillDiscoveryBase()
+    const newSkillDirs = await discoverSkillDirsForPaths(
+      [fullFilePath],
+      skillDiscoveryBase,
+      skillDiscoveryCtx,
+    )
     if (newSkillDirs.length > 0) {
       // Store discovered dirs for attachment display
       for (const discoveredDir of newSkillDirs) {
@@ -577,7 +600,7 @@ export const FileWriteTool = buildTool({
     }
 
     // Activate conditional skills whose path patterns match this file
-    activateConditionalSkillsForPaths([fullFilePath], cwd)
+    activateConditionalSkillsForPaths([fullFilePath], skillDiscoveryBase)
 
     await diagnosticTracker.beforeFileEdited(fullFilePath)
 
@@ -609,6 +632,14 @@ export const FileWriteTool = buildTool({
     // write must not proceed (unread file on old models / partial views, or
     // stale content that differs from disk).
     if (meta !== null) {
+      // CC 2.1.312 (item 4) — official @249832895 (byte-verified):
+      // `if(rt!==null&&lt!==null){if(h.holdsOnlyStartOf(G))throw new BX(e7o);
+      // await hzo({…})}` — the startOnly refusal fires when the file exists
+      // with readable content, BEFORE the staleness guard (hzo ≡
+      // assertWriteFileStateFresh). BX ≡ FileStateError (YMe mirror).
+      if (readFileState.holdsOnlyStartOf(fullFilePath)) {
+        throw new FileStateError(FILE_START_ONLY_WRITE_MESSAGE)
+      }
       assertWriteFileStateFresh({
         fullFilePath,
         diskContent: meta.content,
