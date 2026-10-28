@@ -234,7 +234,8 @@ import { diagnosticTracker } from '../services/diagnosticTracking.js';
 import { handleSpeculationAccept, type ActiveSpeculationState } from '../services/PromptSuggestion/speculation.js';
 import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
 import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
-import type { EffortValue } from '../utils/effort.js';
+import type { EffortLevel, EffortValue } from '../utils/effort.js';
+import { resetSentEffort, setSentEffort } from '../utils/effort/sentEffort.js';
 import { RemoteCallout } from '../components/RemoteCallout.js';
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const AntModelSwitchCallout = ("external" as string) === 'ant' ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout : null;
@@ -1702,6 +1703,13 @@ export function REPL({
     // official stream.reset @217177965 pairs the placeholder clear with
     // markModelReceived() — no prompt may stay gray once the turn is over.
     markModelReceived();
+    // CC 2.1.312 items 9+16 — official resetLoadingState @277241700 calls
+    // `h.main.resetOverrides()`, which restores the turn-state store defaults
+    // including `sentEffort:null` (@259429372). OCC mirror: clear the in-force
+    // effort slot at turn end; the next turn's message_start repopulates it
+    // (`setSentEffort(h.sentEffort??null)`), and the item-16 may-wait note
+    // clears with it (term 1 `sentEffort!==null` goes false).
+    resetSentEffort();
     responseLengthRef.current = 0;
     // I16d: clear the stall clock at turn end so a subsequent chained turn
     // (same isQueryActive window) doesn't inherit a stale lastTokenTime.
@@ -2824,9 +2832,24 @@ export function REPL({
     if (event.type === 'stream_event') {
       if ((event as { event?: { type?: string } }).event?.type === 'message_start') {
         markModelReceived();
+        // CC 2.1.312 items 9+16 — official stream handler @277260243: on
+        // message_start `te.main.setSentEffort(h.sentEffort??null)`: every new
+        // API turn rewrites the in-force effort slot from the level the
+        // request actually carried (null when it carried none), so spinner /
+        // indicator surfaces show the level IN FORCE, not a freshly picked one.
+        // (Official also mirrors `h.turnEffort!==void 0` → setTurnEffort here;
+        // OCC's stream_event wrapper carries no turnEffort — OCC sets its
+        // turnEffort slot at the ultrathink decision site instead, 2.1.311.)
+        setSentEffort((event as { sentEffort?: EffortLevel | null }).sentEffort ?? null);
       }
     } else if (event.type === 'assistant') {
       markModelReceived();
+      // Official @277260243: `if(h.effort!==void 0)te.main.setSentEffort(h.effort)`
+      // — assistant messages re-assert the level they were produced under.
+      const assistantEffort = (event as { effort?: EffortLevel }).effort;
+      if (assistantEffort !== undefined) {
+        setSentEffort(assistantEffort);
+      }
     }
     handleMessageFromStream(event, newMessage => {
       if (isCompactBoundaryMessage(newMessage)) {

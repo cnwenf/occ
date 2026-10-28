@@ -77,7 +77,9 @@ const EARLY_WARNING_CLAIM_MAP: Record<string, RateLimitType> = {
 }
 
 const RATE_LIMIT_DISPLAY_NAMES: Record<RateLimitType, string> = {
-  five_hour: 'session limit',
+  // CC 2.1.312 (item 20): official display map `Hce` @246569205 renamed
+  // five_hour "session limit" → "5-hour limit" (v311 `wce` @246735413).
+  five_hour: '5-hour limit',
   seven_day: 'weekly limit',
   seven_day_opus: 'Opus limit',
   seven_day_sonnet: 'Sonnet limit',

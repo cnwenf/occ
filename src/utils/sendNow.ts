@@ -426,3 +426,83 @@ export function shouldPreferEnterChord(args: {
 }): boolean {
   return args.extendedKeyboardSupport && !(args.inTmux || args.inScreen)
 }
+
+// ---------------------------------------------------------------------------
+// CC 2.1.312 item 2 — "click to send" (pure core)
+//
+// Changelog: "Added click to send: in fullscreen, clicking the 'to send now'
+// hint under a queued message sends it right away, as its key does."
+//
+// Official v312 byte evidence (new-in-312, 0 hits in v311), @275853182:
+//   `He=H===null||iH()!=="full"?void 0:()=>{if(H())g("input_send_now_click");
+//      else m("input_send_now_click","no_handler_took_it")}`
+//   `We=D===""?"click to send now":BT({chord:D,action:"send now",
+//      format:{keyCase:"lower"}})`
+//   `ze=e($Oe,{onPress:He,children:We})` — wrapped `Box paddingLeft:2,marginTop`
+//
+// Semantics: the hint becomes pressable; the press handler exists ONLY in
+// fullscreen (`iH()==="full"`); with no keyboard chord the label is the
+// literal `click to send now`; the press invokes the same send-now action as
+// the chord (`H()` = the keybinding action invoker — OCC's
+// KeybindingContext.invokeAction(SEND_NOW_ACTION)). Success/failure telemetry
+// rides the official event name `input_send_now_click`; OCC's analytics are
+// stubbed, so the emitter is injectable and the component wires it only if an
+// established emitter exists (see PromptInput SendNowHint).
+// ---------------------------------------------------------------------------
+
+/** Hint label when no chord is bound (official `We`, v312 @275853182). */
+export const CLICK_TO_SEND_NOW_LABEL = 'click to send now'
+/** Analytics event for the click (official `g/m("input_send_now_click",…)`). */
+export const SEND_NOW_CLICK_EVENT = 'input_send_now_click'
+/** Failure reason when no handler consumed the action (official `m(…)`). */
+export const NO_HANDLER_TOOK_IT_REASON = 'no_handler_took_it'
+
+export type SendNowHintUi =
+  | { readonly render: false; readonly label: null; readonly pressable: false }
+  | { readonly render: true; readonly label: string; readonly pressable: boolean }
+
+/**
+ * Official `We` + the zvt visibility gate, as a pure decision:
+ * - not visible → render nothing;
+ * - visible with an empty chord → the literal `click to send now`;
+ * - visible with a chord → the chord string (the component renders it via
+ *   KeyboardShortcutHint as "<chord> to send now", the official BT(...)).
+ * `pressable` mirrors the official `He` gate: only fullscreen gets a handler.
+ */
+export function resolveSendNowHintUi(args: {
+  readonly isHintVisible: boolean
+  readonly chord: string
+  readonly isFullscreen: boolean
+}): SendNowHintUi {
+  if (!args.isHintVisible) {
+    return { render: false, label: null, pressable: false }
+  }
+  const label =
+    args.chord === '' ? CLICK_TO_SEND_NOW_LABEL : args.chord
+  return { render: true, label, pressable: args.isFullscreen }
+}
+
+/**
+ * Official `He` (v312 @275853182): `H===null||iH()!=="full"?void 0:()=>{…}`.
+ * Returns undefined (inert — no onPress) outside fullscreen or without an
+ * action invoker; otherwise a handler that invokes send-now ONCE and reports
+ * `input_send_now_click` (+ reason `no_handler_took_it` when unconsumed).
+ */
+export function resolveSendNowClickHandler(args: {
+  readonly isFullscreen: boolean
+  readonly invokeSendNow: (() => boolean) | null
+  readonly onEvent?: (event: string, reason?: string) => void
+}): (() => void) | undefined {
+  if (!args.isFullscreen || args.invokeSendNow === null) {
+    return undefined
+  }
+  const invoke = args.invokeSendNow
+  const onEvent = args.onEvent
+  return () => {
+    if (invoke()) {
+      onEvent?.(SEND_NOW_CLICK_EVENT)
+    } else {
+      onEvent?.(SEND_NOW_CLICK_EVENT, NO_HANDLER_TOOK_IT_REASON)
+    }
+  }
+}

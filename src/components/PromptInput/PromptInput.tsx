@@ -68,7 +68,7 @@ import { env } from '../../utils/env.js';
 import { errorMessage } from '../../utils/errors.js';
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
+import { isFullscreenActive, isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js';
 import { applyHeldClearedDraft, heldClearedDraft } from '../../utils/heldClearedDraft.js';
 import { getImageFromClipboard, PASTE_THRESHOLD, saveClipboardImageToTempFile } from '../../utils/imagePaste.js';
@@ -89,7 +89,7 @@ import { hasAutoModeOptIn, hasAutoModeOptInDismissed, getSettings_DEPRECATED } f
 import { getLastAssistantMessage } from '../../utils/messages.js';
 import { nfcInsert } from '../../utils/nfcInsert.js';
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js';
-import { getSendNowChordDisplay, hasExtendedKeyboardSupport, resolveSendNowKeyAction, SEND_NOW_HINT_ACTION, SEND_NOW_HINT_PADDING_LEFT, shouldAttemptEmptyEnterFlush, shouldFlushAfterSendNowSubmit, shouldPreferEnterChord, shouldShowSendNowHint } from '../../utils/sendNow.js';
+import { getSendNowChordDisplay, hasExtendedKeyboardSupport, resolveSendNowClickHandler, resolveSendNowHintUi, resolveSendNowKeyAction, SEND_NOW_ACTION, SEND_NOW_CLICK_EVENT, SEND_NOW_HINT_ACTION, SEND_NOW_HINT_PADDING_LEFT, shouldAttemptEmptyEnterFlush, shouldFlushAfterSendNowSubmit, shouldPreferEnterChord, shouldShowSendNowHint } from '../../utils/sendNow.js';
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js';
 import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, subscribeKnownChannels } from '../../utils/suggestions/slackChannelSuggestions.js';
 import { isInProcessEnabled } from '../../utils/swarm/backends/registry.js';
@@ -112,7 +112,7 @@ import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
-import { getEffortNotificationText } from '../EffortIndicator.js';
+import { getEffortNotificationText, isEffortChangePending } from '../EffortIndicator.js';
 import { getFastIconString } from '../FastIcon.js';
 import { GlobalSearchDialog } from '../GlobalSearchDialog.js';
 import { HistorySearchDialog } from '../HistorySearchDialog.js';
@@ -2287,9 +2287,14 @@ function PromptInput({
   // badge stays visible while effort/ultracode is on. Suppressed in
   // brief/assistant mode (the value reflects the local client's effort, not
   // the connected agent's) and when the model doesn't support effort.
+  // CC 2.1.312 item 16: when the user picked a new effort mid-task that the
+  // model has not applied yet, the chip's tail swaps to the literal
+  // `may wait for your next message` (official EH's 4th flag H, computed as
+  // uT @276688231 ≡ isEffortChangePending). The borderText is derived
+  // per-render, so the note clears naturally once the pick is in force.
   const effortNotificationText = ultracodeBadgeActive
     ? themeColor('effortUltra', themeName)('ultracode')
-    : briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
+    : briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel, isEffortChangePending(mainLoopModel, effortValue));
   useBuddyNotification();
   const companionSpeaking = feature('BUDDY') ?
   useAppState(s => s.companionReaction !== undefined) : false;
@@ -2731,6 +2736,21 @@ function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastM
  * @216606400). Chord selection mirrors WOe (@216602629): prefer ctrl+enter
  * only when the terminal reports extended keys AND we are not inside
  * tmux/screen; otherwise show the always-typeable ctrl+x ctrl+s chord.
+ *
+ * CC 2.1.312 (item 2) — "click to send": the hint becomes pressable and, in
+ * fullscreen, clicking it sends right away, as its key does. Official v312
+ * (@275853182, byte-verified):
+ *   `He=H===null||iH()!=="full"?void 0:()=>{if(H())g("input_send_now_click");
+ *      else m("input_send_now_click","no_handler_took_it")}`
+ *   `We=D===""?"click to send now":BT({chord:D,action:"send now",
+ *      format:{keyCase:"lower"}})`
+ *   `ze=e($Oe,{onPress:He,children:We})`
+ * The press handler exists ONLY in fullscreen (elsewhere the hint is inert);
+ * with no keyboard chord the label is the literal `click to send now` instead
+ * of nothing; the press invokes the same `chat:sendNow` action as the chord
+ * (official `H()` ≡ OCC KeybindingContext.invokeAction). Label selection +
+ * handler gating live in utils/sendNow.ts (resolveSendNowHintUi /
+ * resolveSendNowClickHandler) as pure functions.
  */
 export function SendNowHint({ abortController }: {
   abortController?: AbortController | null;
@@ -2746,12 +2766,27 @@ export function SendNowHint({ abortController }: {
     inScreen: Boolean(process.env.STY)
   });
   const chord = preferEnterChord || isHintVisible ? getSendNowChordDisplay(bindings, preferEnterChord) : '';
-  if (!isHintVisible || chord === '') {
+  // CC 2.1.312 item 2: official gates the press on `iH()==="full"`. OCC's
+  // equivalent live check is isFullscreenActive() (interactive + env) — the
+  // same predicate the fullscreen renderer gates on.
+  const isFullscreen = isFullscreenActive();
+  const ui = resolveSendNowHintUi({ isHintVisible, chord, isFullscreen });
+  // Official `He`: invoke the same send-now action as the chord key. OCC's
+  // analytics sink is the established logEvent emitter — the official event
+  // name and the `no_handler_took_it` failure reason ride through it.
+  const onPress = resolveSendNowClickHandler({
+    isFullscreen,
+    invokeSendNow: keybindingContext ? () => keybindingContext.invokeAction(SEND_NOW_ACTION) : null,
+    onEvent: (event, reason) => {
+      logEvent(event, reason === undefined ? {} : { reason: reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS });
+    }
+  });
+  if (!ui.render) {
     return null;
   }
-  return <Box paddingLeft={SEND_NOW_HINT_PADDING_LEFT}>
+  return <Box paddingLeft={SEND_NOW_HINT_PADDING_LEFT} onClick={onPress}>
       <Text dimColor>
-        <KeyboardShortcutHint shortcut={chord} action={SEND_NOW_HINT_ACTION} />
+        {chord === '' ? ui.label : <KeyboardShortcutHint shortcut={chord} action={SEND_NOW_HINT_ACTION} />}
       </Text>
     </Box>;
 }

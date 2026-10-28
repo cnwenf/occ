@@ -143,8 +143,12 @@ import {
 } from './hooks/onFailureBlock.js'
 import {
   isPromptOrAgentHook,
-  mergeHookGeneratorsWithPromptAgentCap,
-} from './hooks/promptAgentConcurrencyCap302.js'
+  mergeHookGeneratorsWithSessionSlots,
+  getHookSessionSlots,
+  hookTimeoutMs,
+  MAX_HOOK_TIMEOUT_MS,
+} from './hooks/hookSessionSlots312.js'
+import { all } from './generators.js'
 import { logForDebugging } from './debug.js'
 import { stripHintTagLines } from './claudeCodeHints.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
@@ -3787,7 +3791,22 @@ async function* executeHooks({
     }
 
     // Command and prompt hooks need jsonInput
-    const commandTimeoutMs = hook.timeout ? hook.timeout * 1000 : timeoutMs
+    // CC 2.1.312 (#22): official per-hook execution timeout @251904162
+    // (verbatim) —
+    //   Ya=Ho.timeout?Math.min(zB(Ho)?BM(Ho,S):Ho.timeout*1000,Bd):S
+    // prompt/agent hooks go through BM (a `timeout` under 1 second counts as
+    // 1 second); every other type keeps raw timeout*1000; both are capped at
+    // Bd (max setTimeout delay). No floor for command/callback/http hooks —
+    // official @251902451 (callback) / @251938632 (command) derive without
+    // BM, so those sites stay untouched.
+    const commandTimeoutMs = hook.timeout
+      ? Math.min(
+          isPromptOrAgentHook(hook)
+            ? hookTimeoutMs(hook, timeoutMs)
+            : hook.timeout * 1000,
+          MAX_HOOK_TIMEOUT_MS,
+        )
+      : timeoutMs
     const { signal: abortSignal, cleanup } = createCombinedAbortSignal(signal, {
       timeoutMs: commandTimeoutMs,
     })
@@ -4590,17 +4609,35 @@ async function* executeHooks({
   let permissionBehavior: (PermissionResult['behavior'] | 'defer') | undefined
 
   // Run all hooks in parallel and wait for all to complete.
-  // CC 2.1.302 (#035): official call site @246372863 —
-  //   let Lr=ZRn(Mo,(Eo)=>Iee(Kn[Eo].hook)); for await(let Eo of ...Lr...)
-  // prompt/agent hook generators merge through the concurrency-capped merge
-  // (cap 12, staggered starts); every other hook type merges uncapped as
-  // before; ≤1 prompt/agent hook keeps the plain v301 merge. OCC has no
-  // "hook-dispatch-hold" keepalive analogue, so the official's wave-scaled
-  // hold (`Fr=lnt(...)`, `nCn(Lr,Fr)` wrapper) has no landing site here.
-  const mergedHookResults = mergeHookGeneratorsWithPromptAgentCap(
-    hookPromises,
-    hookIndex => isPromptOrAgentHook(matchingHooks[hookIndex]!.hook),
-  )
+  // CC 2.1.312 (#22): official call site @251922088 (verbatim) —
+  //   Ti=w===void 0||It?lht(yr):Ovn(yr,(Ho)=>{let Ds=cn[Ho];
+  //     return zB(Ds.hook)&&Br[Ho]===void 0&&Ds.notTested===void 0
+  //       &&!(lt==="PermissionRequest"&&Ds.hook.type==="agent")
+  //       &&Lr(Ds,!1).ok?BM(Ds.hook,S):void 0},
+  //     {slots:Mvn.of(w.session.host),signal:y,limitMs:S})
+  // prompt/agent hooks now seat against the SESSION-WIDE pool (24 at a time,
+  // sub-agents included — shared singleton per session) with the overdue
+  // fallback pool (12 more after a hook waits longer than the event's
+  // timeout), on top of the retained per-event stagger cap (12, v302 #035).
+  // No toolUseContext (`w===void 0`) keeps the plain uncapped merge; the
+  // remoteCall arm (`It=w?.remoteCall!==void 0`) has no OCC surface. The
+  // Br/notTested/Lr predicate arms have no OCC counterparts (dedup happens
+  // at match time; jsonInput failures fail closed per-hook) — see the
+  // hookSessionSlots312.ts header for the full deviation list.
+  const mergedHookResults =
+    toolUseContext === undefined
+      ? all(hookPromises)
+      : mergeHookGeneratorsWithSessionSlots(
+          hookPromises,
+          hookIndex => {
+            const hook = matchingHooks[hookIndex]!.hook
+            return isPromptOrAgentHook(hook) &&
+              !(hookEvent === 'PermissionRequest' && hook.type === 'agent')
+              ? hookTimeoutMs(hook, timeoutMs)
+              : undefined
+          },
+          { session: getHookSessionSlots(), signal, limitMs: timeoutMs },
+        )
   for await (const rawResult of mergedHookResults) {
     // CC 2.1.295 (official K_t): the onFailure:"block" conversion runs in the
     // consumer loop BEFORE the outcome tally, so a converted failure counts

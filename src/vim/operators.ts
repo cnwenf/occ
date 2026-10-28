@@ -57,6 +57,36 @@ export function executeOperatorMotion(
 ): void {
   const target = resolveMotion(motion, ctx.cursor, count)
 
+  // CC 2.1.312 changelog item 14 (official `q` @259579735, byte-verbatim):
+  //   `if(e==="gj"||e==="gk"){let u=le(e,r,n);
+  //    if(u.rowsRunOut){n.setOffset(rQ(n.cursor,u.offset));return}}`
+  // When the gj/gk count exceeds the wrapped rows left in that direction
+  // (`le` @259587549: `c=(t==="gj"?o.length-1-i:i)<e` — STRICT `<`, a count
+  // exactly equal to the rows left is NOT rowsRunOut), the operator ONLY
+  // moves the cursor — no delete/change/yank, no register write, no
+  // recordChange. `rQ` (@259587778) is the `Ale` clamp + placeholder-snap
+  // fallback: OCC's `clampOffset` is already the byte-port of `Ale`
+  // (verified @259586709), and the snap-fallback shape matches the one
+  // executeToggleCase uses. DIVERGENCE: the official `le` also recomputes
+  // the target via wantedColumn against the target wrapped line; OCC uses
+  // the resolveMotion result, whose down()/up() already preserve the column
+  // and clamp per-step — identical for text-only buffers.
+  if (motion === 'gj' || motion === 'gk') {
+    const wrappedLines = ctx.cursor.measuredText.getWrappedLines()
+    const line = ctx.cursor.getPosition().line
+    const rowsRunOut =
+      (motion === 'gj' ? wrappedLines.length - 1 - line : line) < count
+    if (rowsRunOut) {
+      const clamped = clampOffset(ctx.text, target.offset)
+      ctx.setOffset(
+        ctx.cursor.snapOutOfPlaceholder(clamped, 'start') === clamped
+          ? clamped
+          : target.offset,
+      )
+      return
+    }
+  }
+
   // v281 `ht`: linewise-motion branch — whole lines from cursor to target.
   if (isLinewiseMotion(motion)) {
     const fromLine = getLineIndex(ctx.text, ctx.cursor.offset)

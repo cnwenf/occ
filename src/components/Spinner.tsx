@@ -29,6 +29,7 @@ import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js
 import { isBackgroundTask } from '../tasks/types.js';
 import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { getEffortSuffix } from '../utils/effort.js';
+import { getSentEffort } from '../utils/effort/sentEffort.js';
 import { computeSpinnerReducedMotion } from '../utils/srA11y.js';
 import { isScreenReaderEnabled } from '../utils/screenReader.js';
 import { getMainLoopModel } from '../utils/model/model.js';
@@ -198,7 +199,14 @@ function SpinnerWithVerbInner({
     };
   }, [mode]);
   const effortValue = useAppState(s_4 => s_4.effortValue);
-  const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue);
+  // CC 2.1.312 item 9 — official spinner passes the in-force sentEffort as
+  // Sbn's 4th param (v312 @243469955: `let f=s??kS(...)` — sentEffort WINS
+  // over the resolver), so a mid-task /effort pick does not rename the
+  // spinner before the model applies it. The slot is module-scoped (see
+  // utils/effort/sentEffort.ts); the spinner's ~50ms animation clock
+  // re-renders and re-reads it, which is OCC's stand-in for the official
+  // turn-state store subscription.
+  const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue, undefined, getSentEffort());
 
   // Check if any running in-process teammates exist (needed for both modes)
   const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(t => t.status === 'running');

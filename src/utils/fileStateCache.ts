@@ -1,5 +1,6 @@
 import { LRUCache } from 'lru-cache'
 import { normalize } from 'path'
+import { countCharInString } from './stringUtils.js'
 
 export type FileState = {
   content: string
@@ -36,6 +37,42 @@ export const READ_FILE_STATE_CACHE_SIZE = 100
 const DEFAULT_MAX_CACHE_SIZE_BYTES = 25 * 1024 * 1024
 
 /**
+ * CC 2.1.312 (item 4) — official CR @244818957 (byte-verified):
+ *   `function CR(e){if((e.offset??1)>1||e.isPartialView)return!1;
+ *     if(e.limit===void 0)return!0;
+ *     return e.content!==""&&Lt(e.content,"\n")+1<e.limit}`
+ * ≡ fileStateGuard.isFullReadOfFileState. Inlined here (not imported) because
+ * fileStateGuard.ts imports this module for the FileState type and pulling the
+ * guard module into this leaf would invert the dependency; the two spellings
+ * are kept in lockstep by the startOnlyGuard312 tests.
+ */
+function isFullReadEntry(state: FileState): boolean {
+  if ((state.offset ?? 1) > 1 || state.isPartialView) {
+    return false
+  }
+  if (state.limit === undefined) {
+    return true
+  }
+  return (
+    state.content !== '' &&
+    countCharInString(state.content, '\n') + 1 < state.limit
+  )
+}
+
+/**
+ * CC 2.1.312 (item 4) — official Yoe @244818076 (byte-verified):
+ *   `function Yoe(e){return e!==void 0&&CR(e)&&!e.contentNotInModelContext}`
+ * ≡ fileStateGuard.isFileStateFullyTrusted (same inlining rationale as above).
+ */
+function isTrustedFullReadEntry(state: FileState | undefined): boolean {
+  return (
+    state !== undefined &&
+    isFullReadEntry(state) &&
+    !state.contentNotInModelContext
+  )
+}
+
+/**
  * A file state cache that normalizes all path keys before access.
  * This ensures consistent cache hits regardless of whether callers pass
  * relative vs absolute paths with redundant segments (e.g. /foo/../bar)
@@ -43,6 +80,17 @@ const DEFAULT_MAX_CACHE_SIZE_BYTES = 25 * 1024 * 1024
  */
 export class FileStateCache {
   private cache: LRUCache<string, FileState>
+
+  /**
+   * CC 2.1.312 (item 4) — official Sa @244819043 `startOnly=new Set`:
+   * eviction-proof set of paths whose content was CUT when seeded from
+   * context (nested CLAUDE.md / @-include head cut). Deliberately NOT part
+   * of the LRU: evicting the read-state entry must not lose the Write block
+   * (the pre-312 regression). Official markStartOnly/holdsOnlyStartOf use
+   * rn = `normalize` from "path" (@244818705 chunk import) — the same
+   * normalization this cache's get/set use.
+   */
+  private startOnly = new Set<string>()
 
   constructor(maxEntries: number, maxSizeBytes: number) {
     this.cache = new LRUCache<string, FileState>({
@@ -54,6 +102,32 @@ export class FileStateCache {
 
   get(key: string): FileState | undefined {
     return this.cache.get(normalize(key))
+  }
+
+  /** Official Sa.markStartOnly @244819043: `this.startOnly.add(rn(e))`. */
+  markStartOnly(key: string): void {
+    this.startOnly.add(normalize(key))
+  }
+
+  /** Official Sa.startOnlyPaths @244819043: `return[...this.startOnly]`. */
+  startOnlyPaths(): string[] {
+    return [...this.startOnly]
+  }
+
+  /**
+   * Official Sa.holdsOnlyStartOf @244819043 (byte-verified):
+   *   `holdsOnlyStartOf(e){let n=rn(e);
+   *      return this.startOnly.has(n)&&!Yoe(this.cache.get(n))}`
+   * True while the path is marked AND the cached entry is not a trusted full
+   * read (Yoe @244818076 ≡ isTrustedFullReadEntry above) — a later whole-file
+   * Read in one call clears the block, eviction keeps it.
+   */
+  holdsOnlyStartOf(key: string): boolean {
+    const normalized = normalize(key)
+    return (
+      this.startOnly.has(normalized) &&
+      !isTrustedFullReadEntry(this.cache.get(normalized))
+    )
   }
 
   set(key: string, value: FileState): this {
@@ -133,13 +207,21 @@ export function cacheKeys(cache: FileStateCache): string[] {
 
 // Helper function to clone a FileStateCache
 // Preserves size limit configuration from the source cache
+// CC 2.1.312 (item 4) — official clone Gue @244820696 also copies the
+// startOnly set: `r.load(s);for(let h of e.startOnlyPaths())r.markStartOnly(h)`.
 export function cloneFileStateCache(cache: FileStateCache): FileStateCache {
   const cloned = createFileStateCacheWithSizeLimit(cache.max, cache.maxSize)
   cloned.load(cache.dump())
+  for (const startOnlyPath of cache.startOnlyPaths()) {
+    cloned.markStartOnly(startOnlyPath)
+  }
   return cloned
 }
 
 // Merge two file state caches, with more recent entries (by timestamp) overriding older ones
+// CC 2.1.312 (item 4): the official merge X7s(e,n) = Gue(e) + timestamp-newer
+// sets from n, so the merged cache inherits ONLY the first cache's startOnly
+// marks — this matches (cloneFileStateCache now carries them over).
 export function mergeFileStateCaches(
   first: FileStateCache,
   second: FileStateCache,

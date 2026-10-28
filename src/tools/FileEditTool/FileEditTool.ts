@@ -9,6 +9,7 @@ import {
   activateConditionalSkillsForPaths,
   addSkillDirectories,
   discoverSkillDirsForPaths,
+  resolveSkillDiscoveryBase,
 } from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -629,11 +630,16 @@ export const FileEditTool = buildTool({
 
     // Discover skills from this file's path (fire-and-forget, non-blocking)
     // Skip in simple mode - no skills available
-    const cwd = getCwd()
+    // CC 2.1.312 item 5: stable discovery base — after a cd deeper inside the
+    // same worktree, anchor discovery/activation to the ORIGINAL cwd so skills
+    // dirs above the new cwd stay reachable and paths: keeps matching (official Sq).
+    const { base: skillDiscoveryBase, ctx: skillDiscoveryCtx } =
+      resolveSkillDiscoveryBase()
     if (!isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
       const newSkillDirs = await discoverSkillDirsForPaths(
         [absoluteFilePath],
-        cwd,
+        skillDiscoveryBase,
+        skillDiscoveryCtx,
       )
       if (newSkillDirs.length > 0) {
         // Store discovered dirs for attachment display
@@ -645,7 +651,10 @@ export const FileEditTool = buildTool({
       }
 
       // Activate conditional skills whose path patterns match this file
-      activateConditionalSkillsForPaths([absoluteFilePath], cwd)
+      activateConditionalSkillsForPaths(
+        [absoluteFilePath],
+        skillDiscoveryBase,
+      )
     }
 
     await diagnosticTracker.beforeFileEdited(absoluteFilePath)

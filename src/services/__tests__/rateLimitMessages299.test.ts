@@ -60,7 +60,7 @@ describe('CC 2.1.299 #060 — approaching-limit warning clamps at 100%', () => {
       'claude-sonnet-4-5',
     )
     expect(res?.severity).toBe('warning')
-    expect(res?.message).toContain("You've used 100% of your session limit")
+    expect(res?.message).toContain("You've used 100% of your 5-hour limit")
   })
 
   test('seven_day utilization 0.85 shows 85% (unchanged)', () => {
@@ -76,7 +76,7 @@ describe('CC 2.1.299 #060 — approaching-limit warning clamps at 100%', () => {
       limits({ rateLimitType: 'five_hour', utilization: 1.0 }),
       'claude-sonnet-4-5',
     )
-    expect(res?.message).toContain("You've used 100% of your session limit")
+    expect(res?.message).toContain("You've used 100% of your 5-hour limit")
   })
 
   test('overage (extra usage) is NOT clamped — 1.2 shows 120%', () => {

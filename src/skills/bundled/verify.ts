@@ -19,6 +19,9 @@ export function registerVerifySkill(): void {
   registerBundledSkill({
     name: 'verify',
     description: DESCRIPTION,
+    // CC 2.1.312 (item 15) official verbatim — registration @258727734:
+    // ol({name:Cue,description:zi,menuDescription:"Try your change and report if it works",...})
+    menuDescription: 'Try your change and report if it works',
     userInvocable: true,
     files: SKILL_FILES,
     async getPromptForCommand(args) {

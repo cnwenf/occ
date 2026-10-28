@@ -2,22 +2,30 @@
  * CC 2.1.302 (#035) — PRODUCTION-WIRING pin for the prompt/agent hook
  * concurrency cap.
  *
- * The sibling hookConcurrencyCap302.test.ts drives the helper
- * (mergeHookGeneratorsWithPromptAgentCap) directly. This file closes the
- * wiring gap the acceptance review flagged: the cap must be observable
- * through the real production pipeline `executePreToolHooks → executeHooks →
- * mergeHookGeneratorsWithPromptAgentCap` (src/utils/hooks.ts call site —
- * `hookIndex => isPromptOrAgentHook(matchingHooks[hookIndex]!.hook)`).
+ * CC 2.1.312 (#22) UPDATE: the production call site now routes through
+ * `mergeHookGeneratorsWithSessionSlots` (hookSessionSlots312.ts) — the
+ * two-tier merge RETAINS the per-event stagger cap 12 (official `Wet`, the
+ * v302 `ant` cap) inside a session-wide 24-seat pool with a 12-seat overdue
+ * fallback. A single-event dispatch of 13 prompt/agent hooks therefore still
+ * runs at most 12 at a time, so every maxLive/starts assertion below is
+ * unchanged and now pins the 312 merge through the real pipeline
+ * `executePreToolHooks → executeHooks → mergeHookGeneratorsWithSessionSlots`
+ * (src/utils/hooks.ts call site — the index predicate also carries the BM
+ * 1s-floor timeout and the PermissionRequest+agent exclusion).
+ *
+ * The sibling hookConcurrencyCap302.test.ts drives the superseded v302
+ * single-tier helper (mergeHookGeneratorsWithPromptAgentCap) directly.
  *
  * Would-fail guarantee (mutation-verified shape):
- * - Flipping the call-site index predicate to `() => false` (equivalent to
- *   reverting to the pre-302 uncapped `all()` merge) makes all 13 prompt
+ * - Flipping the call-site index predicate to `() => undefined` (equivalent
+ *   to reverting to the pre-302 uncapped `all()` merge) makes all 13 prompt
  *   hooks start concurrently → maxLive becomes 13 → the assertions below
  *   FAIL. The helper-only suite stays green under that mutation; this file
  *   does not.
  *
- * Official behavior under test (v302 ELF @246248866, cap `ant=12`): at most
- * 12 prompt/agent hooks of one event run at a time; the rest wait their turn.
+ * Official behavior under test (v302 ELF @246248866 cap `ant=12`; v312 ELF
+ * @251761428 `Wet=12` retained): at most 12 prompt/agent hooks of one event
+ * run at a time; the rest wait their turn.
  */
 
 import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test'
@@ -138,6 +146,14 @@ afterAll(() => {
 
 const { executePreToolHooks, executeStopHooks } = await import('../../hooks.js')
 
+// CC 2.1.312 (#22): the production call site now seats prompt/agent hooks
+// against the module-level session singleton (24 session + 12 overdue). Reset
+// it between tests so a gated hook that never finishes can't leak a seat into
+// a sibling test (bun test shares one module registry across files).
+const { resetHookSessionSlotsForTest } = await import(
+  '../hookSessionSlots312.js'
+)
+
 const PROMPT_TAGS = Array.from({ length: 13 }, (_, i) => `p${i}`)
 
 function fakeToolUseContext(): never {
@@ -180,6 +196,7 @@ const flush = (): Promise<void> =>
 
 afterEach(() => {
   mockedHooksConfig = null
+  resetHookSessionSlotsForTest()
   tracker.live = 0
   tracker.maxLive = 0
   tracker.starts.length = 0
@@ -217,8 +234,8 @@ describe('CC 2.1.302 #035 production wiring: executePreToolHooks caps prompt-hoo
 
     await flush()
     // Assert — exactly the official cap is live; p12 has NOT started.
-    // (Mutation `hookIndex => false` at the call site → uncapped merge →
-    // all 13 live here → these three assertions fail.)
+    // (Mutation `hookIndex => undefined` at the 312 call site → uncapped
+    // plain merge → all 13 live here → these three assertions fail.)
     expect(tracker.maxLive).toBe(12)
     expect(tracker.live).toBe(12)
     expect(tracker.starts).toEqual(PROMPT_TAGS.slice(0, 12))

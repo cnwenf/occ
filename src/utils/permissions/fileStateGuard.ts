@@ -81,6 +81,22 @@ import {
 export const FILE_NOT_READ_MESSAGE =
   'File has not been read yet. Read it first before writing to it.'
 
+/**
+ * CC 2.1.312 (item 4) — e7o @241153419 (byte-verified template):
+ *   `You were given only the start of this file, and nothing shows that you
+ *    have since read all of it in one call, so a Write could lose the rest.
+ *    To change part of it, use ${it}. To replace it whole, first Read it in
+ *    one call with no offset or limit. If Read returns only a page or says the
+ *    file is too large, Read it again with ${Dee}: true. If even that cannot
+ *    return all of it, use ${it}.`
+ * with it="Edit" and Dee="allow_large" (@240867736:
+ * `var Ve="Read",Dee="allow_large",…`) — both interpolated below. Write
+ * validateInput returns it with errorCode 19; the Write call path throws it
+ * as FileStateError (BX(e7o) @249832895).
+ */
+export const FILE_START_ONLY_WRITE_MESSAGE =
+  'You were given only the start of this file, and nothing shows that you have since read all of it in one call, so a Write could lose the rest. To change part of it, use Edit. To replace it whole, first Read it in one call with no offset or limit. If Read returns only a page or says the file is too large, Read it again with allow_large: true. If even that cannot return all of it, use Edit.'
+
 /** validateInput staleness error (Write errorCode 3 / Edit errorCode 7). */
 export const FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE =
   'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.'

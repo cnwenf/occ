@@ -13,6 +13,7 @@ import {
 } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
+  getOriginalCwd,
   getSessionId,
 } from '../bootstrap/state.js'
 import {
@@ -25,6 +26,7 @@ import {
   parseArgumentNames,
   substituteArguments,
 } from '../utils/argumentSubstitution.js'
+import { getCwd } from '../utils/cwd.js'
 import { logForDebugging } from '../utils/debug.js'
 import {
   EFFORT_LEVELS,
@@ -37,6 +39,7 @@ import {
   isEnvTruthy,
 } from '../utils/envUtils.js'
 import { isENOENT, isFsInaccessible } from '../utils/errors.js'
+import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import {
   coerceDescriptionToString,
   type FrontmatterData,
@@ -50,6 +53,7 @@ import {
 } from '../utils/frontmatterParser.js'
 import { getFsImplementation } from '../utils/fsOperations.js'
 import { filterValidIgnorePatterns } from '../utils/globPatternValidation.js'
+import { findGitRoot } from '../utils/git.js'
 import { isPathGitignored } from '../utils/git/gitignore.js'
 import { logError } from '../utils/log.js'
 import {
@@ -88,6 +92,7 @@ import { getManagedFilePath } from '../utils/settings/managedPath.js'
 import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
 import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
 import { createSignal } from '../utils/signal.js'
+import { isPathInsideOrEqual } from '../utils/taskRegistry.js'
 import { registerMCPSkillBuilders } from './mcpSkillBuilders.js'
 
 export type LoadedFrom =
@@ -1554,6 +1559,7 @@ export function clearSkillCaches() {
   loadMarkdownFilesForSubdir.cache?.clear?.()
   conditionalSkills.clear()
   activatedConditionalSkillNames.clear()
+  deferredSkillDirs.clear()
 }
 
 // Backwards-compatible aliases for tests
@@ -1566,6 +1572,155 @@ export { transformSkillFiles }
 // State for dynamically discovered skills
 const dynamicSkillDirs = new Set<string>()
 const dynamicSkills = new Map<string, Command>()
+
+// CC 2.1.312 item 5 (official `deferredSkillDirs` in the per-session dynamic
+// skill state, `J0o` @251521149 / used in `eNo` @251524152): skills dirs
+// ABOVE the live cwd whose worktree/gitignore confirmation could NOT be
+// completed (git unavailable, git-root mismatch) are deferred instead of
+// failing open. Each entry records the LIVE cwd at deferral time; when the
+// live cwd moves, the stale deferral is evicted and the dir is re-checked on
+// the next discovery trigger.
+const deferredSkillDirs = new Map<string, string>()
+
+/**
+ * Worktree context threaded from the discovery trigger (official `w` in
+ * `Sq` @251527988): `cwd` is the LIVE cwd the session cd'd to, `workTree` is
+ * the git worktree root both the live and original cwds share. Present only
+ * when the live cwd moved but stayed inside the SAME worktree.
+ */
+export interface SkillDiscoveryWorkTreeContext {
+  cwd: string
+  workTree: string
+}
+
+/**
+ * CC 2.1.312 item 5 — stable skill-discovery base, port of the official
+ * trigger prologue `Sq` @251527988 (v312), verbatim shape:
+ *
+ *   let h=fe(),y=vN()?h:Ee(),S=h!==y&&ZG(h,y,!1)?ir(h):null,
+ *       w=S!==null&&ir(y)===S?{cwd:h,workTree:S}:void 0,H=w===void 0?h:y
+ *
+ * When the session cd'd deeper (`h!==y`) but stayed inside the original cwd
+ * (`ZG` containment) AND both cwds resolve to the same git worktree root
+ * (`ir`), discovery/activation anchor to the ORIGINAL cwd (`Ee`) so skills
+ * dirs above the new cwd stay reachable and `paths:` relatives stop being
+ * `..`-prefixed; the {cwd,workTree} context is threaded down for the
+ * three-state confirmation of dirs above the live cwd. Otherwise the base
+ * falls back to the live cwd (v311 behavior — no cross-repo reach).
+ *
+ * Unpinnable per triage (documented inference, not byte evidence):
+ * - `Ee` inferred = original/launch cwd → `getOriginalCwd()`.
+ * - `vN()` semantics unpinnable; the degenerate `y=h` case it guards is
+ *   subsumed here (live === original ⇒ base = live either way).
+ * - `ZG(h,y,!1)` third-arg semantics unpinnable; OCC uses its own
+ *   official-verbatim containment helper `ax` (isPathInsideOrEqual).
+ * - `ir` inferred = git worktree root → `findGitRoot`.
+ */
+export function resolveSkillDiscoveryBase(): {
+  base: string
+  ctx: SkillDiscoveryWorkTreeContext | undefined
+} {
+  const liveCwd = getCwd()
+  const originalCwd = getOriginalCwd()
+  const liveWorkTree =
+    liveCwd !== originalCwd && isPathInsideOrEqual(liveCwd, originalCwd)
+      ? findGitRoot(liveCwd)
+      : null
+  const ctx =
+    liveWorkTree !== null && findGitRoot(originalCwd) === liveWorkTree
+      ? { cwd: liveCwd, workTree: liveWorkTree }
+      : undefined
+  const base = ctx === undefined ? liveCwd : originalCwd
+  return { base, ctx }
+}
+
+/**
+ * Three-state confirmation for a skills-dir candidate that is NOT below the
+ * live cwd (official `fSn` @251524152, verbatim call shape:
+ * `async function fSn(e,n,r){return n_(e)===n?Fes(e,r):void 0}`).
+ *
+ * Returns:
+ *   1         — confirmed: the dir sits in the expected worktree and git
+ *               says it is NOT ignored → safe to load.
+ *   0         — confirmed gitignored → skip (no deferral).
+ *   undefined — unconfirmed (git-root mismatch, git unavailable, check
+ *               error) → caller defers the dir for a later re-check.
+ *
+ * `n_`/`Fes` internals are unpinnable per triage; inferred as git-root
+ * equality plus `git check-ignore` (exit 0 = ignored, 1 = not ignored,
+ * anything else = could not check). `git check-ignore` is run from `base`
+ * (the stable original cwd, inside the same worktree).
+ */
+async function confirmSkillsDirState(
+  dir: string,
+  workTree: string,
+  base: string,
+): Promise<1 | 0 | undefined> {
+  if (findGitRoot(dir) !== workTree) {
+    return undefined
+  }
+  const { code } = await execFileNoThrowWithCwd(
+    'git',
+    ['check-ignore', dir],
+    { preserveOutputOnError: false, cwd: base },
+  )
+  if (code === 0) {
+    return 0
+  }
+  if (code === 1) {
+    return 1
+  }
+  return undefined
+}
+
+/**
+ * Second confirmation for dirs NOT below the live cwd (official `eNo`
+ * @251524152 symlink-target check): when the skills dir resolves through a
+ * symlink (`CEe` inferred = realpath), the TARGET must be confirmed inside
+ * the same worktree too. Mirrors the official formula:
+ *
+ *   We=await CEe(ve)  // realpath(skillsDir), undefined on failure
+ *   ze=await CEe(h.workTree).catch(()=>{})
+ *   Qe=We===void 0||ze===void 0?void 0:We===ve?1
+ *        :await fSn(RR(Lb(We))===".claude"?Lb(Lb(We)):We,ze,S)
+ *
+ * NOTE: OCC had no target-confirmation step before 2.1.312 (the official
+ * check ships alongside the sync-owned-prefix machinery OCC trims); this is
+ * the first-check-equivalent port, added so symlinked dirs above the live
+ * cwd cannot smuggle an unconfirmed target past the stable-base fix.
+ */
+async function confirmSkillDirSymlinkTarget(
+  skillDir: string,
+  ctx: SkillDiscoveryWorkTreeContext,
+  base: string,
+): Promise<1 | 0 | undefined> {
+  let resolvedDir: string | undefined
+  try {
+    resolvedDir = await realpath(skillDir)
+  } catch {
+    resolvedDir = undefined
+  }
+  const workTreeReal = await realpath(ctx.workTree).catch(() => undefined)
+  if (resolvedDir === undefined || workTreeReal === undefined) {
+    return undefined
+  }
+  if (resolvedDir === skillDir) {
+    return 1
+  }
+  const targetDir =
+    basename(dirname(resolvedDir)) === '.claude'
+      ? dirname(resolvedDir)
+      : resolvedDir
+  return confirmSkillsDirState(targetDir, workTreeReal, base)
+}
+
+/**
+ * Deferred (unconfirmed) skills dirs, keyed by dir → live cwd at deferral
+ * time. Exposed for tests/debugging (official state lives in `Dh()`).
+ */
+export function getDeferredSkillDirs(): ReadonlyMap<string, string> {
+  return deferredSkillDirs
+}
 
 // --- Conditional skills (path-filtered) ---
 
@@ -1597,30 +1752,54 @@ export function onDynamicSkillsLoaded(callback: () => void): () => void {
 }
 
 /**
- * Discovers skill directories by walking up from file paths to cwd.
- * Only discovers directories below cwd (cwd-level skills are loaded at startup).
+ * Discovers skill directories by walking up from file paths to the discovery
+ * base. Only discovers directories below the base (base-level skills are
+ * loaded at startup).
+ *
+ * CC 2.1.312 item 5: `cwd` is now the STABLE base from
+ * `resolveSkillDiscoveryBase()` (the original cwd when the session cd'd
+ * deeper inside the same worktree), so dirs above the live cwd stay
+ * reachable. Candidates NOT below the live cwd (`ctx.cwd`) go through the
+ * three-state worktree confirmation instead of the fail-open gitignore
+ * boolean; unconfirmed dirs are deferred and re-checked when the live cwd
+ * moves (official `eNo` @251524152).
  *
  * @param filePaths Array of file paths to check
- * @param cwd Current working directory (upper bound for discovery)
+ * @param cwd Stable discovery base (upper bound for the upward walk)
+ * @param ctx Optional {live cwd, shared worktree root} context (official `w`)
  * @returns Array of newly discovered skill directories, sorted deepest first
  */
 export async function discoverSkillDirsForPaths(
   filePaths: string[],
   cwd: string,
+  ctx?: SkillDiscoveryWorkTreeContext,
 ): Promise<string[]> {
   const fs = getFsImplementation()
   const resolvedCwd = cwd.endsWith(pathSep) ? cwd.slice(0, -1) : cwd
+  // Official `eNo`: `H=fe()` — deferral bookkeeping keys on the LIVE cwd at
+  // call time, not the stable base.
+  const liveCwd = getCwd()
   const newDirs: string[] = []
 
   for (const filePath of filePaths) {
     // Start from the file's parent directory
     let currentDir = dirname(filePath)
 
-    // Walk up to cwd but NOT including cwd itself
-    // CWD-level skills are already loaded at startup, so we only discover nested ones
+    // Walk up to the base but NOT including the base itself
+    // Base-level skills are already loaded at startup, so we only discover nested ones
     // Use prefix+separator check to avoid matching /project-backup when cwd is /project
     while (currentDir.startsWith(resolvedCwd + pathSep)) {
       const skillDir = join(currentDir, '.claude', 'skills')
+
+      // Official: `Ae=Dh().deferredSkillDirs.get(ve); if(Ae!==void 0&&Ae!==H)
+      // {delete deferred; delete dynamicSkillDirs}` — a deferral recorded
+      // under a DIFFERENT live cwd is stale: evict it and the seen-cache
+      // entry so this trigger re-checks the dir.
+      const deferredFrom = deferredSkillDirs.get(skillDir)
+      if (deferredFrom !== undefined && deferredFrom !== liveCwd) {
+        deferredSkillDirs.delete(skillDir)
+        dynamicSkillDirs.delete(skillDir)
+      }
 
       // Skip if we've already checked this path (hit or miss) — avoids
       // repeating the same failed stat on every Read/Write/Edit call when
@@ -1629,17 +1808,59 @@ export async function discoverSkillDirsForPaths(
         dynamicSkillDirs.add(skillDir)
         try {
           await fs.stat(skillDir)
-          // Skills dir exists. Before loading, check if the containing dir
-          // is gitignored — blocks e.g. node_modules/pkg/.claude/skills from
-          // loading silently. `git check-ignore` handles nested .gitignore,
-          // .git/info/exclude, and global gitignore. Fails open outside a
-          // git repo (exit 128 → false); the invocation-time trust dialog
-          // is the actual security boundary.
-          if (await isPathGitignored(currentDir, resolvedCwd)) {
+          // Official: `De=h===void 0||Se.startsWith(h.cwd+Hy)` — dirs below
+          // the live cwd keep the classic boolean gitignore check (fails open
+          // outside a git repo; the invocation-time trust dialog is the
+          // actual security boundary). Dirs ABOVE the live cwd (reachable
+          // only since the 312 stable-base fix) get the three-state
+          // confirmation: 1=load, 0=gitignored skip, undefined=defer+skip.
+          const belowLiveCwd =
+            ctx === undefined || currentDir.startsWith(ctx.cwd + pathSep)
+          if (!belowLiveCwd) {
+            const state = await confirmSkillsDirState(
+              currentDir,
+              ctx.workTree,
+              resolvedCwd,
+            )
+            if (state !== 1) {
+              if (state !== 0) {
+                deferredSkillDirs.set(skillDir, liveCwd)
+              }
+              logForDebugging(
+                `[skills] Skipped gitignored or unconfirmed skills dir: ${skillDir}`,
+              )
+              continue
+            }
+          } else if (
+            await isPathGitignored(currentDir, ctx?.cwd ?? resolvedCwd)
+          ) {
+            // Skills dir exists. Before loading, check if the containing dir
+            // is gitignored — blocks e.g. node_modules/pkg/.claude/skills from
+            // loading silently. `git check-ignore` handles nested .gitignore,
+            // .git/info/exclude, and global gitignore.
             logForDebugging(
               `[skills] Skipped gitignored skills dir: ${skillDir}`,
             )
             continue
+          }
+          // Official second check (dirs above the live cwd only): a symlinked
+          // skills dir must also have a CONFIRMED target inside the same
+          // worktree, else defer + skip.
+          if (!belowLiveCwd) {
+            const targetState = await confirmSkillDirSymlinkTarget(
+              skillDir,
+              ctx,
+              resolvedCwd,
+            )
+            if (targetState !== 1) {
+              if (targetState !== 0) {
+                deferredSkillDirs.set(skillDir, liveCwd)
+              }
+              logForDebugging(
+                `[skills] Skipped skills dir with an unconfirmed target: ${skillDir}`,
+              )
+              continue
+            }
           }
           newDirs.push(skillDir)
         } catch {
@@ -1736,13 +1957,18 @@ export function getDynamicSkills(): Command[] {
  * Uses the `ignore` library (gitignore-style matching), matching the behavior
  * of CLAUDE.md conditional rules.
  *
+ * CC 2.1.312 item 5: callers pass the STABLE base from
+ * `resolveSkillDiscoveryBase()` (official `mSn([n],H)` in `Sq` @251527988),
+ * so after a deeper cd inside the same worktree the relatives stay
+ * base-rooted instead of turning `..`-prefixed (which never matches).
+ *
  * @param filePaths Array of file paths being operated on
- * @param cwd Current working directory (paths are matched relative to cwd)
+ * @param base Stable discovery base (paths are matched relative to it)
  * @returns Array of newly activated skill names
  */
 export function activateConditionalSkillsForPaths(
   filePaths: string[],
-  cwd: string,
+  base: string,
 ): string[] {
   if (conditionalSkills.size === 0) {
     return []
@@ -1760,7 +1986,7 @@ export function activateConditionalSkillsForPaths(
     )
     for (const filePath of filePaths) {
       const relativePath = isAbsolute(filePath)
-        ? relative(cwd, filePath)
+        ? relative(base, filePath)
         : filePath
 
       // ignore() throws on empty strings, paths escaping the base (../),
@@ -1817,6 +2043,9 @@ export function getConditionalSkillCount(): number {
  */
 export function clearDynamicSkills(): void {
   dynamicSkillDirs.clear()
+  // Official reset `e2s` @251527988 clears deferredSkillDirs alongside the
+  // other dynamic-skill state.
+  deferredSkillDirs.clear()
   dynamicSkills.clear()
   conditionalSkills.clear()
   activatedConditionalSkillNames.clear()

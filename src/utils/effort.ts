@@ -577,15 +577,46 @@ export function getDisplayedEffortLevel(
  * Returns empty string if the user hasn't explicitly set an effort value.
  * Shows the configured level verbatim — official does not apply the
  * model-capability clamp here (Gap-97c).
+ *
+ * CC 2.1.312 item 9 — official `Sbn` gained a 4th param and the sentEffort
+ * slot WINS over the resolver (v312 @243469955, byte-verified; v311 `cbn`
+ * was 3-param with no `s`):
+ *   `function Sbn(e,n,r,s){if(n===void 0&&r===void 0)return"";
+ *      let f=s??kS(e,n,{turnEffort:r});if(f===void 0)return"";
+ *      return` + ' ` with ${e6(U0(f))} effort`}'
+ * So a mid-task /effort pick no longer renames the spinner before the model
+ * applies it — the spinner shows the level IN FORCE (`s` = sentEffort).
+ *
+ * OCC reductions: (1) `kS` is resolveAppliedEffort, but OCC's pre-fix suffix
+ * used the configured resolver (resolveConfiguredEffort — Gap-97c verbatim
+ * display, cap-clamped); the fallback path is left unchanged so existing
+ * Logo/cap behavior is preserved, and only the `s ??` precedence is added.
+ * (2) The official guard `n===void 0&&r===void 0` keeps OCC's pre-existing
+ * `effortValue === undefined` early-out when `s` is absent (backward compat);
+ * when a non-null `s` is passed the guard stands aside — official's `s ??`
+ * short-circuit renders the in-force level even with no configured effort.
+ * `sentEffort` accepts null (the slot's cleared state → resolver fallback).
  */
 export function getEffortSuffix(
   model: string,
   effortValue: EffortValue | undefined,
+  turnEffort?: EffortValue | null,
+  sentEffort?: EffortLevel | null,
 ): string {
-  if (effortValue === undefined) return ''
-  const configured = resolveConfiguredEffort(model, effortValue)
-  if (configured === undefined) return ''
-  return ` with ${convertEffortValueToLevel(configured)} effort`
+  let inForce: EffortValue | undefined
+  if (sentEffort !== undefined && sentEffort !== null) {
+    // official `s ?? kS(...)` — the in-force level short-circuits the
+    // resolver, rendering even when nothing is configured.
+    inForce = sentEffort
+  } else {
+    // Pre-fix OCC guard (`effortValue === undefined → ''`) kept verbatim for
+    // backward compat; official's is `n===void 0&&r===void 0`, equivalent for
+    // every current OCC caller (none threads turnEffort yet).
+    if (effortValue === undefined) return ''
+    inForce = resolveConfiguredEffort(model, effortValue)
+  }
+  if (inForce === undefined) return ''
+  return ` with ${convertEffortValueToLevel(inForce)} effort`
 }
 
 export function isValidNumericEffort(value: number): boolean {

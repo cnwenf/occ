@@ -2,6 +2,20 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.406 - 2026-10-29 (OCC-136 — 官方 2.1.311→2.1.312 追齐轮：39 条 changelog 逐条对官方 v311/v312 ELF 三方取证 triage（npm dist-tags + GitHub release + 二进制下载三方核验；strings/grep -aboF/seek 上下文窗口只读取证、从未执行官方二进制；16,605 新增 / 16,871 移除唯一字符串 + 2 个新 env 名全量清点），最终 PORT 11 · STAGED 1(+1 子项 +2 env) · N-A 27；11 个 PORT 项经 6 个并行工作包 + 3 个 orchestrator 直接端口全部落地；ci-test.sh 全量首轮 14,832 pass / 15 skip（36 个失败文件中 35 个为缺 dist/cli.js 环境产物、构建后全绿；1 个为已知本地 bun-1.3.14 环境产物，CI 基线 1.4.2），build 30.58 MB，tmux 真机 REPL 往返（开机→真模型 PONG→`/verify` 菜单实拍核验）+ headless `-p` 真模型往返全绿；台账 `docs/upstream-version-gap-occ136-2026-10.md` + 取证 `docs/gap-research-312/`；README Tracks 徽章 → 2.1.312 partial)
+
+- sentEffort 在力 effort 状态（官方 items 9+16，一处变更合并）：新增 `getSentEffort`/`setSentEffort` 槽位（官方 wire `sentEffort`/`effort` 捕获逐字节核验），spinner/OTel/transcript 在任务中改选 effort 后显示**在力**等级而非刚选的等级；effort 指示器新增 `may wait for your next message` 提示（官方 `uT` 条件 @276688231），不再适用时自动消失
+- click to send now（官方 item 2）：全屏模式下点击排队消息下的 "to send now" 提示即刻发送（官方 `click to send now` 字面量 @275853182 + `input_send_now_click`/`no_handler_took_it` 遥测）
+- 防驱逐 startOnly Write 守卫（官方 item 4）：只看过头部的超大 CLAUDE.md/规则文件/@-include 子目录文件不再被 Write 整文件覆盖——`FileStateCache.markStartOnly/holdsOnlyStartOf`（官方 `Sa` @244819043，LRU 驱逐后仍生效），validateInput 在 not-read 分支**之前**返回 errorCode 19（@249830441），逐字 `e7o` 指引（@241153414，`allow_large` 已解析）；嵌套头部裁剪标记点 @251721817 + 变更文件 watcher 重播种 @251734727 同步接线（`tengu_velvet_possum` 顶层裁剪子项官方 gate 默认 false → STAGED）
+- skills 发现跨 Bash `cd` 存活（官方 item 5）：per-directory 与 `paths:` skills 在 cd 进 git 仓库更深处后不再丢失——稳定发现基座 + worktree 上下文（官方 `Sq` @251527988），三态 git check-ignore 确认/跳过/延迟（官方 `eNo` @251524152，`deferredSkillDirs` 陈旧基座驱逐），逐字 `[skills] Skipped …` 日志
+- cleanup rmdir 竞态守卫（官方 item 8）：旧会话文件清理与 PDF 渲染并发时 Read 不再报 "pdftoppm failed: Could not write image"——工具目录/工具结果目录仅在**有残留或 mtime 早于 cutoff**时 rmdir（官方 @259860697 逐字节，`getMtimeMs` ≡ `Q` @259855632，全新空目录存活）
+- vim `gj`/`gk` rowsRunOut 守卫（官方 item 14）：`d`/`c`/`y` 配超过剩余行数的 `gj`/`gk` 计数时像 Vim 一样**只移动光标**、不删不拷（官方 `q` @259579735 / `le` @259587549，严格 `<` 语义含等值放行对照测试）
+- `/verify` 短菜单描述（官方 item 15）：`/help` 与 `/` 命令菜单显示面向用户的 "Try your change and report if it works"（@258727734）而非给 Claude 看的长描述
+- 用量限制措辞 "session limit" → "5-hour limit"（官方 item 20）：显示映射 `Hce` @246569205 逐字节 + `clampSurpassedThreshold`（≡ `Ke` @246573773）与 `Over N% of your … used` 早期预警分支（≡ `$t` @246574430）；官方 `tengu_nifty_lemur` 重置命令面 OCC 未搭载 → 相关文案 N-A 记录
+- hook 并发两级席位 24+12 + 1 秒超时下限（官方 item 22）：prompt/agent hooks 每会话最多 24 个并发（含子 agent，ALS 会话槽共享），另有最多 12 个等待超过事件超时的逾期席位；`timeout` 小于 1 秒按 1 秒计（官方常量组 @251761428 逐字节：`kvn=24`/`Wet=fEr=12`/`pEr=1`/`bvn=1e4`，信号量 ≡ `byt` @250558442）；`execPromptHook`/`execAgentHook` 内层超时同源接线（`BM` @251763592/@251774554，默认 30s/60s）；302 时代单级 cap 被取代（stagger cap 12 保留）
+- 子 agent `autoCompactWindow` 现在压低 env 窗口（官方 item 23）：`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 设置的窗口不再被子 agent 豁免——官方 v312 `VS` @249961062 删除 `source==="env"` 豁免分支（v311 `US` @249997782 对照逐字节核验）；仍**只降不升**
+- Gap 取证与台账：`docs/gap-research-312/`（README + triage-port + triage-na-staged，含不可钉项诚实说明——items 6/10/11 官方 delta 无法被字符串 diff 隔离，判词为"无可验证字节"而非"已验证不存在"）+ `docs/upstream-version-gap-occ136-2026-10.md` 轮次台账；STAGED 跟进（item 18 简单系统提示词、velvet_possum 子项、`CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS` 遗留）见台账 §6
+
 ## 2.1.405 - 2026-10-28 (OCC-135 — 官方 2.1.310→2.1.311 追齐轮：92 条 changelog 逐条对官方 v310/v311 ELF 三方取证 triage（npm dist-tags + GitHub release + 二进制下载三方核验；strings/grep -aboF/dd 只读取证、从未执行官方二进制；18,925 新增 / 16,131 移除唯一字符串 + 18 个新 env 名全量清点），最终 PORT 33 · STAGED 6(+2 env) · N-A 53(+15 env)；33 个 PORT 项经 9 个并行 agent 的 26 个工作包全部落地；ci-test.sh 全量 14858 pass / 2 env-fail（两者在 CI 基线 bun 1.4.2 复现全绿）/ 12 skip，build 30.56 MB，REPL e2e 12/12 + tmux 真机 REPL 往返 + headless `-p` 真模型往返全绿；台账 `docs/upstream-version-gap-occ135-2026-10.md` + 取证 `docs/gap-research-311/`；README Tracks 徽章 → 2.1.311 partial)
 
 - native-1M 模型显示对齐（官方 item 69）：Opus 5 等原生 1M 模型不再显示 `[1m]` 后缀与 "(1M context)" 标签（官方 `a2`/`lT` 路径逐字节核验），`/model` 选择器与 e2e 断言同步

@@ -190,7 +190,9 @@ function getLimitReachedText(limits: ClaudeAILimits, model: string): string {
   }
 
   if (limits.rateLimitType === 'five_hour') {
-    return formatLimitReachedText('session limit', resetMessage, model)
+    // CC 2.1.312 (item 20): official display map renamed five_hour
+    // "session limit" → "5-hour limit" (v311 `wce` @246735413 → v312 `Hce` @246569205).
+    return formatLimitReachedText('5-hour limit', resetMessage, model)
   }
 
   return formatLimitReachedText('usage limit', resetMessage, model)
@@ -203,7 +205,7 @@ function getEarlyWarningText(limits: ClaudeAILimits): string | null {
       limitName = 'weekly limit'
       break
     case 'five_hour':
-      limitName = 'session limit'
+      limitName = '5-hour limit' // CC 2.1.312 (item 20) rename
       break
     case 'seven_day_opus':
       limitName = 'Opus limit'
@@ -235,28 +237,45 @@ function getEarlyWarningText(limits: ClaudeAILimits): string | null {
   // Get upsell command based on subscription type and limit type
   const upsell = getWarningUpsellText(limits.rateLimitType)
 
-  if (used && resetTime) {
-    const base = `You've used ${used}% of your ${limitName} · resets ${resetTime}`
-    return upsell ? `${base} · ${upsell}` : base
-  }
+  // CC 2.1.312 (item 20): when no utilization percent is available but the
+  // server sent a surpassed-threshold fraction, render "Over N% of your
+  // <limit> used". Official `$t` @246574430: `m=n?void 0:Ke(e.surpassedThreshold)`
+  // with `Ke` clamping to integers 1..99 (new-in-312).
+  const overPercent = used
+    ? undefined
+    : clampSurpassedThreshold(limits.surpassedThreshold)
 
-  if (used) {
-    const base = `You've used ${used}% of your ${limitName}`
-    return upsell ? `${base} · ${upsell}` : base
-  }
-
-  if (limits.rateLimitType === 'overage') {
-    // For the "Approaching <x>" verbiage, "extra usage limit" makes more sense than "extra usage"
+  if (!used && limits.rateLimitType === 'overage') {
+    // For the "Approaching <x>"/"Over N% of <x> used" verbiage, "extra usage
+    // limit" makes more sense than "extra usage" (official overage branch:
+    // `r=n?"usage credits":"usage credit limit"` — same short/long split).
     limitName += ' limit'
   }
 
-  if (resetTime) {
-    const base = `Approaching ${limitName} · resets ${resetTime}`
-    return upsell ? `${base} · ${upsell}` : base
-  }
+  const base = used
+    ? `You've used ${used}% of your ${limitName}`
+    : overPercent !== undefined
+      ? `Over ${overPercent}% of your ${limitName} used`
+      : `Approaching ${limitName}`
 
-  const base = `Approaching ${limitName}`
-  return upsell ? `${base} · ${upsell}` : base
+  // Official joins base · resets · upsell with " · " (filter(Boolean)).
+  const parts = [base, resetTime ? `resets ${resetTime}` : null, upsell].filter(
+    Boolean,
+  )
+  return parts.join(' · ')
+}
+
+/**
+ * CC 2.1.312 (item 20) — official `Ke` @246573773 (byte-verbatim semantics):
+ * `function Ke(e){if(e===void 0||!Number.isFinite(e)||e<=0||e>=1)return;
+ * return Math.min(99,Math.floor(Math.round(e*1e4)/100))}`
+ * Fraction (0,1) → integer percent clamped to at most 99; anything else → undefined.
+ */
+function clampSurpassedThreshold(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value <= 0 || value >= 1) {
+    return undefined
+  }
+  return Math.min(99, Math.floor(Math.round(value * 1e4) / 100))
 }
 
 /**
@@ -313,7 +332,7 @@ export function getUsingOverageText(limits: ClaudeAILimits): string {
 
   let limitName = ''
   if (limits.rateLimitType === 'five_hour') {
-    limitName = 'session limit'
+    limitName = '5-hour limit' // CC 2.1.312 (item 20) rename
   } else if (limits.rateLimitType === 'seven_day') {
     limitName = 'weekly limit'
   } else if (limits.rateLimitType === 'seven_day_opus') {

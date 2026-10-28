@@ -35,9 +35,12 @@ import {
  *                                   "ceiling"in e}`
  *   ceiling wrapper @223498818:    `function WJn(e,s){let n=e;
  *                                   return s===void 0?n:{ceiling:s,inner:n}}`
- *   resolver ceiling branch (iv):  resolve inner; env or inner.window<=ceiling
+ *   resolver ceiling branch (iv):  resolve inner; inner.window<=ceiling
  *                                   → inner; else {window:min(ctx,ceiling),
  *                                   configured:ceiling, source:"settings"}
+ *                                   (CC 2.1.312 item 23: the `source==="env"`
+ *                                   exemption was removed upstream — v312
+ *                                   `VS` @249961062 `if(S.window<=w)return S`)
  *   spawn wiring @223555765:       `autoCompactWindow: e.agentType===Q$&&Xa(e)
  *                                   ? n.options.autoCompactWindow
  *                                   : WJn(n.options.autoCompactWindow,
@@ -156,11 +159,30 @@ describe("2.1.296: resolveAutoCompactWindow ceiling branch (official iv)", () =>
     });
   });
 
-  test("env override is exempt from the ceiling (official: source==='env' → inner)", () => {
+  // CC 2.1.312 (item 23): the env-var exemption from the subagent ceiling was
+  // REMOVED upstream — v311 `US` @249997782 `if(S.source==="env"||S.window<=w)return S`
+  // → v312 `VS` @249961062 `if(S.window<=w)return S`. An env window above the
+  // ceiling is now clamped like any other inner window.
+  test("env override above the ceiling is clamped (CC 2.1.312: exemption removed)", () => {
     process.env[ENV_WINDOW_KEY] = "150000";
     const override = wrapAutoCompactWindowCeiling(
       { default: 800000, byModel: {} },
       100000,
+    );
+    expect(resolveAutoCompactWindow(MODEL, 1_000_000, override)).toEqual({
+      window: 100000,
+      configured: 100000,
+      source: "settings",
+    });
+  });
+
+  test("env override at or below the ceiling passes through unchanged", () => {
+    // NB: env values below the 100k minimum clamp UP (CC 2.1.304 #41), so
+    // use an env window above the minimum and below the ceiling.
+    process.env[ENV_WINDOW_KEY] = "150000";
+    const override = wrapAutoCompactWindowCeiling(
+      { default: 800000, byModel: {} },
+      200000,
     );
     expect(resolveAutoCompactWindow(MODEL, 1_000_000, override)).toEqual({
       window: 150000,
