@@ -121,7 +121,12 @@ startupSecurityWarnings seen timing): not hardened this round (Leader: optional,
 
 - OCC version 2.1.405 → **2.1.406**; CHANGELOG `## 2.1.406 - 2026-10-29` section added; README
   Tracks 2.1.311 → **2.1.312** (4 spots: badge, intro, capability-parity row, tracking list —
-  OCC-135 history retained verbatim in-line); merged to `main` (`--no-ff`); tag `v2.1.406` pushed
-  → `publish.yml` triggered. npm publish expected to fail on the expired NPM_TOKEN (OCC-127/129
-  debt — GitHub Release + tag parity complete the releasable parts; npm `@cnwenf/occ` stays at
-  2.1.367 until token rotation). Release verification recorded in the OCC-136 result comment.
+  OCC-135 history retained verbatim in-line); merged to `main` via PR #560 (merge commit
+  `624c5adf`); tag `v2.1.406` pushed → `publish.yml` run `40772149390`.
+- **Run outcome (verified)**: build/shebang/version/strip steps green; `Publish` step failed with
+  the known `npm error 404 Not Found - PUT …/@cnwenf%2focc` (expired NPM_TOKEN — OCC-127/129 debt;
+  npm `@cnwenf/occ` stays at 2.1.367 until token rotation). The failure skipped the workflow's
+  `Create GitHub Release` step, so the release was created manually via `gh release create v2.1.406`
+  (same format as the v2.1.405 manual release — Full Changelog compare link):
+  https://github.com/cnwenf/occ/releases/tag/v2.1.406
+- **releases==tags parity verified**: 205 releases / 205 tags, `comm` diff empty.
