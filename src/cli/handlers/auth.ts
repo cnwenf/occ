@@ -18,7 +18,7 @@ import {
   storeOAuthAccountInfo,
 } from '../../services/oauth/client.js'
 import { getOauthProfileFromOauthToken } from '../../services/oauth/getOauthProfile.js'
-import { OAuthService } from '../../services/oauth/index.js'
+import { AuthCodeRefusedError, OAuthService } from '../../services/oauth/index.js'
 import type { OAuthTokens } from '../../services/oauth/types.js'
 import {
   checkOrgPinForLoginInstall,
@@ -407,7 +407,19 @@ export async function authLogin({
     process.stdout.write('Login successful.\n')
     process.exit(0)
   } catch (err) {
-    logError(err)
+    // CC 2.1.311 (item 62): AuthCodeRefusedError is a displayable login
+    // failure (binary @267489110: `if(i instanceof GRe||…)
+    // t(\`OAuth login failed: ${d(i)}\`,{level:"error"}); else l(i)`) — log it
+    // through the debug logger with its fixed, safe message instead of
+    // logError's raw-error path. The stderr write below surfaces the same
+    // verbatim message to the user.
+    if (err instanceof AuthCodeRefusedError) {
+      logForDebugging(`OAuth login failed: ${errorMessage(err)}`, {
+        level: 'error',
+      })
+    } else {
+      logError(err)
+    }
     const sslHint = getSSLErrorHint(err)
     process.stderr.write(
       `Login failed: ${errorMessage(err)}\n${sslHint ? sslHint + '\n' : ''}`,

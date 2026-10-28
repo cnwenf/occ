@@ -331,11 +331,11 @@ describe('2.1.284 P3-2: /model picker 1M disjunct list (source-anchored)', () =>
 })
 
 describe('2.1.284: display + marketing names (catalog display_name "Sonnet 5.5")', () => {
-  test("getPublicModelDisplayName: 'Sonnet 5.5' / 'Sonnet 5.5 (1M context)'", () => {
+  // 2.1.311 (WP-X): sonnet-5-5 is native-1M — the `[1m]` variant drops the
+  // "(1M context)" label (official lT/Gk @242271504, a2 @242248082).
+  test("getPublicModelDisplayName: 'Sonnet 5.5' for base and '[1m]' variant (2.1.311)", () => {
     expect(getPublicModelDisplayName('claude-sonnet-5-5')).toBe('Sonnet 5.5')
-    expect(getPublicModelDisplayName('claude-sonnet-5-5[1m]')).toBe(
-      'Sonnet 5.5 (1M context)',
-    )
+    expect(getPublicModelDisplayName('claude-sonnet-5-5[1m]')).toBe('Sonnet 5.5')
   })
 
   test('getMarketingNameForModel: Sonnet 5.5 before Sonnet 5 (substring order)', () => {

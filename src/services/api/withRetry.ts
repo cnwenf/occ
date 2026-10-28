@@ -12,7 +12,11 @@ import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import { createSystemAPIErrorMessage } from 'src/utils/messages.js'
-import { getAPIProvider, getAPIProviderForStatsig } from 'src/utils/model/providers.js'
+import {
+  getAPIProvider,
+  getAPIProviderForStatsig,
+  isFirstPartyAnthropicBaseUrl,
+} from 'src/utils/model/providers.js'
 import {
   clearApiKeyHelperCache,
   clearAwsCredentialsCache,
@@ -2704,9 +2708,60 @@ function handleGcpCredentialError(error: unknown): boolean {
   return false
 }
 
+/**
+ * CC 2.1.311 (item 49): the unified overage-disabled-reason header. Official
+ * `O0e` (@242093363 / @117260888, byte-verified). When its value is
+ * "fetch_error" the early x-should-retry:false gate is SKIPPED — the failure is
+ * a client-side fetch error, not a genuine server "don't retry" signal.
+ */
+const OVERAGE_DISABLED_REASON_HEADER =
+  'anthropic-ratelimit-unified-overage-disabled-reason'
+
+/**
+ * True when the server sent an explicit `x-should-retry: false` header.
+ * Faithful port of official `gfn` (@251052058-region) — the generic header-false
+ * predicate. `gfn` carries a dead `let n=e.status>=500` variable and simply
+ * `return!0` once the header equals "false", so it reduces to this check.
+ */
+function isShouldRetryHeaderFalse(error: APIError): boolean {
+  return error.headers?.get('x-should-retry') === 'false'
+}
+
+/**
+ * Official `cs()` — the first-party Anthropic gateway predicate gating the 503
+ * arm of the early x-should-retry:false gate: provider is firstParty AND the
+ * base URL is a first-party Anthropic host.
+ */
+function isFirstPartyAnthropicGatewayForRetry(): boolean {
+  return getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+}
+
 function shouldRetry(error: APIError): boolean {
   // Never retry mock errors - they're from /mock-limits command for testing
   if (isMockRateLimitError(error)) {
+    return false
+  }
+
+  // CC 2.1.311 (item 49): the EARLY x-should-retry:false gate. Official `Qur`
+  // (@251051850, byte-verified) evaluates this BEFORE every force-true branch
+  // (overloaded-message / persistent / REMOTE / anthropicAws), whereas v310 (and
+  // OCC pre-port) checked the header LATE and let those branches win:
+  //   if(ZXe(e)&&e.headers?.get("x-should-retry")==="false"
+  //      &&(e.status===429||e.status===529||e.status===503&&cs())
+  //      &&e.headers?.get(O0e)!=="fetch_error"
+  //      &&(aAe()||gfn(e)))return!1;
+  // ZXe≡isTransientCapacityError (529/overloaded OR 429), cs≡firstParty&&first-
+  // party base URL, O0e≡OVERAGE_DISABLED_REASON_HEADER, aAe≡isRetryWatchdogEnabled,
+  // gfn≡isShouldRetryHeaderFalse.
+  if (
+    isTransientCapacityError(error) &&
+    error.headers?.get('x-should-retry') === 'false' &&
+    (error.status === 429 ||
+      error.status === 529 ||
+      (error.status === 503 && isFirstPartyAnthropicGatewayForRetry())) &&
+    error.headers?.get(OVERAGE_DISABLED_REASON_HEADER) !== 'fetch_error' &&
+    (isRetryWatchdogEnabled() || isShouldRetryHeaderFalse(error))
+  ) {
     return false
   }
 
@@ -2767,13 +2822,13 @@ function shouldRetry(error: APIError): boolean {
     return true
   }
 
-  // Ants can ignore x-should-retry: false for 5xx server errors only.
-  // For other status codes (401, 403, 400, 429, etc.), respect the header.
+  // CC 2.1.311 (item 49): v311 REMOVES the non-official `USER_TYPE==="ant"` 5xx
+  // exception — official `Qur` has no ant carve-out; a `x-should-retry:false`
+  // header is honored for every status/auth class. (The early gate above already
+  // returns false for the retry-eligible 429/529/503-firstParty shapes; this late
+  // branch honors the header for the remaining statuses, e.g. 400/401/403/500.)
   if (shouldRetryHeader === 'false') {
-    const is5xxError = error.status !== undefined && error.status >= 500
-    if (!(process.env.USER_TYPE === 'ant' && is5xxError)) {
-      return false
-    }
+    return false
   }
 
   if (error instanceof APIConnectionError) {

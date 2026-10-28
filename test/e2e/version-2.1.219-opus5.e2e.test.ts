@@ -126,7 +126,10 @@ console.log(JSON.stringify({
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
     expect(out.opus5).toBe("Opus 5");
-    expect(out.opus5_1m).toBe("Opus 5 (1M context)");
+    // 2.1.311: Opus 5 is a native-1M model — the official `a2`/`lT` path strips
+    // the `[1m]` marker and drops the "(1M context)" label, so the variant
+    // resolves to the base display name (see native1mDisplay311.test.ts).
+    expect(out.opus5_1m).toBe("Opus 5");
     expect(out.opus48).toBe("Opus 4.8");
     expect(out.unknown).toBeNull();
   });

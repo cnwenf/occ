@@ -1,5 +1,7 @@
 import { APIError } from '@anthropic-ai/sdk'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.mjs'
+import { getAPIProvider } from 'src/utils/model/providers.js'
+import { shouldBypassProxy } from 'src/utils/proxy.js'
 
 // SSL/TLS error codes from OpenSSL (used by both Node.js and Bun)
 // See: https://www.openssl.org/docs/man3.1/man3/X509_STORE_CTX_get_error.html
@@ -198,6 +200,139 @@ function extractNestedErrorMessage(error: APIError): string | null {
   return null
 }
 
+/** Official `les` (@241616456, byte-verified): the "Connection dropped" prefix. */
+const CONNECTION_DROPPED_PREFIX = 'Connection dropped'
+
+/**
+ * Official `fo` (@240734005, byte-verified): the proxy env-var source order used
+ * to name the proxy in the advice suffix. First match wins (lowercase before
+ * uppercase), mirroring `YB` (@240734064).
+ */
+const PROXY_ENV_SOURCE_ORDER = [
+  'https_proxy',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'HTTP_PROXY',
+] as const
+
+/** Official default upstream (`j2r` fallback, @243662638, byte-verified). */
+const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+
+/**
+ * CC 2.1.311 (item 60): the per-code connection-error formatter — faithful port
+ * of official `YSe` (@241618200, byte-verified). Branch order and every shipped
+ * string match v311 exactly. The em-dashes are literal U+2014 (the binary stores
+ * them as `—` escapes — runtime-byte-identical).
+ *
+ * Official gates `YSe` behind `ym()` (diskless launch); OCC has no diskless
+ * surface, so `ym()` is treated as false and the formatter always applies.
+ */
+function formatConnectionErrorMessage(code: string): string {
+  switch (code) {
+    case 'ECONNRESET':
+    case 'EPIPE':
+    case 'ECONNABORTED':
+    case 'ConnectionClosed':
+    case 'ERR_SOCKET_CLOSED':
+    case 'UND_ERR_SOCKET':
+      return `${CONNECTION_DROPPED_PREFIX} (${code})`
+    case 'ECONNREFUSED':
+    case 'ConnectionRefused':
+      return `Connection refused — a firewall or proxy may be blocking it (${code})`
+    case 'ENOTFOUND':
+    case 'EAI_AGAIN':
+    case 'FailedToOpenSocket':
+      return `Can't reach the API server — check your internet or DNS (${code})`
+    case 'ENETUNREACH':
+    case 'ENETDOWN':
+    case 'EHOSTUNREACH':
+    case 'EHOSTDOWN':
+      return `No internet route — check your connection or VPN (${code})`
+    case 'ERR_PROXY_TUNNEL':
+      return `Couldn't connect through your proxy (${code}) — the proxy refused the tunnel: check its credentials and that it allows this host`
+    default:
+      return `Unable to connect to API (${code})`
+  }
+}
+
+/**
+ * Faithful port of official `YB` (@240734064): resolve the active proxy env var
+ * AND the source name that produced it (needed for the advice suffix, which
+ * proxy.ts `getProxyUrl` cannot supply — it returns the value only).
+ */
+function getProxyEnvWithSource(
+  env: Record<string, string | undefined> = process.env,
+): { value: string; source: string } | undefined {
+  const source = PROXY_ENV_SOURCE_ORDER.find(name => env[name])
+  const value = source ? env[source] : undefined
+  return source && value ? { value, source } : undefined
+}
+
+/**
+ * Faithful port of official `j2r` (@243662638): the effective API base URL for
+ * proxy-bypass evaluation. OCC omits the managed-gateway `BH()/Jbe()` arm (no
+ * managed-gateway surface); the ANTHROPIC_BASE_URL-then-default path is
+ * byte-equivalent for the advice gate.
+ */
+function getEffectiveApiBaseUrl(): string {
+  return process.env.ANTHROPIC_BASE_URL ?? DEFAULT_ANTHROPIC_BASE_URL
+}
+
+/**
+ * Faithful port of official `NFe` (@239187418): the custom-gateway host used for
+ * the advice suffix, or undefined when the request targets the first-party API.
+ * Returns the host only for a firstParty provider with a non-default
+ * ANTHROPIC_BASE_URL and no unix socket. (OCC omits the `Y()` short-circuit arm —
+ * no equivalent surface.)
+ */
+function getGatewayHostForAdvice(): string | undefined {
+  if (getAPIProvider() !== 'firstParty') return undefined
+  const baseUrl = process.env.ANTHROPIC_BASE_URL
+  if (!baseUrl || process.env.ANTHROPIC_UNIX_SOCKET !== undefined) {
+    return undefined
+  }
+  try {
+    const host = new URL(baseUrl).host
+    if (!host || host === 'api.anthropic.com') return undefined
+    return host
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * CC 2.1.311 (item 60): the advice suffix appended to a bare
+ * `Connection dropped (<code>)` message — faithful port of the official
+ * server_error construction (@250055088, byte-verified):
+ *   if(Q===`${les} (${G})`&&!oYe()&&Te()==="firstParty"
+ *      &&i.ANTHROPIC_UNIX_SOCKET===void 0){ ... }
+ * `oYe()` (a credits/exhaustion predicate) has no OCC surface and is treated as
+ * false. The suffix attaches ONLY to the ECONNRESET-family "Connection dropped"
+ * message — every other formatter gets no suffix.
+ */
+function buildConnectionDroppedAdvice(
+  formatted: string,
+  code: string | undefined,
+): string {
+  if (formatted !== `${CONNECTION_DROPPED_PREFIX} (${code ?? ''})`) return ''
+  if (getAPIProvider() !== 'firstParty') return ''
+  if (process.env.ANTHROPIC_UNIX_SOCKET !== undefined) return ''
+
+  const proxy = getProxyEnvWithSource()
+  const hints = [
+    ...(proxy && !shouldBypassProxy(getEffectiveApiBaseUrl())
+      ? [`the proxy set in ${proxy.source}`]
+      : []),
+    ...(getGatewayHostForAdvice() !== undefined
+      ? ['the gateway set in ANTHROPIC_BASE_URL']
+      : []),
+  ]
+
+  return hints.length > 0
+    ? `. Check ${hints.join(' and ')}, then try again.`
+    : '. A VPN, firewall, or security software can cause this. Check those or switch networks, then try again.'
+}
+
 export function formatAPIError(error: APIError): string {
   // Extract connection error details from the cause chain
   const connectionDetails = extractConnectionErrorDetails(error)
@@ -236,11 +371,16 @@ export function formatAPIError(error: APIError): string {
   }
 
   if (error.message === 'Connection error.') {
-    // If we have a code but it's not SSL, include it for debugging
-    if (connectionDetails?.code) {
-      return `Unable to connect to API (${connectionDetails.code})`
+    const code = connectionDetails?.code
+    if (!code) {
+      // No socket code on the cause chain — keep the pre-311 generic message.
+      return 'Unable to connect to API. Check your internet connection'
     }
-    return 'Unable to connect to API. Check your internet connection'
+    // CC 2.1.311 (item 60): per-code connection-error formatter + advice suffix.
+    // errors.ts composes the user-facing content as `API Error: ${formatAPIError}`,
+    // so formatAPIError returns `${formatted}${suffix}` (official `${Q}${Se}`).
+    const formatted = formatConnectionErrorMessage(code)
+    return `${formatted}${buildConnectionDroppedAdvice(formatted, code)}`
   }
 
   // Guard: when deserialized from JSONL (e.g. --resume), the error object may

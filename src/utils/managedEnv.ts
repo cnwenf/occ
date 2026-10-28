@@ -148,6 +148,38 @@ function withoutHostManagedTlsProxyVars(
 }
 
 /**
+ * CC 2.1.311 (item 72) official v311 host-rule env filter clause inside
+ * `K(e,n)` @243147475 (byte-verified; v310 `K` @241907308 lacks it):
+ *   s==="DISABLE_COMPACT"&&!Le(n)   // s = e.toUpperCase(), Le = env-truthy parser
+ * applied to every settings source through the all-sources filter
+ * `H(e){…if(!K(s,r))n[s]=r…}` @243158106 (strippedSettingsEnv pipeline
+ * `H(te(ie(…)))` @243163922). DISABLE_COMPACT is therefore a ONE-WAY
+ * settings knob: a settings file may only turn compaction OFF (env-truthy
+ * value passes), never back ON — a falsy value is dropped so only the launch
+ * environment can re-enable compaction. `isEnvTruthy` is OCC's byte-equivalent
+ * `Le` parser (@238646027: ["1","true","yes","on"] after lowercase+trim).
+ * OCC has no host-rule predicate and no mod `$.env.set` surface (the other
+ * two official zbn callers @252104350/@252106994), so only this clause is
+ * ported. The official drops silently (no warning) — mirrored here.
+ */
+function withoutCompactReEnable(
+  env: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!env) return {}
+  const isBlocked = (key: string, value: string): boolean =>
+    key.toUpperCase() === 'DISABLE_COMPACT' && !isEnvTruthy(value)
+  if (!Object.entries(env).some(([key, value]) => isBlocked(key, value))) {
+    return env
+  }
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (isBlocked(key, value)) continue
+    out[key] = value
+  }
+  return out
+}
+
+/**
  * Snapshot of env keys present before any settings.env is applied — for CCD,
  * these are the keys the desktop host set to orchestrate the subprocess.
  * Settings must not override them (OTEL_LOGS_EXPORTER=console would corrupt
@@ -639,28 +671,32 @@ function filterProjectScopeBlockedKeys(
  * Compose the strip filters applied to every settings-sourced env object.
  * Order mirrors the official binary pipeline: project-scope blocklist →
  * SSH-tunnel strip → host-managed-provider strip → host-managed TLS/proxy strip
- * (CC 2.1.300 #55) → host spawn-env strip. The source name is threaded down to
- * the filters that warn so the message can name the settings file it came from.
+ * (CC 2.1.300 #55) → host spawn-env strip → host-rule DISABLE_COMPACT one-way
+ * clause (CC 2.1.311 item 72, official `H(e)` is the outermost strip in
+ * `strippedSettingsEnv`). The source name is threaded down to the filters that
+ * warn so the message can name the settings file it came from.
  */
 function filterSettingsEnv(
   env: Record<string, string> | undefined,
   source: SettingSource | 'globalConfig',
 ): Record<string, string> {
-  const filtered = withoutCcdSpawnEnvKeys(
-    withoutHostManagedTlsProxyVars(
-      withoutHostManagedProviderVars(
-        withoutSSHTunnelVars(
-          filterProjectScopeBlockedKeys(
-            env,
-            source,
-            projectScopeDropWarned,
-            envAboveProjectSettings,
+  const filtered = withoutCompactReEnable(
+    withoutCcdSpawnEnvKeys(
+      withoutHostManagedTlsProxyVars(
+        withoutHostManagedProviderVars(
+          withoutSSHTunnelVars(
+            filterProjectScopeBlockedKeys(
+              env,
+              source,
+              projectScopeDropWarned,
+              envAboveProjectSettings,
+            ),
           ),
         ),
+        source,
       ),
       source,
     ),
-    source,
   )
   // CC 2.1.282 binary tail of filterSettingsEnv: record user-tier env key
   // names so a later snapshot re-latch can tell spawn-env keys from keys the

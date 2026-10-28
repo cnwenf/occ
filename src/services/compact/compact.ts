@@ -346,6 +346,121 @@ export const ERROR_MESSAGE_USER_ABORT = 'API Error: Request was aborted.'
 export const ERROR_MESSAGE_INCOMPLETE_RESPONSE =
   'Compaction interrupted · This may be due to network issues — please try again.'
 
+// ── WP-R (triage-T3.md Item 57, official v311): reactive compact re-asks
+// ONCE for a missing <summary> block. Byte-verified evidence (linux-x64 ELF,
+// /tmp/cc-diff-311/v311/package/claude; all 0 occurrences in v310):
+//   - Regexes @250550151: `N3e=/<analysis>[\s\S]*?<\/analysis>/` and
+//     `jen=/<summary>([\s\S]*?)<\/summary>/`; `FJ(e){return jen.test(
+//     e.replace(N3e,""))}`; `Mbe(e){return/^[ \t]*<summary>/m.test(
+//     e.replace(N3e,""))}`.
+//   - Reask paragraph Wen @250550486 ('For this reply only: …' @118090710).
+//   - Reask log line @250556153 ('Reactive compact: the reply has no
+//     <summary> block, asking for the summary once more' @124303728).
+//   - Second-failure detail @250555990 ('no <summary> block in the second
+//     reply either' @124303672).
+//   - Gate R6s @248136129: `k("tengu_dapper_fountain",!0)` — default true;
+//     when off the raw reply is ACCEPTED unchanged.
+//   - Ken reask @250555900+: ONE recursion `Ken(...,!0)` with prompt
+//     `content: Se?Ee+Wen:Ee` (original compact prompt + paragraph) and
+//     `apiAttemptsLeft:...??(Se?{count:1}:void 0)`; abort during the reask
+//     returns `{ok:!1,reason:"aborted"}`.
+// OCC mapping: compactionRequestKind==='reactive' (getCompactionKind:
+// isAutoCompact && thresholdSource===undefined) ≡ the official reactive path;
+// manual /compact and threshold auto-compact are untouched. OCC has no
+// ok/reason envelope — second-reply failures throw from compactConversation
+// with the verbatim official detail as the Error message.
+
+/** Official Wen @250550486 — appended to the compact prompt on the re-ask. */
+export const COMPACT_SUMMARY_REASK_PARAGRAPH =
+  '\n\nFor this reply only: write what the instructions above ask for, with the summary inside <summary></summary> tags. Every message before those instructions, the newest one included, is conversation to summarize: do not answer it, and do not do the work that it asks for. What it says on how to summarize still holds. This paragraph is about how to write this summary. The user did not write it.'
+
+/** Official t(...) @250556153 — logged right before the one re-ask. */
+export const REACTIVE_COMPACT_REASK_LOG_MESSAGE =
+  'Reactive compact: the reply has no <summary> block, asking for the summary once more'
+
+/** Official Ken @250555990 — failure detail when the re-ask also lacks it. */
+export const REACTIVE_COMPACT_SECOND_REPLY_NO_SUMMARY_DETAIL =
+  'no <summary> block in the second reply either'
+
+/** Official N3e @250550151 — <analysis> scratch content, stripped first. */
+const ANALYSIS_BLOCK_REGEX = /<analysis>[\s\S]*?<\/analysis>/
+
+/** Official jen @250550151 — a closed <summary> block. */
+const CLOSED_SUMMARY_REGEX = /<summary>([\s\S]*?)<\/summary>/
+
+/** Official Mbe @250550151 region — line-start <summary> (may be unclosed). */
+const LINE_START_SUMMARY_REGEX = /^[ \t]*<summary>/m
+
+/** Official `FJ(e)||Mbe(e)` after the N3e strip. */
+export function replyHasSummaryBlock(reply: string): boolean {
+  const stripped = reply.replace(ANALYSIS_BLOCK_REGEX, '')
+  return (
+    CLOSED_SUMMARY_REGEX.test(stripped) || LINE_START_SUMMARY_REGEX.test(stripped)
+  )
+}
+
+/**
+ * Official reask gate @250555900: reactive path only, R6s() on, and
+ * `compactionApiAttemptsLeft?.count!==0` (undefined count ≡ not exhausted).
+ */
+export function shouldReaskForMissingSummaryBlock(params: {
+  reply: string
+  compactionRequestKind: CompactionRequestKind
+  reaskGateEnabled: boolean
+  attemptsLeftCount: number | undefined
+}): boolean {
+  if (params.compactionRequestKind !== 'reactive') {
+    return false
+  }
+  if (!params.reaskGateEnabled) {
+    return false
+  }
+  if (params.attemptsLeftCount === 0) {
+    return false
+  }
+  return !replyHasSummaryBlock(params.reply)
+}
+
+export type SummaryReaskOutcome =
+  | { kind: 'accept_first' }
+  | { kind: 'accept_reask'; reply: string }
+  | { kind: 'aborted' }
+  | { kind: 'second_reply_empty' }
+  | { kind: 'second_reply_api_error'; reply: string }
+  | { kind: 'second_reply_no_block' }
+
+/**
+ * The one-shot re-ask flow (official Ken(...,!0) recursion). Pure — the
+ * caller supplies the summary request, abort probe, and log sink so the
+ * official control order is unit-testable: log → re-ask → abort check →
+ * empty/api-error/no-block classification → accept.
+ */
+export async function reaskForMissingSummaryBlock(params: {
+  isReaskEligible: boolean
+  requestReaskSummary: () => Promise<string | null>
+  isAborted: () => boolean
+  onReaskLog?: (message: string) => void
+}): Promise<SummaryReaskOutcome> {
+  if (!params.isReaskEligible) {
+    return { kind: 'accept_first' }
+  }
+  params.onReaskLog?.(REACTIVE_COMPACT_REASK_LOG_MESSAGE)
+  const reply = await params.requestReaskSummary()
+  if (params.isAborted()) {
+    return { kind: 'aborted' }
+  }
+  if (reply === null || reply === '') {
+    return { kind: 'second_reply_empty' }
+  }
+  if (startsWithApiErrorPrefix(reply)) {
+    return { kind: 'second_reply_api_error', reply }
+  }
+  if (!replyHasSummaryBlock(reply)) {
+    return { kind: 'second_reply_no_block' }
+  }
+  return { kind: 'accept_reask', reply }
+}
+
 export interface CompactionResult {
   boundaryMarker: SystemMessage
   summaryMessages: UserMessage[]
@@ -585,6 +700,88 @@ export async function compactConversation(
         promptCacheSharingEnabled,
       })
       throw new Error(summary)
+    }
+
+    // WP-R (Item 57, official v311 Ken @250555900): on the REACTIVE path a
+    // reply without a <summary> block gets exactly ONE re-ask (prompt = the
+    // original compact prompt + the official paragraph). Manual /compact and
+    // threshold auto-compact fall through unchanged. Gate off → raw reply
+    // accepted (official behavior).
+    const reaskGateEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
+      'tengu_dapper_fountain',
+      true,
+    )
+    const attemptsLeftCount = (
+      context as ToolUseContext & {
+        compactionApiAttemptsLeft?: { count: number }
+      }
+    ).compactionApiAttemptsLeft?.count
+    if (
+      shouldReaskForMissingSummaryBlock({
+        reply: summary,
+        compactionRequestKind,
+        reaskGateEnabled,
+        attemptsLeftCount,
+      })
+    ) {
+      let reaskResponse: AssistantMessage | undefined
+      const reaskOutcome = await reaskForMissingSummaryBlock({
+        isReaskEligible: true,
+        requestReaskSummary: async () => {
+          reaskResponse = await streamCompactSummary({
+            messages: messagesToSummarize,
+            summaryRequest: createUserMessage({
+              content: compactPrompt + COMPACT_SUMMARY_REASK_PARAGRAPH,
+            }),
+            appState,
+            context,
+            preCompactTokenCount,
+            cacheSafeParams: retryCacheSafeParams,
+            compactionRequestKind,
+          })
+          return getAssistantMessageText(reaskResponse)
+        },
+        isAborted: () => context.abortController.signal.aborted,
+        onReaskLog: message => logForDebugging(message, { level: 'info' }),
+      })
+      switch (reaskOutcome.kind) {
+        case 'accept_reask':
+          if (reaskResponse !== undefined) {
+            summaryResponse = reaskResponse
+          }
+          summary = reaskOutcome.reply
+          break
+        case 'aborted':
+          throw new APIUserAbortError()
+        case 'second_reply_empty':
+          logEvent('tengu_compact_failed', {
+            reason:
+              'no_summary' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            preCompactTokenCount,
+            promptCacheSharingEnabled,
+          })
+          throw new Error(
+            'Failed to generate conversation summary - response did not contain valid text content',
+          )
+        case 'second_reply_api_error':
+          logEvent('tengu_compact_failed', {
+            reason:
+              'api_error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            preCompactTokenCount,
+            promptCacheSharingEnabled,
+          })
+          throw new Error(reaskOutcome.reply)
+        case 'second_reply_no_block':
+          logEvent('tengu_compact_failed', {
+            reason:
+              'no_summary' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            preCompactTokenCount,
+            promptCacheSharingEnabled,
+          })
+          throw new Error(REACTIVE_COMPACT_SECOND_REPLY_NO_SUMMARY_DETAIL)
+        case 'accept_first':
+          break
+      }
     }
 
     // Store the current file state before clearing

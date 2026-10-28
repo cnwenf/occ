@@ -706,13 +706,28 @@ export function getAssistantMessageFromError(
     // No quota headers — this is NOT a quota limit. Surface what the API actually
     // said instead of a generic "Rate limit reached". Entitlement rejections
     // (e.g. 1M context without Extra Usage) and infra capacity 429s land here.
-    if (error.message.includes('Extra usage is required for long context')) {
+    //
+    // WP-B (Item 5, official v311): BOTH credits-refusal strings route here
+    // (official z_e @250065637 = includes("Extra usage is required for long
+    // context")||includes("Usage credits are required for long context")). The
+    // rendered content stays the fatal fallback surfaced to the user; we ALSO
+    // carry the raw server text on errorDetails so the query-loop withhold
+    // detector (official SHr @250065765 reads z_e(e.errorDetails)) can
+    // recognize the refusal and compact-and-continue instead of dying. The
+    // account clamp latch (official Ods(!0)/fBe() @250042112) lives in
+    // reactiveCompact.ts and is set on first detection — keeping errors.ts
+    // edits inside this region and the errors↔compact import graph acyclic.
+    if (
+      error.message.includes('Extra usage is required for long context') ||
+      error.message.includes('Usage credits are required for long context')
+    ) {
       const hint = getIsNonInteractiveSession()
         ? 'enable extra usage at claude.ai/settings/usage, or use --model to switch to standard context'
         : 'run /extra-usage to enable, or /model to switch to standard context'
       return createAssistantAPIErrorMessage({
         content: `${API_ERROR_MESSAGE_PREFIX}: Extra usage is required for 1M context · ${hint}`,
         error: 'rate_limit',
+        errorDetails: error.message,
       })
     }
     // SDK's APIError.makeMessage prepends "429 " and JSON-stringifies the body

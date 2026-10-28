@@ -2,6 +2,21 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.405 - 2026-10-28 (OCC-135 — 官方 2.1.310→2.1.311 追齐轮：92 条 changelog 逐条对官方 v310/v311 ELF 三方取证 triage（npm dist-tags + GitHub release + 二进制下载三方核验；strings/grep -aboF/dd 只读取证、从未执行官方二进制；18,925 新增 / 16,131 移除唯一字符串 + 18 个新 env 名全量清点），最终 PORT 33 · STAGED 6(+2 env) · N-A 53(+15 env)；33 个 PORT 项经 9 个并行 agent 的 26 个工作包全部落地；ci-test.sh 全量 14858 pass / 2 env-fail（两者在 CI 基线 bun 1.4.2 复现全绿）/ 12 skip，build 30.56 MB，REPL e2e 12/12 + tmux 真机 REPL 往返 + headless `-p` 真模型往返全绿；台账 `docs/upstream-version-gap-occ135-2026-10.md` + 取证 `docs/gap-research-311/`；README Tracks 徽章 → 2.1.311 partial)
+
+- native-1M 模型显示对齐（官方 item 69）：Opus 5 等原生 1M 模型不再显示 `[1m]` 后缀与 "(1M context)" 标签（官方 `a2`/`lT` 路径逐字节核验），`/model` 选择器与 e2e 断言同步
+- ultrathink → xhigh 回合努力提升 + rainbow 门控（官方 items 65/66）：`ultrathink` 关键词现将回合 effort 提升至 xhigh；提升标志在 `ULTRATHINK` 进入 FEATURE_ALLOWLIST 前保持休眠（与官方同族 flag 门控一致）
+- json/stream-json 输出控制字符转义（官方 item 68）：新增 `ndjsonSafeStringify`，DEL/C1/U+2028/U+2029/Cf 字符按官方规则 `\uXXXX` 转义，接入 print 路径——NDJSON 消费端不再被裸控制字符断行
+- DISABLE_COMPACT 单向关闭 + REPL summarize 门控（官方 item 72）：managed-env 下 compact 一次性禁用后不可再启用（官方单向语义），REPL 压缩总结受同一门控
+- 启动权限警告每用户只提示一次（官方 item 70）：`seenSecurityWarnings` 持久化 seenKey 去重（官方 `xvs` 过滤 / `Pvs` 标记，cap 256，sha256(source,settingsPath,text)），fail-open——配置不可读时绝不隐藏安全警告
+- `CLAUDE_CODE_EMIT_USER_PROMPT_SUBMIT_HOOK_EVENTS` 一次性启动标志（env sweep 唯一 PORT）：官方 `uFs()` @249402502 逐字节端口，读取后总是删除 env 防止子进程继承；`main.tsx` 启动路径无条件接线（镜像官方 @258725286 调用点）
+- transcript tombstone 持久化移除 + `inCallOrder` 写序列化（官方 item 9）：被移除消息的 tombstone 现在真正从磁盘 transcript 消失，并发写按调用序序列化防交错损坏
+- worktree 注册表占用者 + cleanup keep/re-arm（官方 item 12）：worktree 清理前检查注册表占用者，keep 决定可被重新武装
+- Bash 超时输出改进（官方 item 56）：超时截断时展示已获得的 output-so-far + "command is still running" 提示
+- 重试与连接建议（官方 items 46/47/49）：`shouldRetryHeaderGate` 重试头门控 + connectionDroppedAdvice 断连建议文案
+- MCP 远程服务器三态认证行 + clear-auth 重连（官方 items 41/42）、`/ide` awaited 安装流程 + 纯 mapper（item 38）、OAuth `AuthCodeRefusedError`（item 62）
+- REPL/UX/a11y 批次：屏幕阅读器删除播报 + 问题列表（items 61/64）、文件建议 `.ignore` 重包含（item 5）、粘贴逐行校验（item 11）、marked `wrappedBackslash` 孤立 `\` 保留（item 33）、purge 计划数据本地性免责声明（item 76）、rewind 措辞（items 35/39）、explanatory-output-style 提示（item 2）、1M-credits withhold + compact-summary re-ask（items 26/31/44 族）
+
 ## 2.1.404 - 2026-10-25 (OCC-132 — 官方 2.1.309→2.1.310 追齐轮：26 条 changelog 逐条对官方 v309/v310 ELF 三方取证 triage（npm dist-tags + GitHub release + 二进制下载三方核验；strings/grep -aboF/dd 只读取证、从未执行官方二进制），最终 PORT 6+1 · STAGED 4 · N-A 16；6 个并行工作包全部落地；官方用户可见文案逐字节 verbatim，结构性 deviation 全部在 filedoc/台账声明并附 BIN310 偏移；附带修复 4 个存量 mock.module 测试污染源；安全审查 PASS（零 CRITICAL/HIGH，LOW-1 当轮修复）；README Tracks 徽章 → 2.1.310 partial)
 
 - effort-beta / mid-conversation-system 400 拒绝自愈（官方 item 2，`$K` 检测器 @248256506 全量端口——changelog 点名的两个触发器为其子集，忠实于二进制而非文案）：`isEffortRefusedError` + per-model latch（`options.model` 与 `normalizeModelStringForAPI` 双键）strip-and-retry，剥离 `output_config.effort` 与 `effort-2025-11-24` beta 后重发；byte-verbatim warn 日志 + `tengu_effort_unsupported_retry` 遥测（model 经 `wt` sanitizer，非 conforming 字符→`nonconforming`，无路径/密钥泄漏）；latch delete-first 使 `configureEffortParams` 不再重发被拒参数——结构上不可能形成重试环

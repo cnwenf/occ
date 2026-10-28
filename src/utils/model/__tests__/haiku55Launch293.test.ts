@@ -366,11 +366,11 @@ describe('2.1.293: alias resolution (parseUserSpecifiedModel)', () => {
 })
 
 describe('2.1.293: display + marketing names (catalog display_name "Haiku 5.5")', () => {
-  test("getPublicModelDisplayName: 'Haiku 5.5' / 'Haiku 5.5 (1M context)'", () => {
+  // 2.1.311 (WP-X): haiku-5-5 is native-1M — the `[1m]` variant drops the
+  // "(1M context)" label (official lT/Gk @242271504, a2 @242248082).
+  test("getPublicModelDisplayName: 'Haiku 5.5' for base and '[1m]' variant (2.1.311)", () => {
     expect(getPublicModelDisplayName('claude-haiku-5-5')).toBe('Haiku 5.5')
-    expect(getPublicModelDisplayName('claude-haiku-5-5[1m]')).toBe(
-      'Haiku 5.5 (1M context)',
-    )
+    expect(getPublicModelDisplayName('claude-haiku-5-5[1m]')).toBe('Haiku 5.5')
   })
 
   test("getMarketingNameForModel: 'Haiku 5.5' / 'Haiku 5.5 (1M context)'", () => {

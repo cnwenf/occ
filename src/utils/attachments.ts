@@ -232,6 +232,7 @@ const sessionTranscriptModule = feature('KAIROS')
   ? (require('../services/sessionTranscript/sessionTranscript.js') as typeof import('../services/sessionTranscript/sessionTranscript.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
+import { applyUltrathinkTurnEffortBoost } from './effort/ultrathinkBoost.js'
 import { hasUltrathinkKeyword, isUltrathinkEnabled } from './thinking.js'
 import {
   tokenCountFromLastAPIResponse,
@@ -822,7 +823,10 @@ export type Attachment =
     }
   | {
       type: 'ultrathink_effort'
-      level: 'high'
+      // 2.1.311 item 65: 'xhigh' when official `ql` raised the turn effort
+      // (per_turn_effort model, local session, no env override, headroom below
+      // xhigh); 'high' otherwise, which is OCC's pre-311 behaviour.
+      level: 'high' | 'xhigh'
     }
   | {
       type: 'deferred_tools_delta'
@@ -1011,7 +1015,14 @@ export async function getAttachments(
       Promise.resolve(getDateChangeAttachments(messages)),
     ),
     maybe('ultrathink_effort', () =>
-      Promise.resolve(getUltrathinkEffortAttachment(input)),
+      Promise.resolve(
+        // 2.1.311 item 65: official `ql` gates on `n.options.mainLoopModel`.
+        getUltrathinkEffortAttachment(
+          input,
+          toolUseContext.options.mainLoopModel,
+          isMainThread,
+        ),
+      ),
     ),
     maybe('deferred_tools_delta', () =>
       Promise.resolve(
@@ -1623,12 +1634,47 @@ export function getDateChangeAttachments(
   return [{ type: 'date_change', newDate: currentDate }]
 }
 
-function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
+/**
+ * Official `gwr` (v311 @251728314, byte-verified verbatim):
+ *   `function gwr(e){if(!ITt()||!e||!Wci(e))return[];
+ *      return a("tengu_ultrathink",{}),[{type:"ultrathink_effort"}]}`
+ *
+ * 2.1.311 item 65: official v311 dropped the attachment's own effort field and
+ * moved the level onto the turn (`ql` → `setTurnEffort("xhigh")` +
+ * `{layer:{kind:"effort",effort:"xhigh"}}`). OCC keeps `level` because its
+ * render contract (utils/messages.ts "The user has requested reasoning effort
+ * level: …") reads it, and raises it to 'xhigh' exactly when official's `ql`
+ * would. This producer is also where OCC writes/clears the turn-effort slot —
+ * it is the one place that runs once per prompt submit for the main thread.
+ *
+ * The early-return branch still calls the boost so the slot CLEARS when the
+ * new prompt has no ultrathink keyword (OCC's stand-in for official's
+ * turn-end `finally{…setTurnEffort(null,null)}`). Both calls are gated on
+ * `isMainThread`: the slot is main-thread state, so a subagent prompt must
+ * never write or clear it.
+ *
+ * OCC reduction: official `ql` gates on the queued-composer entries and passes
+ * `n.options.mainLoopModel`; OCC receives the submitted text and the same
+ * model, and has no appState `effortValue` at this seam (ToolUseContext's
+ * options do not carry it), so the gate resolves the current effort from the
+ * model default — see `resolveAppliedEffort`'s floor semantics.
+ */
+function getUltrathinkEffortAttachment(
+  input: string | null,
+  model: string,
+  isMainThread: boolean,
+): Attachment[] {
   if (!isUltrathinkEnabled() || !input || !hasUltrathinkKeyword(input)) {
+    if (isMainThread) {
+      applyUltrathinkTurnEffortBoost(input ?? '', model, undefined)
+    }
     return []
   }
+  const boosted = isMainThread
+    ? applyUltrathinkTurnEffortBoost(input, model, undefined)
+    : false
   logEvent('tengu_ultrathink', {})
-  return [{ type: 'ultrathink_effort', level: 'high' }]
+  return [{ type: 'ultrathink_effort', level: boosted ? 'xhigh' : 'high' }]
 }
 
 // Exported for compact.ts — the gate must be identical at both call sites.

@@ -253,6 +253,7 @@ import { useAwaySummary } from 'src/hooks/useAwaySummary.js';
 import { useChromeExtensionNotification } from 'src/hooks/useChromeExtensionNotification.js';
 import { useOfficialMarketplaceNotification } from 'src/hooks/useOfficialMarketplaceNotification.js';
 import { usePromptsFromClaudeInChrome } from 'src/hooks/usePromptsFromClaudeInChrome.js';
+import { absorbExplanationRequests } from 'src/services/tips/explanationRequests.js';
 import { getTipToShowOnSpinner, recordShownTip } from 'src/services/tips/tipScheduler.js';
 import type { Theme } from 'src/utils/theme.js';
 import { checkAndDisableBypassPermissionsIfNeeded, checkAndDisableAutoModeIfNeeded, useKickOffCheckAndDisableBypassPermissionsIfNeeded, useKickOffCheckAndDisableAutoModeIfNeeded } from 'src/utils/permissions/bypassPermissionsKillswitch.js';
@@ -1662,7 +1663,11 @@ export function REPL({
     void getTipToShowOnSpinner({
       theme,
       readFileState: readFileState.current,
-      bashTools: bashTools.current
+      bashTools: bashTools.current,
+      // 2.1.311 #2: official `_absorbNewSessionSignals()` scans the transcript
+      // incrementally and exposes `_explanationRequestIds.size` on the tip
+      // context, which gates the `explanatory-output-style` tip at >= 2.
+      explanationRequestCount: absorbExplanationRequests(messagesRef.current)
     }).then(async tip => {
       if (tip) {
         const content = await tip.content({
@@ -5352,7 +5357,16 @@ export function REPL({
                 fileHistory: updater(prev.fileHistory)
               }));
             }, message.uuid);
-          }} onSummarize={async (message: UserMessage, feedback?: string, direction: PartialCompactDirection = 'from') => {
+          }} onSummarize={
+            // CC 2.1.311 item 35 (official v311 @274792948, byte-verified):
+            // `onSummarize: x.runsNoModelTurn || Le(process.env.DISABLE_COMPACT) ? void 0 : x.handleSummarize`
+            // — when DISABLE_COMPACT is env-truthy the rewind menu must not
+            // offer "Summarize from here"/"Summarize up to here". `Le` is the
+            // official env-truthy parser (@238646027); isEnvTruthy is OCC's
+            // byte-equivalent. `runsNoModelTurn` has no OCC analogue (OCC's
+            // turn/controller model differs) — only the DISABLE_COMPACT half
+            // of the guard is portable; read at render time like the official.
+            isEnvTruthy(process.env.DISABLE_COMPACT) ? undefined : async (message: UserMessage, feedback?: string, direction: PartialCompactDirection = 'from') => {
             // Project snipped messages so the compact model
             // doesn't summarize content that was intentionally removed.
             const compactMessages = getMessagesAfterCompactBoundary(messages);

@@ -13,7 +13,9 @@ import type { ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { getCwd } from '../../utils/cwd.js';
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
-import { type DetectedIDEInfo, detectIDEs, detectRunningIDEs, type IdeType, isJetBrainsIde, isSupportedJetBrainsTerminal, isSupportedTerminal, toIDEDisplayName } from '../../utils/ide.js';
+import { type DetectedIDEInfo, detectIDEs, detectRunningIDEs, formatIdeInstallPendingMessage, formatIdeInstallResultMessage, formatIdeInstallStillInstallingMessage, formatJetBrainsPluginNotRunningMessage, type IDEExtensionInstallationStatus, type IdeType, isJetBrainsIde, isSupportedJetBrainsTerminal, isSupportedTerminal, maybeInstallIDEExtension, toIDEDisplayName } from '../../utils/ide.js';
+import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
+import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { getCurrentWorktreeSession } from '../../utils/worktree.js';
 type IDEScreenProps = {
   availableIDEs: DetectedIDEInfo[];
@@ -377,7 +379,7 @@ function RunningIDESelector(t0) {
   }
   let t6;
   if ($[12] !== handleCancel || $[13] !== t5) {
-    t6 = <Dialog title="Select IDE to install extension" onCancel={handleCancel} color="ide">{t5}</Dialog>;
+    t6 = <Dialog title="Select IDE to set up Claude Code" onCancel={handleCancel} color="ide">{t5}</Dialog>;
     $[12] = handleCancel;
     $[13] = t5;
     $[14] = t6;
@@ -415,6 +417,102 @@ function InstallOnMount(t0) {
   }
   useEffect(t1, t2);
   return null;
+}
+
+/**
+ * v311 WP-H: awaited VS Code-family install with a cancellable pending UI.
+ * Mirrors official v311 `We` @284842600 (byte-verified): the install promise
+ * is awaited, the fulfilled handler no-ops after unmount (`let h=true; …;
+ * return ()=>{h=false}`), and the result is mapped to the exact official
+ * message by formatIdeInstallResultMessage. The pending UI mirrors official
+ * `SK` @274777047: dim Text + `(esc to stop waiting)` hint, bound to
+ * `confirm:no` (context "Settings") and `app:interrupt`; cancelling emits the
+ * still-installing system message and leaves the install running.
+ */
+type InstallExtensionPendingProps = {
+  ide: IdeType;
+  installExtension: (ide: IdeType) => Promise<IDEExtensionInstallationStatus | null>;
+  onDone: (result?: string, options?: {
+    display?: CommandResultDisplay;
+  }) => void;
+};
+function InstallExtensionPending({
+  ide,
+  installExtension,
+  onDone
+}: InstallExtensionPendingProps): React.ReactNode {
+  const displayName = toIDEDisplayName(ide);
+  useEffect(() => {
+    let h = true;
+    void installExtension(ide).then(result => {
+      if (!h) {
+        return;
+      }
+      onDone(formatIdeInstallResultMessage(result, displayName, {
+        bold: chalk.bold,
+        workspaceIsRemote: false
+      }));
+    });
+    return () => {
+      h = false;
+    };
+  }, [ide, displayName, installExtension, onDone]);
+  const handleCancel = useCallback(() => {
+    onDone(formatIdeInstallStillInstallingMessage(displayName), {
+      display: 'system'
+    });
+  }, [onDone, displayName]);
+  useKeybinding('confirm:no', handleCancel, {
+    context: 'Settings'
+  });
+  useKeybinding('app:interrupt', handleCancel);
+  return <Text dimColor={true}>
+      {formatIdeInstallPendingMessage(displayName)}{' '}
+      <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="esc" description="stop waiting" parens={true} />
+    </Text>;
+}
+
+/**
+ * v311 WP-H: /ide install flow orchestrator. Mirrors official v311 `gn`
+ * @284843700 (byte-verified): JetBrains IDEs cannot be auto-installed — fire
+ * the REPL-side callback for its side effects, then report the plugin as not
+ * running; VS Code-family IDEs go through the awaited pending flow (selector
+ * pick or auto-install when exactly one IDE is running).
+ */
+type IDEInstallFlowProps = {
+  runningIDEs: IdeType[];
+  installExtension: (ide: IdeType) => Promise<IDEExtensionInstallationStatus | null>;
+  onInstallIDEExtension?: (ide: IdeType) => void;
+  onDone: (result?: string, options?: {
+    display?: CommandResultDisplay;
+  }) => void;
+};
+function IDEInstallFlow({
+  runningIDEs,
+  installExtension,
+  onInstallIDEExtension,
+  onDone
+}: IDEInstallFlowProps): React.ReactNode {
+  const [pendingIde, setPendingIde] = useState<IdeType | null>(null);
+  const handleInstall = useCallback((ide: IdeType) => {
+    if (isJetBrainsIde(ide)) {
+      onInstallIDEExtension?.(ide);
+      onDone(formatJetBrainsPluginNotRunningMessage(toIDEDisplayName(ide), chalk.bold));
+      return;
+    }
+    setPendingIde(ide);
+  }, [onInstallIDEExtension, onDone]);
+  if (pendingIde) {
+    return <InstallExtensionPending ide={pendingIde} installExtension={installExtension} onDone={onDone} />;
+  }
+  if (runningIDEs.length === 1) {
+    return <InstallOnMount ide={runningIDEs[0]!} onInstall={handleInstall} />;
+  }
+  return <RunningIDESelector runningIDEs={runningIDEs} onSelectIDE={handleInstall} onDone={() => {
+    onDone('No IDE selected.', {
+      display: 'system'
+    });
+  }} />;
 }
 export async function call(onDone: (result?: string, options?: {
   display?: CommandResultDisplay;
@@ -475,26 +573,14 @@ export async function call(onDone: (result?: string, options?: {
   // If no IDEs with extensions detected, check for running IDEs and offer to install
   if (detectedIDEs.length === 0 && context.onInstallIDEExtension && !isSupportedTerminal()) {
     const runningIDEs = await detectRunningIDEs();
-    const onInstall = (ide: IdeType) => {
-      if (context.onInstallIDEExtension) {
-        context.onInstallIDEExtension(ide);
-        // The completion message will be shown after installation
-        if (isJetBrainsIde(ide)) {
-          onDone(`Installed plugin to ${chalk.bold(toIDEDisplayName(ide))}\n` + `Please ${chalk.bold('restart your IDE')} completely for it to take effect`);
-        } else {
-          onDone(`Installed extension to ${chalk.bold(toIDEDisplayName(ide))}`);
-        }
-      }
-    };
-    if (runningIDEs.length > 1) {
-      // Show selector when multiple IDEs are running
-      return <RunningIDESelector runningIDEs={runningIDEs} onSelectIDE={onInstall} onDone={() => {
-        onDone('No IDE selected.', {
-          display: 'system'
-        });
-      }} />;
-    } else if (runningIDEs.length === 1) {
-      return <InstallOnMount ide={runningIDEs[0]!} onInstall={onInstall} />;
+    if (runningIDEs.length > 0) {
+      // Official v311 `_t` @284844700: a single flow component owns the
+      // selector / auto-install / pending UI. The install itself is awaited
+      // directly here (maybeInstallIDEExtension) instead of being delegated to
+      // the void context callback — calling context.onInstallIDEExtension for
+      // a VS Code-family IDE would re-trigger initializeIdeIntegration and race
+      // a second concurrent install (see WP-H deviation note).
+      return <IDEInstallFlow runningIDEs={runningIDEs} installExtension={ide => maybeInstallIDEExtension(ide)} onInstallIDEExtension={context.onInstallIDEExtension} onDone={onDone} />;
     }
   }
   const availableIDEs = detectedIDEs.filter(ide => ide.isValid);

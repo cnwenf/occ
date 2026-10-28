@@ -94,6 +94,7 @@ import { setCwd } from './utils/Shell.js'
 import {
   flushSessionStorage,
   recordTranscript,
+  removeTranscriptMessage,
 } from './utils/sessionStorage.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { resolveThemeSetting } from './utils/systemTheme.js'
@@ -1121,9 +1122,27 @@ export class QueryEngine {
       }
 
       switch (message.type) {
-        case 'tombstone':
-          // Tombstone messages are control signals for removing messages, skip them
+        case 'tombstone': {
+          // CC 2.1.311 (#9 @277223400): the print path must retract the
+          // tombstoned message from the persisted transcript, mirroring
+          // REPL.tsx:2888-2889. Official `Ze(Ct)` emits
+          // `tengu_tombstone_persisted_removal {message_type}` then routes the
+          // removal through the serialized writer `rFr` = `inCallOrder(...)`.
+          // Tombstone shape is `{ type: 'tombstone', message }` (query.ts:921).
+          const tombstoned = message.message as unknown as Message
+          const retractedUuid = tombstoned?.uuid
+          if (retractedUuid === undefined) {
+            break
+          }
+          logEvent('tengu_tombstone_persisted_removal', {
+            message_type:
+              tombstoned.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+          void removeTranscriptMessage(retractedUuid).catch(error => {
+            logError(error)
+          })
           break
+        }
         case 'assistant': {
           // Capture stop_reason if already set (synthetic messages). For
           // streamed responses, this is null at content_block_stop time;

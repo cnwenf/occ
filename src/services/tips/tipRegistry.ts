@@ -1,12 +1,15 @@
 import chalk from 'chalk'
 import { CLI_BINARY_NAME } from '../../constants/cli.js'
+import { getOutputStyleConfig } from '../../constants/outputStyles.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { fileHistoryEnabled } from 'src/utils/fileHistory.js'
+import { isSettingSourceEnabled } from 'src/utils/settings/constants.js'
 import {
   getInitialSettings,
   getSettings_DEPRECATED,
   getSettingsForSource,
 } from 'src/utils/settings/settings.js'
+import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { shouldOfferTerminalSetup } from '../../commands/terminalSetup/terminalSetup.js'
 import {
   isFocusViewEnabled,
@@ -99,6 +102,72 @@ async function isMarketplacePluginRelevant(
     }
   }
   return false
+}
+
+/**
+ * claude-code 2.1.311 triage-T1 item 2 — the Explanatory output-style tip.
+ *
+ * Official v311 registration (byte-verified @278472840):
+ *   `{id:"explanatory-output-style",priority:1,providerAgnostic:!0,
+ *      content:async()=>R$n,cooldownSessions:15,maxLifetimeShows:3,
+ *      advertisedCommand:"config",
+ *      isRelevant:async(e)=>(e.explanationRequestCount??0)>=J&&!Rt()
+ *        &&Jt("localSettings")&&pe("flagSettings")?.outputStyle===void 0
+ *        &&pe("policySettings")?.outputStyle===void 0&&await ayt()===null}`
+ *
+ * Official content template (byte-verified @266639745; the shipped constant is
+ * this template evaluated — hex-compared byte-identical to it, 67 chars /
+ * 68 bytes, middle dot `charCodeAt(34) === 0xB7`):
+ *   ``R$n=`${"Want Claude to teach as it works?"} \xB7 /${"config"} outputStyle=explanatory`;``
+ *
+ * Official threshold (byte-verified @278455253): `var J=2`.
+ *
+ * Gate mapping: `Rt()` → getIsRemoteMode(); `Jt("localSettings")` →
+ * isSettingSourceEnabled('localSettings') — /config writes the style to
+ * localSettings, so a disabled source means the advertised command could not
+ * apply it; `pe(src)` → getSettingsForSource(src); `ayt()` →
+ * getOutputStyleConfig() (null ⇔ no style active, plugin-forced, or set).
+ *
+ * `maxLifetimeShows` maps to OCC's `maxImpressions` — the same lifetime-cap
+ * field tipHistory persists and getRelevantTips enforces via
+ * isTipLifetimeCapped. `priority` / `providerAgnostic` / `advertisedCommand`
+ * are carried for byte-parity; OCC's scheduler does not consume them yet.
+ */
+export const EXPLANATORY_OUTPUT_STYLE_TIP_ID = 'explanatory-output-style'
+
+export const EXPLANATORY_OUTPUT_STYLE_TIP_CONTENT =
+  'Want Claude to teach as it works? · /config outputStyle=explanatory'
+
+/** Official `var J=2` (v311 @278455253). */
+const EXPLANATION_REQUEST_THRESHOLD = 2
+
+export const explanatoryOutputStyleTip: Tip = {
+  id: EXPLANATORY_OUTPUT_STYLE_TIP_ID,
+  priority: 1,
+  providerAgnostic: true,
+  content: async () => EXPLANATORY_OUTPUT_STYLE_TIP_CONTENT,
+  cooldownSessions: 15,
+  maxImpressions: 3,
+  advertisedCommand: 'config',
+  isRelevant: async (context?: TipContext) => {
+    const count = context?.explanationRequestCount ?? 0
+    if (count < EXPLANATION_REQUEST_THRESHOLD) {
+      return false
+    }
+    if (getIsRemoteMode()) {
+      return false
+    }
+    if (!isSettingSourceEnabled('localSettings')) {
+      return false
+    }
+    if (getSettingsForSource('flagSettings')?.outputStyle !== undefined) {
+      return false
+    }
+    if (getSettingsForSource('policySettings')?.outputStyle !== undefined) {
+      return false
+    }
+    return (await getOutputStyleConfig()) === null
+  },
 }
 
 const externalTips: Tip[] = [
@@ -664,6 +733,10 @@ const externalTips: Tip[] = [
       getSettings_DEPRECATED().viewMode === undefined &&
       !isFocusViewEnabled(),
   },
+  // 2.1.311 #2: appended last — OCC's selectTipWithLongestTimeSinceShown picks
+  // by cooldown history, so array position (official slots this tip before
+  // `console-api-key`) carries no scheduling weight here.
+  explanatoryOutputStyleTip,
 ]
 const internalOnlyTips: Tip[] =
   process.env.USER_TYPE === 'ant'

@@ -54,6 +54,95 @@ function allPastedImagePathsAbsolute(imagePaths: readonly string[]): boolean {
   )
 }
 
+/**
+ * CC 2.1.311 (ITEM 31) paste image-path extraction. The five regexes below
+ * are byte-identical to the official binary (@259374500 in the 2.1.311
+ * linux-x64 ELF):
+ *
+ *   Mr=/ (?=["']?(?:\/|[A-Za-z]:\\))/
+ *   Wr=/^(?:\/(?!\/)[^ \r\\/]*(?:\\.[^ \r\\/]*)*\/|[A-Za-z]:\\|\\\\)[^\r]*$/
+ *   Ir=/^(["'])(?:\/[^/\r]+\/|[A-Za-z]:\\|\\\\)[^\r]*\1$/
+ *   Dr=/[^\\] /
+ *   Yt=/\/TemporaryItems\/.*screencaptureui.*\/Screenshot/i
+ */
+const PATH_TOKEN_SPLIT = / (?=["']?(?:\/|[A-Za-z]:\\))/
+const ABSOLUTE_PATH_SHAPE =
+  /^(?:\/(?!\/)[^ \r\\/]*(?:\\.[^ \r\\/]*)*\/|[A-Za-z]:\\|\\\\)[^\r]*$/
+const QUOTED_PATH_SHAPE = /^(["'])(?:\/[^/\r]+\/|[A-Za-z]:\\|\\\\)[^\r]*\1$/
+const UNESCAPED_SPACE = /[^\\] /
+const TEMP_SCREENSHOT = /\/TemporaryItems\/.*screencaptureui.*\/Screenshot/i
+
+/**
+ * Official `ie` entry: a raw text fragment (string) or an index into the
+ * image-path list (number). The results handler walks this list to rebuild
+ * the leftover text (`Te` @259376890) after failed/refused reads.
+ */
+type PastePart = string | number
+
+type PastedImageExtraction = {
+  imagePaths: string[]
+  parts: PastePart[]
+}
+
+/**
+ * Official per-token qualification, verbatim predicate
+ * `Ir.test(re)||Wr.test(re)&&(!Dr.test(re)||BEo(re))` with `re=N.trim()`:
+ * a token counts as a path when it is a quoted absolute path, or an absolute
+ * path shape that either has no unescaped interior space or IS an image file
+ * path (the shell-escaped `My\ File.png` case).
+ */
+function tokenQualifiesAsPath(token: string): boolean {
+  const trimmed = token.trim()
+  return (
+    QUOTED_PATH_SHAPE.test(trimmed) ||
+    (ABSOLUTE_PATH_SHAPE.test(trimmed) &&
+      (!UNESCAPED_SPACE.test(trimmed) || isImageFilePath(trimmed)))
+  )
+}
+
+/**
+ * Official v311 `M()` (byte-verified @259374500): per-LINE extraction.
+ *
+ * ```js
+ * for(let I of J.split("\n")){
+ *   let V=I.split(Mr).filter((N)=>N.trim());
+ *   if(V.length>1 && !V.every((N)=>{let re=N.trim();
+ *      return Ir.test(re)||Wr.test(re)&&(!Dr.test(re)||BEo(re))})){
+ *     ie.push(I); continue }
+ *   for(let N of V)
+ *     if(BEo(N)) ie.push(q.length), q.push(N);
+ *     else ie.push(N)
+ * }
+ * ```
+ *
+ * A line is split into candidate path tokens on spaces preceding a path
+ * start. When a line yields multiple tokens, EVERY token must qualify as a
+ * path shape — otherwise the whole RAW line stays text. This replaces the
+ * v310 flatten-split, which attached images from lines like
+ * `/review look at /tmp/shot.png`. Single-token lines skip qualification.
+ * Raw tokens/lines are stored verbatim; whitespace-only lines vanish.
+ */
+function extractPastedImagePaths(pastedText: string): PastedImageExtraction {
+  const imagePaths: string[] = []
+  const parts: PastePart[] = []
+  for (const line of pastedText.split('\n')) {
+    const tokens = line.split(PATH_TOKEN_SPLIT).filter(token => token.trim())
+    if (tokens.length > 1 && !tokens.every(tokenQualifiesAsPath)) {
+      parts.push(line)
+      continue
+    }
+    for (const token of tokens) {
+      if (isImageFilePath(token)) {
+        parts.push(imagePaths.length)
+        imagePaths.push(token)
+      } else {
+        parts.push(token)
+      }
+    }
+  }
+  return { imagePaths, parts }
+}
+
 type PasteHandlerProps = {
   onPaste?: (text: string) => void
   onInput: (input: string, key: Key) => void
@@ -208,25 +297,21 @@ export function usePasteHandler({
               .replace(/\[I$/, '')
               .replace(/\[O$/, '')
 
-            // Check if the pasted text contains image file paths
-            // When dragging multiple images, they may come as:
-            // 1. Newline-separated paths (common in some terminals)
-            // 2. Space-separated paths (common when dragging from Finder)
-            // For space-separated paths, we split on spaces that precede absolute paths:
-            // - Unix: space followed by `/` (e.g., `/Users/...`)
-            // - Windows: space followed by drive letter and `:\` (e.g., `C:\Users\...`)
-            // This works because spaces within paths are escaped (e.g., `file\ name.png`)
-            const lines = pastedText
-              .split(/ (?=\/|[A-Za-z]:\\)/)
-              .flatMap(part => part.split('\n'))
-              .filter(line => line.trim())
-            const imagePaths = lines.filter(line => isImageFilePath(line))
+            // CC 2.1.311 (ITEM 31): per-line image-path extraction (official
+            // `M()`). When dragging multiple images, they may come as
+            // newline-separated or space-separated paths; a line only yields
+            // image attachments when EVERY token on it is a path shape —
+            // otherwise the whole raw line stays text. Spaces within paths
+            // are escaped (e.g., `file\ name.png`), so splitting on spaces
+            // preceding a path start is safe.
+            const { imagePaths, parts } = extractPastedImagePaths(pastedText)
 
             if (onImagePaste && imagePaths.length > 0) {
-              const isTempScreenshot =
-                /\/TemporaryItems\/.*screencaptureui.*\/Screenshot/i.test(
-                  pastedText,
-                )
+              // Official `I`: the temp-screenshot check runs over the
+              // extracted image PATHS, not the whole pasted text.
+              const isTempScreenshot = imagePaths.some(imagePath =>
+                TEMP_SCREENSHOT.test(imagePath),
+              )
 
               // Process all image paths
               void Promise.all(
@@ -238,15 +323,48 @@ export function usePasteHandler({
                   if (!isMountedRef.current) {
                     return
                   }
-                  // Official: `we=me.includes("refused")` — a denial withholds
+                  // Official: `re=me.includes("refused")` — a denial withholds
                   // THAT image, disables the clipboard fallback for the whole
                   // gesture and reports `read_withheld` instead of
                   // `read_failed` when nothing survived.
                   const anyRefused = results.includes('refused')
+                  // Official `be`: every cleaned image path is absolute.
+                  const allAbsolute = allPastedImagePathsAbsolute(imagePaths)
                   const validImages = results.filter(
                     (r): r is ImageWithDimensions & { path: string } =>
                       r !== null && r !== 'refused',
                   )
+                  // Official `ke=pe.length===0&&I&&F&&!re&&be`: the clipboard
+                  // fallback gate — no image survived, the gesture looks like
+                  // a macOS temp-screenshot drag, nothing was refused, and
+                  // every path was absolute.
+                  const tempScreenshotFallback =
+                    validImages.length === 0 &&
+                    isTempScreenshot &&
+                    isMacOS &&
+                    !anyRefused &&
+                    allAbsolute
+                  // Official `Te`: rebuild the leftover text from the parts
+                  // list. Failed or refused image reads are re-emitted as raw
+                  // text — EXCEPT temp-screenshot paths in the clipboard-
+                  // fallback case (those are consumed by the clipboard read).
+                  const leftoverText = parts
+                    .flatMap(part => {
+                      if (typeof part === 'string') {
+                        return [part]
+                      }
+                      const imagePath = imagePaths[part] ?? ''
+                      const readFailed =
+                        results[part] === null || results[part] === 'refused'
+                      return readFailed &&
+                        !(
+                          tempScreenshotFallback &&
+                          TEMP_SCREENSHOT.test(imagePath)
+                        )
+                        ? [imagePath]
+                        : []
+                    })
+                    .join('\n')
 
                   if (validImages.length > 0) {
                     // Successfully read at least one image
@@ -260,26 +378,25 @@ export function usePasteHandler({
                         imageData.path,
                       )
                     }
-                    // If some paths weren't images, paste them as text
-                    const nonImageLines = lines.filter(
-                      line => !isImageFilePath(line),
-                    )
-                    if (nonImageLines.length > 0 && onPaste) {
-                      onPaste(nonImageLines.join('\n'))
+                    // Official `if(Te)H(Te)`: paste the leftover text (raw
+                    // non-image parts plus failed/refused reads).
+                    if (leftoverText && onPaste) {
+                      onPaste(leftoverText)
                     }
                     setIsPasting(false)
-                  } else if (
-                    isTempScreenshot &&
-                    isMacOS &&
-                    !anyRefused &&
-                    allPastedImagePathsAbsolute(imagePaths)
-                  ) {
-                    // For temporary screenshot files that no longer exist, try clipboard
+                  } else if (tempScreenshotFallback) {
+                    // For temporary screenshot files that no longer exist,
+                    // paste any non-screenshot leftover, then try clipboard.
+                    if (leftoverText && onPaste) {
+                      onPaste(leftoverText)
+                    }
                     checkClipboardForImage()
                   } else {
                     logImageDragFailure(
                       anyRefused ? 'read_withheld' : 'read_failed',
                     )
+                    // Official `H(J)`: the FULL cleaned text on total failure,
+                    // not the reconstruction.
                     if (onPaste) {
                       onPaste(pastedText)
                     }
@@ -371,14 +488,14 @@ export function usePasteHandler({
     // more in the next frame that belong with the original paste.
     // This batching number is not consistent.
 
-    // Handle potential image filenames (even if they're shorter than paste threshold)
-    // When dragging multiple images, they may come as newline-separated or
-    // space-separated paths. Split on spaces preceding absolute paths:
-    // - Unix: ` /` - Windows: ` C:\` etc.
-    const hasImageFilePath = input
-      .split(/ (?=\/|[A-Za-z]:\\)/)
-      .flatMap(part => part.split('\n'))
-      .some(line => isImageFilePath(line.trim()))
+    // Handle potential image filenames (even if they're shorter than paste
+    // threshold). CC 2.1.311 (ITEM 31): route through the same per-line
+    // extraction the paste timer uses, so a path-looking token embedded in
+    // prose no longer drags the input into the image-paste machinery.
+    // (OCC-specific pre-check — official ge() has no equivalent; kept for
+    // the drag-drop-without-bracketed-paste case.)
+    const hasImageFilePath =
+      extractPastedImagePaths(input).imagePaths.length > 0
 
     // Handle empty paste (clipboard image on macOS, or OSC 52 read under SSH)
     // When the user pastes an image with Cmd+V, the terminal sends an empty

@@ -1,4 +1,4 @@
-type TriggerPosition = { word: string; start: number; end: number }
+export type TriggerPosition = { word: string; start: number; end: number }
 
 const OPEN_TO_CLOSE: Record<string, string> = {
   '`': '`',
@@ -42,8 +42,17 @@ const OPEN_TO_CLOSE: Record<string, string> = {
  *
  * Shape matches findThinkingTriggerPositions (thinking.ts) so
  * PromptInput treats both trigger types uniformly.
+ *
+ * 2.1.311 (triage-T4-sweep item 66): exported so `findThinkingTriggerPositions`
+ * can delegate here. Official has exactly ONE position-filtering routine —
+ * `da(e,n)` (v311 @246986898) — shared by every keyword launch detector
+ * (`eu` ultraplan @246987676, `VFo` ultrareview @246987716,
+ * `Nce` ultrathink @246987759, `ybt` ultracode @246987801), so the
+ * "ultrathink" scanner gained the same quote/path filtering in v311 that
+ * ultraplan already had. Sharing the port matches that structure instead of
+ * duplicating ~50 lines.
  */
-function findKeywordTriggerPositions(
+export function findKeywordTriggerPositions(
   text: string,
   keyword: string,
 ): TriggerPosition[] {

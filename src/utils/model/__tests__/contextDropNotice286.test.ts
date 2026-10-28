@@ -295,6 +295,9 @@ describe('2.1.286 item-C — composeThrashingMessage (ds)', () => {
     })
   })
 
+  // 2.1.311 (WP-X): the official thrashing-notice builder `os()` @242272893
+  // resolves names via `lT` — native-1M opus-5's `[1m]` variant now renders
+  // as plain "Opus 5" (no "(1M context)" label).
   test('1M→200K shrink WITH suggestion → the full official text', () => {
     const record = createFallbackRecord(
       'claude-opus-5[1m]',
@@ -306,7 +309,7 @@ describe('2.1.286 item-C — composeThrashingMessage (ds)', () => {
       composeThrashingMessage({ fallback: record, mainLoopModel: 'claude-sonnet-5' }),
     ).toEqual({
       content:
-        'Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. The likely cause: while working on this response, Claude Code fell back from Opus 5 (1M context) to Sonnet 5 and runs that model with a 200K-token context window on your provider, instead of 1M. Your next message tries Opus 5 (1M context) first. To keep 1M, use claude-sonnet-5[1m] for this entry in your fallback model list.',
+        'Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. The likely cause: while working on this response, Claude Code fell back from Opus 5 to Sonnet 5 and runs that model with a 200K-token context window on your provider, instead of 1M. Your next message tries Opus 5 first. To keep 1M, use claude-sonnet-5[1m] for this entry in your fallback model list.',
       afterShrinkingFallback: true,
     })
   })
@@ -322,7 +325,7 @@ describe('2.1.286 item-C — composeThrashingMessage (ds)', () => {
       composeThrashingMessage({ fallback: record, mainLoopModel: 'claude-sonnet-5' }),
     ).toEqual({
       content:
-        'Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. The likely cause: while working on this response, Claude Code fell back from Opus 5 (1M context) to Sonnet 5 and runs that model with a 200K-token context window on your provider, instead of 1M. Your next message tries Opus 5 (1M context) first. To avoid this, use a fallback model with a 1M context window, or use /clear to start fresh.',
+        'Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. The likely cause: while working on this response, Claude Code fell back from Opus 5 to Sonnet 5 and runs that model with a 200K-token context window on your provider, instead of 1M. Your next message tries Opus 5 first. To avoid this, use a fallback model with a 1M context window, or use /clear to start fresh.',
       afterShrinkingFallback: true,
     })
   })

@@ -104,6 +104,7 @@ import {
   isPlainObjectValue,
 } from './transcriptAdmission.js'
 import { validateUuid } from './uuid.js'
+import { withResolvers } from './withResolvers.js'
 
 // Cache MACRO.VERSION at module level to work around bun --define bug in async contexts
 // See: https://github.com/oven-sh/bun/issues/26168
@@ -647,6 +648,18 @@ export function setSessionFileForTesting(path: string): void {
 }
 
 /**
+ * @internal Test-only: snapshot the current shared Project instance so a test
+ * can hold the reference across await points without a concurrent test file's
+ * `resetProjectForTesting()` nulling the shared singleton mid-flight. The
+ * returned Project's public methods (`appendEntry`, `removeMessageByUuid`,
+ * `flush`) operate on this stable instance, so a concurrent reset cannot
+ * redirect them onto a fresh Project whose `sessionFile === null`.
+ */
+export function getProjectInstanceForTesting(): Project {
+  return getProject()
+}
+
+/**
  * 2.1.217 #2 — Test-only entry point to call the private `appendEntry`
  * method without going through the full message-insertion pipeline.
  * Used by transcriptWriteWarnings.test.ts to trigger drain-queue writes
@@ -755,6 +768,10 @@ class Project {
   >()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private activeDrain: Promise<void> | null = null
+  // CC 2.1.311 (#9 @248834517): tail of the in-call-order write chain. A
+  // removal routed through `inCallOrder` awaits this before touching the file,
+  // so it can never read/splice ahead of an append enqueued before it.
+  private lastWriteInCallOrder: Promise<void> | undefined
   private FLUSH_INTERVAL_MS = 100
   private readonly MAX_CHUNK_BYTES = 100 * 1024 * 1024
 
@@ -767,6 +784,7 @@ class Project {
     if (this.flushTimer) clearTimeout(this.flushTimer)
     this.flushTimer = null
     this.activeDrain = null
+    this.lastWriteInCallOrder = undefined
     this.writeQueues = new Map()
   }
 
@@ -792,6 +810,55 @@ class Project {
     } finally {
       this.decrementPendingWrites()
     }
+  }
+
+  /**
+   * CC 2.1.311 (#9) — serialize a write AFTER every write enqueued before it
+   * in call order. Faithful port of the official `inCallOrder` (@248834517):
+   *
+   *   inCallOrder(e){this.releaseWaitsForUploads();
+   *     let n=this.lastWriteInCallOrder,
+   *         {promise:r,resolve:s}=Promise.withResolvers();
+   *     return this.lastWriteInCallOrder=r,
+   *       this.trackWrite(async()=>{try{if(n!==void 0)await n;return await e()}
+   *         finally{if(this.lastWriteInCallOrder===r)this.lastWriteInCallOrder=void 0;s()}})}
+   *
+   * Deviation: `releaseWaitsForUploads()` is omitted — OCC has no upload-wait
+   * subsystem. `Promise.withResolvers` uses the repo polyfill (engines node
+   * >=18; native is ES2024/Node 22+).
+   */
+  private inCallOrder<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.lastWriteInCallOrder
+    const { promise, resolve } = withResolvers<void>()
+    this.lastWriteInCallOrder = promise
+    return this.trackWrite(async () => {
+      try {
+        if (previous !== undefined) await previous
+        return await fn()
+      } finally {
+        if (this.lastWriteInCallOrder === promise) {
+          this.lastWriteInCallOrder = undefined
+        }
+        resolve()
+      }
+    })
+  }
+
+  /**
+   * CC 2.1.311 (#9) — land every queued append NOW, without waiting for the
+   * lazy 100 ms timer. This is the queue-drain half of `flush()` but WITHOUT
+   * the `pendingWriteCount===0` wait: a removal is itself a tracked write via
+   * `inCallOrder`, so awaiting `flush()` from inside it would deadlock.
+   */
+  private async drainQueuedAppends(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    if (this.activeDrain) {
+      await this.activeDrain
+    }
+    await this.drainWriteQueue()
   }
 
   /**
@@ -1103,7 +1170,11 @@ class Project {
    * positional write + truncate instead of rewriting the whole file.
    */
   async removeMessageByUuid(targetUuid: UUID): Promise<void> {
-    return this.trackWrite(async () => {
+    return this.inCallOrder(async () => {
+      // CC 2.1.311 (#9): drain queued appends BEFORE the tail-splice reads the
+      // file, so a removal can never race an append enqueued ahead of it in
+      // call order (the official routes both writers through `rFr`/inCallOrder).
+      await this.drainQueuedAppends()
       if (this.sessionFile === null) return
       // CC 2.1.291 regression fix #2: official 291 DELETED the 2.1.288
       // rewrite↔load coordination barrier wholesale (byte evidence:

@@ -266,11 +266,11 @@ describe('2.1.280 #001: alias + [1m] suffix parsing', () => {
 })
 
 describe('2.1.280 #001: display + marketing names', () => {
-  test("getPublicModelDisplayName: 'Opus 5.5' / 'Opus 5.5 (1M context)'", () => {
+  // 2.1.311 (WP-X): opus-5-5 is native-1M — the `[1m]` variant drops the
+  // "(1M context)" label (official lT/Gk @242271504, a2 @242248082).
+  test("getPublicModelDisplayName: 'Opus 5.5' for base and '[1m]' variant (2.1.311)", () => {
     expect(getPublicModelDisplayName('claude-opus-5-5')).toBe('Opus 5.5')
-    expect(getPublicModelDisplayName('claude-opus-5-5[1m]')).toBe(
-      'Opus 5.5 (1M context)',
-    )
+    expect(getPublicModelDisplayName('claude-opus-5-5[1m]')).toBe('Opus 5.5')
   })
 
   test('getMarketingNameForModel: Opus 5.5 before Opus 5 (substring order)', () => {

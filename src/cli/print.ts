@@ -360,6 +360,7 @@ import {
 } from 'src/utils/queryProfiler.js'
 import { asSessionId } from 'src/types/ids.js'
 import { jsonStringify } from '../utils/slowOperations.js'
+import { ndjsonSafeStringify } from './ndjsonSafeStringify.js'
 import { skillChangeDetector } from '../utils/skills/skillChangeDetector.js'
 import { getCommands, clearCommandsCache } from '../commands.js'
 import {
@@ -1129,11 +1130,19 @@ export async function runHeadless(
       if (!lastMessage || lastMessage.type !== 'result') {
         throw new Error('No messages returned')
       }
+      // CC 2.1.311 WP-W (gap item 68): official routes BOTH json emitters
+      // through the escaper `Pfo` (v311 @277422300:
+      //   if(P.verbose){Wr(Pfo(As)+"\n");break} Wr(Pfo(qo)+"\n")
+      // where Pfo(r,n){if(o())return AIe(_(r,null,n));return _(r,null,n)},
+      // @273874300). Note: official's gate-OFF `Pfo` path is RAW
+      // JSON.stringify — no U+2028/U+2029 escaping at all. OCC's GrowthBook
+      // is a stub, so OCC uses the single safe-default (gate-ON) escaper
+      // `ndjsonSafeStringify` for both branches.
       if (options.verbose) {
-        writeToStdout(jsonStringify(messages) + '\n')
+        writeToStdout(ndjsonSafeStringify(messages) + '\n')
         break
       }
-      writeToStdout(jsonStringify(lastMessage) + '\n')
+      writeToStdout(ndjsonSafeStringify(lastMessage) + '\n')
       break
     case 'stream-json':
       // already logged above

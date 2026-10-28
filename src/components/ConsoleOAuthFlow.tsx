@@ -9,7 +9,7 @@ import { Box, Link, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { getSSLErrorHint } from '../services/api/errorUtils.js';
 import { sendNotification } from '../services/notifier.js';
-import { OAuthService } from '../services/oauth/index.js';
+import { OAuthService, AuthCodeRefusedError } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { logError } from '../utils/log.js';
 import { isScreenReaderEnabled } from '../utils/screenReader.js';
@@ -283,7 +283,11 @@ export function ConsoleOAuthFlow({
         const sslHint_0 = getSSLErrorHint(err_1);
         setOAuthStatus({
           state: 'error',
-          message: sslHint_0 ?? (isTokenExchangeError ? 'Failed to exchange authorization code for access token. Please try again.' : err_1.message),
+          // CC 2.1.311 (item 62): a manually-pasted code refused with
+          // invalid_grant surfaces the AuthCodeRefusedError's fixed, safe
+          // message VERBATIM (binary: `d(rt)` for GRe) — never the generic
+          // token-exchange text. No tokens/codes are interpolated.
+          message: err_1 instanceof AuthCodeRefusedError ? err_1.message : sslHint_0 ?? (isTokenExchangeError ? 'Failed to exchange authorization code for access token. Please try again.' : err_1.message),
           toRetry: mode === 'setup-token' ? {
             state: 'ready_to_start'
           } : {

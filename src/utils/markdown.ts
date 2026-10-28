@@ -46,6 +46,34 @@ const originalBlockquote = Tokenizer.prototype.blockquote
 const originalList = Tokenizer.prototype.list
 const originalEmStrong = Tokenizer.prototype.emStrong
 
+// CC 2.1.311 item 33 — official `wrappedBackslash` marked inline extension
+// (binary `Xt` @254743052, with `Kt`/`Qt`/`qt` verbatim; v310 has none). An
+// orphan `\` before a closing bracket/quote was consumed by marked's built-in
+// escape tokenizer (`\)` → `)`) so the backslash vanished; the extension
+// re-tokenizes `\` + closer into an escape token whose text is `\` + closer,
+// preserving it — but only when the preceding text token ends with the
+// matching opener (the wrapping case). The existing `case 'escape'` renderer
+// returns `token.text`, so once the tokenizer emits the escape token it
+// renders correctly with no renderer change.
+// `Kt` maps closer → opener (quotes self-map). Official @254743052:
+//   Kt={'"':'"',"'":"'",")":"(","]":"[","}":"{",">":"<"}
+const WRAPPED_BACKSLASH_CLOSER_TO_OPENER: Record<string, string> = {
+  '"': '"',
+  "'": "'",
+  ')': '(',
+  ']': '[',
+  '}': '{',
+  '>': '<',
+}
+// Real escape (`\X` followed by a letter/number/backslash/`*_`~`) — leave for
+// marked's built-in escape tokenizer. Official `Qt` @254743052:
+//   Qt=/^\\.[\p{L}\p{N}\\*_`~]/u
+const WRAPPED_BACKSLASH_REAL_ESCAPE = /^\\.[\p{L}\p{N}\\*_`~]/u
+// Preceding text ends with `<alphanumeric><any>` → the closer is part of a
+// word, not a wrapping pair. Official `qt` @254743052:
+//   qt=/[\p{L}\p{N}].$/u
+const WRAPPED_BACKSLASH_PREV_WORDY = /[\p{L}\p{N}].$/u
+
 let markedConfigured = false
 
 export function configureMarked(): void {
@@ -119,6 +147,48 @@ export function configureMarked(): void {
         return flat ? { type: 'text', ...flat } : false
       },
     },
+  })
+
+  // CC 2.1.311 item 33 — official `Xt` extension @254743052. Registered as a
+  // separate `marked.use` so only the extensions array is in play; marked
+  // merges it with the tokenizer overrides above. Tokenizer body is a
+  // faithful, de-minified port of the official `tokenizer(e,t)` — every guard
+  // and the return shape are byte-equivalent.
+  marked.use({
+    extensions: [
+      {
+        name: 'wrappedBackslash',
+        level: 'inline',
+        tokenizer(src: string, tokens: Token[]) {
+          const next = src[1]
+          if (src[0] !== '\\' || next === undefined || this.lexer.state.inLink) {
+            return undefined
+          }
+          const opener = WRAPPED_BACKSLASH_CLOSER_TO_OPENER[next]
+          const last = tokens.at(-1)
+          if (
+            opener === undefined ||
+            last?.type !== 'text' ||
+            !last.raw.endsWith(opener) ||
+            WRAPPED_BACKSLASH_PREV_WORDY.test(last.raw) ||
+            WRAPPED_BACKSLASH_REAL_ESCAPE.test(src)
+          ) {
+            return undefined
+          }
+          const before = tokens.at(-2)
+          if (
+            last.raw === opener &&
+            before !== undefined &&
+            before.type !== 'br' &&
+            !(before.type === 'escape' && before.text === before.raw)
+          ) {
+            return undefined
+          }
+          const raw = `\\${next}`
+          return { type: 'escape', raw, text: raw } as Token
+        },
+      },
+    ],
   })
 }
 
