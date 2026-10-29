@@ -2,6 +2,13 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.407 - 2026-10-30 (OCC-137 — 无版本差距自验收轮 + 验收打回修复：三方核验官方 latest 2.1.312 == OCC 追踪 2.1.312（npm dist-tags + GitHub tags + ELF 重下载），按"版本追齐后的自验收"分支执行严格自验收；tmux 真机 REPL 3 个真实编码任务（Write+Bash fib → 55、多步 type hints+pytest 2 pass、21×2=42）+ Shift+Tab 模式循环 + `/status` 面板 + headless `-p` 真模型 PONG 全绿；`--help` 全 flag 面与 `mcp`/`mcp add` 子命令帮助对官方 2.1.312 逐 token 核对；发现并修复 3 处 gap（Gap-137a/b/c，PR #561 + #562 均经验收员全量复验通过：官方二进制判别用例实锤 + 双运输输出字节级 A/B 一致 + code review 0C/0H/0M APPROVED）；台账 `docs/upstream-version-gap-occ137-2026-10.md`)
+
+- 安全修复：`mcp add` 确认输出敏感 header 脱敏（Gap-137b，HIGH）——官方 2.1.312 `uxn`/`pt`/`O6e`/`Nlt`/`lBe`/`tto` 逐字节移植（`src/services/mcp/headerRedaction.ts`）：按敏感 header **名字**脱敏（大小写不敏感、非锚定子串匹配、零宽字符/软连字符绕过加固），sse/http 两处确认打印显示 `[REDACTED]`；**display-only** —— `.claude.json` 配置仍按官方行为存明文；`Authorization: Bearer …` 等秘密不再泄露到 stdout/终端历史/CI 日志；单测 10 例（56 断言，含 `pt` 全分支、bare-key 反例、不可见字符绕过 ×5、不可变 + null 原型）+ 行为 e2e 2 例（23 断言，http+sse 构建产物 + 隔离临时 HOME，断言 stdout 绝不含秘密值）；MCP 套件回归 627 pass / 0 fail / 1989 expect
+- MCP 帮助文本 transport 对齐官方 2.1.312（Gap-137a，字节级）：`mcp add-json` 描述 `(stdio or SSE)` → `(stdio, SSE, HTTP, or WebSocket)`（OCC 实际支持四种 transport，旧文案低报能力）；`mcp add -H/--header` 描述 `Set WebSocket headers` → `Set headers for HTTP/SSE servers`（旧文案错误）；occ108 §5 起结转的遗留项闭环；行为 e2e `mcp-help-transport-312` 2 例
+- 文档：`docs/en/cli-reference.md` add-json 注释 `(stdio or SSE)` → transport-neutral 的 `add a server from a JSON string`（Gap-137c，与 zh 版「从 JSON 添加」一致）
+- STAGED（台账 §8.3，字节取证在案、未夹带实现）：`--callback-port` 整数校验、`Added …` 行 `eS`/`Bn` URL 脱敏（凭据 URL → `[redacted URL]`）、sse/http 确认分支合并 —— 下轮承接
+
 ## 2.1.406 - 2026-10-29 (OCC-136 — 官方 2.1.311→2.1.312 追齐轮：39 条 changelog 逐条对官方 v311/v312 ELF 三方取证 triage（npm dist-tags + GitHub release + 二进制下载三方核验；strings/grep -aboF/seek 上下文窗口只读取证、从未执行官方二进制；16,605 新增 / 16,871 移除唯一字符串 + 2 个新 env 名全量清点），最终 PORT 11 · STAGED 1(+1 子项 +2 env) · N-A 27；11 个 PORT 项经 6 个并行工作包 + 3 个 orchestrator 直接端口全部落地；ci-test.sh 全量首轮 14,832 pass / 15 skip（36 个失败文件中 35 个为缺 dist/cli.js 环境产物、构建后全绿；1 个为已知本地 bun-1.3.14 环境产物，CI 基线 1.4.2），build 30.58 MB，tmux 真机 REPL 往返（开机→真模型 PONG→`/verify` 菜单实拍核验）+ headless `-p` 真模型往返全绿；台账 `docs/upstream-version-gap-occ136-2026-10.md` + 取证 `docs/gap-research-312/`；README Tracks 徽章 → 2.1.312 partial)
 
 - sentEffort 在力 effort 状态（官方 items 9+16，一处变更合并）：新增 `getSentEffort`/`setSentEffort` 槽位（官方 wire `sentEffort`/`effort` 捕获逐字节核验），spinner/OTel/transcript 在任务中改选 effort 后显示**在力**等级而非刚选的等级；effort 指示器新增 `may wait for your next message` 提示（官方 `uT` 条件 @276688231），不再适用时自动消失
