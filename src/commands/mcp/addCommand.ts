@@ -60,7 +60,7 @@ export function registerMcpAddCommand(mcp: Command): void {
     )
     .option(
       '-H, --header <header...>',
-      'Set WebSocket headers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")',
+      'Set headers for HTTP/SSE servers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")',
     )
     .option('--client-id <clientId>', 'OAuth client ID for HTTP/SSE servers')
     .option(
