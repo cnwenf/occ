@@ -130,7 +130,7 @@ These apply to the default command (the interactive/pipe session). "Flag" = bool
 occ mcp serve                              # start the OCC MCP server
 occ mcp list                               # list configured servers
 occ mcp get <name>                         # show a server's details
-occ mcp add-json <name> <json> [-s scope]  # add a server (stdio or SSE)
+occ mcp add-json <name> <json> [-s scope]  # add a server from a JSON string
 occ mcp remove <name> [-s scope]           # remove a server
 occ mcp add-from-claude-desktop [-s scope] # import from Claude Desktop (Mac/WSL)
 occ mcp reset-project-choices              # reset .mcp.json approvals

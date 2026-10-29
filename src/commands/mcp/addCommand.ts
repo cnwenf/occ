@@ -14,6 +14,7 @@ import {
   saveMcpClientSecret,
 } from '../../services/mcp/auth.js'
 import { addMcpConfig } from '../../services/mcp/config.js'
+import { redactHeadersForDisplay } from '../../services/mcp/headerRedaction.js'
 import {
   describeMcpConfigFilePath,
   ensureConfigScope,
@@ -186,8 +187,11 @@ export function registerMcpAddCommand(mcp: Command): void {
             `Added SSE MCP server ${name} with URL: ${actualCommand} to ${scope} config\n`,
           )
           if (headers) {
+            // Official 2.1.312 (Gap-137b): display-only name-based redaction
+            // — `Headers: ${JSON.stringify(uxn(w), null, 2)}`. The config
+            // written above keeps the plaintext values (official behavior).
             process.stdout.write(
-              `Headers: ${jsonStringify(headers, null, 2)}\n`,
+              `Headers: ${jsonStringify(redactHeadersForDisplay(headers), null, 2)}\n`,
             )
           }
         } else if (transport === 'http') {
@@ -232,8 +236,11 @@ export function registerMcpAddCommand(mcp: Command): void {
             `Added HTTP MCP server ${name} with URL: ${actualCommand} to ${scope} config\n`,
           )
           if (headers) {
+            // Official 2.1.312 (Gap-137b): display-only name-based redaction
+            // — `Headers: ${JSON.stringify(uxn(w), null, 2)}`. The config
+            // written above keeps the plaintext values (official behavior).
             process.stdout.write(
-              `Headers: ${jsonStringify(headers, null, 2)}\n`,
+              `Headers: ${jsonStringify(redactHeadersForDisplay(headers), null, 2)}\n`,
             )
           }
         } else {
