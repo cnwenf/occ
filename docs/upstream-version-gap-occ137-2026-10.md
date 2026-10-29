@@ -233,3 +233,21 @@ docs/upstream-version-gap-occ137-2026-10.md                | this section
 
 Build GREEN post-fix (`dist/cli.js` 30.58 MB). Release remains gated on 验收员 re-acceptance
 (tag → publish.yml → npm → GitHub Release → releases==tags check) per the verdict.
+
+### §8.5 Release (executed after re-acceptance PASSED — 验收员 comment `8ce3f1f7`)
+
+- OCC version 2.1.406 → **2.1.407**; CHANGELOG `## 2.1.407 - 2026-10-30` section added
+  (Gap-137a/b/c + STAGED §8.3 summary); tracking version unchanged (Claude Code **2.1.312**) —
+  README Tracks badge correctly stays at `2.1.312 (partial)` (验收员 hard-check confirmed).
+- Release commit `ca588dda` (`chore(release): 2.1.407`) pushed to `main`; tag `v2.1.407` pushed →
+  `publish.yml` run `40936178277`.
+- **Run outcome (verified)**: build/shebang/version/strip steps green; `Publish` step failed with
+  the known `npm error 404 Not Found - PUT …/@cnwenf%2focc` (expired NPM_TOKEN — OCC-127/129 debt;
+  npm `@cnwenf/occ` stays at 2.1.367 until token rotation; every publish run since v2.1.402 shows
+  the same failure). The failure skipped the workflow's `Create GitHub Release` step, so the
+  release was created manually via `gh release create v2.1.407` (same format as the v2.1.405/406
+  manual releases — Full Changelog compare link):
+  https://github.com/cnwenf/occ/releases/tag/v2.1.407
+- **CI green**: `CI` workflow on `main` @ `ca588dda` (release commit) completed/success;
+  `main` @ `ac7fc864` (PR #562 merge) completed/success; PR branch @ `fc4d2ab3` completed/success.
+- **releases==tags parity verified**: 206 releases / 206 tags, `comm` diff empty.
