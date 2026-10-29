@@ -143,3 +143,93 @@ No OCC version bump this round beyond the fix landing on `main`. Per the OCC-40 
 precedent, a round that ports no new upstream version does not cut a fresh tracking release; the
 §4.3 help-text fix rides the next release cut (验收员 → 发版流程). CHANGELOG entry deferred to the
 release step so `/releases` is not polluted with a no-op tracking bump.
+
+## §8 Re-acceptance round (2026-10-30, 验收员 verdict 打回 on PR #561)
+
+验收员 verdict (comment `3b294ea1`): PR #561 merged state verified (diff 4 files/198+/2−, help-text
+byte-aligned, e2e 2/2, README badge 4-spot consistent, code review no P1) but **打回 NEEDS_FIXES**
+for 2 gaps. Both fixed this round:
+
+### §8.1 Gap-137b (HIGH, security) — `mcp add` confirm output leaked header values in plaintext
+
+Official 2.1.312 prints `Headers: ${JSON.stringify(uxn(w),null,2)}` in the `mcp add` sse/http
+confirm path, where `uxn` is a **name-only, display-only** redactor. OCC printed
+`jsonStringify(headers, null, 2)` raw at `src/commands/mcp/addCommand.ts` (sse + http branches) —
+`Authorization: Bearer sk-…` echoed to stdout/terminal history/CI logs.
+
+**Byte-verified official mechanism** (re-extracted from the 2.1.312 ELF this round — `grep -aboF`
+offsets: `uxn` @239000754; `pt` @127878240/@270488163; `O6e`/`Nlt`/`lBe`/`tto` module windows
+@238880000/@238960000):
+
+- `uxn(e)` — builds a NEW null-prototype record; for each entry, value → `"[REDACTED]"` when
+  `pt.test(name)`, else verbatim. Never mutates; never inspects values.
+- `pt` — `new RegExp(O6e(String.raw` + alternation + `),"i")`, **UNANCHORED** (substring match):
+  `api[_-]?key|secret|token|password|passwd|credential|bearer|authorization|auth[_-]?header|memory[_-]?request[_-]?mac|cookie|session[_-]?(?:id|key)|connection[_-]?string|(?:private|ssh|encryption|signing|access|deploy|master|license)[_-]?key|client[_-]?secret`
+- `O6e` — invisible-char hardener: inserts `Nlt` between adjacent pattern letters and rewrites
+  every `[_-]?` into `(?:[_-]Nlt)?`, so zero-width evasion (`to​ken`) still matches.
+- `Nlt` = `[${lBe}${tto}\\ufeff]*` — invisible/default-ignorable/surrogate + Arabic-prefix ranges.
+
+**Note on the verdict's regex citation**: the anchored regex at the cited strings line
+(`^(?:authorization|proxy-authorization|cookie|…|x-honeycomb-team)(?:-?v?\d+)?$|…`) is the binary's
+`Iae` — it belongs to the separate `credentialHeaderEntry` WARNING module ("Header … looks like a
+credential"), not to the confirm-output redactor. The redactor actually used at the `Headers:`
+print site is the unanchored `pt` above. Observable difference: `My-Secret-Header` is redacted by
+`pt` but not matched by `Iae`; `x-honeycomb-team` is flagged by `Iae` but NOT redacted by `pt`.
+The fix ports `uxn`/`pt` (the print-site mechanism) — unit tests pin both discriminating cases.
+
+**Fix**: new `src/services/mcp/headerRedaction.ts` (`redactHeadersForDisplay` = `uxn` verbatim;
+existing `redaction.ts`/`displaySanitize.ts` are different mechanisms — `${VAR}`-expansion and
+value-scanning respectively — so no reuse was possible). Both confirm prints in `addCommand.ts`
+now redact for display only; the config write path (`addMcpConfig`) keeps plaintext, matching the
+official (verified: official writes the raw value to `.claude.json`). `mcp add-json` prints no
+headers — unaffected.
+
+Tests: `src/services/mcp/__tests__/headerRedaction312.test.ts` (10 tests / 56 expect — reviewer
+repro, name-only semantics, case-insensitivity, unanchored substring, full `pt` alternation
+coverage, bare-`key` negative, invisible-char evasion ×5, non-mutation + null prototype, empty
+record) + `test/e2e/mcp-add-header-redaction-312.e2e.test.ts` (2 e2e — http + sse on the BUILT
+artifact with isolated temp HOME: stdout shows `"Authorization": "[REDACTED]"` +
+`"X-Custom": "plainvalue"`, never contains the secret, and the stored `.claude.json` keeps the
+plaintext value). MCP suites: **627 pass / 0 fail / 1989 expect** (617 baseline + 10 new); MCP
+e2e **5 pass** (help-transport 2 + connection-nonblocking 1 + new redaction 2). Manual reviewer
+repro on the built artifact reproduces the official output shape exactly.
+
+### §8.2 Gap-137c (P2, docs) — stale "(stdio or SSE)" in `docs/en/cli-reference.md:133`
+
+`occ mcp add-json <name> <json> [-s scope]  # add a server (stdio or SSE)` →
+`# add a server from a JSON string` (transport-neutral, consistent with zh cli-reference "从 JSON
+添加" and docs/en/mcp.md). Repo-wide grep: the only remaining "(stdio or SSE)" hits are historical
+quotes inside this ledger (§4.3) — correct to keep.
+
+### §8.3 NEW divergences found while byte-verifying the `mcp add` action — STAGED (out of verdict scope)
+
+Located the official `mcp add` action (@271705467) to confirm the redaction call site; three
+further OCC divergences surfaced. The verdict scoped this round to Gap 1 + Gap 2, so these are
+staged with evidence rather than smuggled in:
+
+1. **`--callback-port` integer validation** — official rejects non-integer/out-of-range values with
+   byte-exact `Error: --callback-port must be an integer in [1, 65535]`; OCC `parseInt`s silently
+   (`NaN`/out-of-range flows into the stored oauth config). Small, safe, security-adjacent —
+   natural next-round item.
+2. **URL sanitizer in the `Added …` line** — official prints the URL via `eS(n)` (credential-bearing
+   URLs → `"[redacted URL]"`, cf. `VC="[redacted URL]"` + `Bn` percent-decode helper @same window);
+   OCC prints the raw URL. `https://user:pass@host/mcp` would leak the userinfo secret in the
+   confirm line. P1-candidate — `eS`/`Bn` form a small self-contained module, but porting it needs
+   its own byte-verification pass (percent-decode + scheme branches).
+3. **sse/http branch merge** — official handles sse+http in ONE branch with
+   `Added ${m} MCP server …` (m = "SSE"/"HTTP"); OCC duplicates the two branches. Cosmetic
+   structural refactor, no observable difference today.
+
+### §8.4 Diff landed this round
+
+```
+src/services/mcp/headerRedaction.ts                        | new (uxn/pt/O6e/Nlt/lBe/tto byte-verbatim port)
+src/services/mcp/__tests__/headerRedaction312.test.ts      | new (10 unit tests)
+src/commands/mcp/addCommand.ts                             | 2 confirm prints → redactHeadersForDisplay
+test/e2e/mcp-add-header-redaction-312.e2e.test.ts          | new (2 behavioral e2e, built artifact)
+docs/en/cli-reference.md                                   | :133 transport-neutral add-json comment
+docs/upstream-version-gap-occ137-2026-10.md                | this section
+```
+
+Build GREEN post-fix (`dist/cli.js` 30.58 MB). Release remains gated on 验收员 re-acceptance
+(tag → publish.yml → npm → GitHub Release → releases==tags check) per the verdict.
