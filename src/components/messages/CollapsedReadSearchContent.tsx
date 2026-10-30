@@ -247,7 +247,11 @@ export function CollapsedReadSearchContent({
                 {info.command} ({formatSecondsShort(info.durationMs ?? 0)})
               </Text>)}
           </>}
-        {message.relevantMemories?.map(m => <Box key={m.path} flexDirection="column" marginTop={1}>
+        {/* CC 2.1.314 #48 — official v314 @277872944:
+            `d.relevantMemories?.map((tT,zW)=>r(s,{flexDirection:"column",marginTop:zW>0?1:0,…`
+            (v312 @274973531 had unconditional `marginTop:1` — the blank line
+            above the first `⎿ Recalled` row). Same index gate here. */}
+        {message.relevantMemories?.map((m, memoryIdx) => <Box key={m.path} flexDirection="column" marginTop={memoryIdx > 0 ? 1 : 0}>
             <Text dimColor>
               {'  ⎿  '}Recalled {basename(m.path)}
             </Text>

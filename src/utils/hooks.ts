@@ -150,6 +150,10 @@ import {
 } from './hooks/hookSessionSlots312.js'
 import { all } from './generators.js'
 import { logForDebugging } from './debug.js'
+// Official `ne` (v314 ELF @243461814) — the shared surrogate-aware head slicer
+// used by the 2.1.314 PreCompact output cap. OCC carries a byte-identical port
+// as `re` in the secret-redaction text-slicing helpers; reuse it (DRY).
+import { re as sliceUtf16Head } from './secretRedaction/textSlicing.js'
 import { stripHintTagLines } from './claudeCodeHints.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { firstLineOf } from './stringUtils.js'
@@ -182,6 +186,13 @@ import {
 import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
 import { execPromptHook } from './hooks/execPromptHook.js'
 import { capHookString, HOOK_STRING_CAP } from './hooks/hookHelpers.js'
+import {
+  familyCallName,
+  familyHookInputForMatched,
+  familyNamesForCall,
+  familyNamesForMatcher,
+  hookInputToolInputForFamily,
+} from './hooks/monitorFamily314.js'
 import type { Message, AssistantMessage } from '../types/message.js'
 import { execAgentHook } from './hooks/execAgentHook.js'
 import { execHttpHook } from './hooks/execHttpHook.js'
@@ -2664,9 +2675,23 @@ async function prepareIfConditionMatcher(
       ? await tool.preparePermissionMatcher(input.data)
       : undefined
 
+  // claude-code 2.1.314 item 33 — official `Dxn` (@256570480) builds the
+  // acceptable if-condition tool names as
+  //   names:[y,...Oxn(y,n,e.tool_input),...cnt(y,vU(e))]
+  // i.e. the call tool's own name PLUS its family names (cnt @256569635 —
+  // for a Monitor shell command that adds "Bash"), and `exn`'s predicate
+  // gates on `Ixn(h,w,G.toolName)` = names.includes(condition tool name).
+  // OCC reduction: Oxn legacy-name expansion already happens via
+  // normalizeLegacyToolName below; Zso stand-in aliases are empty.
+  const familyNames = familyNamesForCall(
+    toolName,
+    hookInputToolInputForFamily(hookInput),
+  )
+
   return ifCondition => {
     const parsed = permissionRuleValueFromString(ifCondition)
-    if (normalizeLegacyToolName(parsed.toolName) !== toolName) {
+    const condToolName = normalizeLegacyToolName(parsed.toolName)
+    if (condToolName !== toolName && !familyNames.includes(condToolName)) {
       return false
     }
     if (!parsed.ruleContent) {
@@ -2691,6 +2716,17 @@ type MatchedHook = {
   pluginId?: string
   skillRoot?: string
   hookSource?: string
+  // claude-code 2.1.314 item 33 — official flags spread @256595900:
+  //   ...ze.has(dn)&&{throughFamilyOnly:!0},
+  //   ...Ee.has(dn)&&{matcherMetThroughOtherName:!0}
+  // `throughFamilyOnly` — the hook may deny/ask but NOT allow or rewrite the
+  // call (decision strip @256637701). `matcherMetThroughOtherName` — the
+  // matcher only matched through a family name (Monitor→Bash); together with
+  // throughFamilyOnly it gates the asBash stdin transform (jN @256567045).
+  // OCC has no hookMatcherFamilyNames surface, so ze≡Ee and both flags are
+  // always set together for matcher-level family matches.
+  throughFamilyOnly?: boolean
+  matcherMetThroughOtherName?: boolean
 }
 
 function isInternalHook(matched: MatchedHook): boolean {
@@ -3139,12 +3175,40 @@ export async function getMatchingHooks(
   // subagent without a resolved agent type, firing ALL SubagentStop hooks
   // regardless of matcher. `''` is a real match value: it fails a specific
   // matcher (e.g. 'code-reviewer') and only passes absent/'*' matchers.
+  // claude-code 2.1.314 item 33 — family matching. Official `Ee` set
+  // (@256594100, verbatim):
+  //   Ee=new Set(w.filter((dn)=>Te(dn)&&L!==void 0&&
+  //     wxe(L,dn.matcher,vU(s)).some((co)=>Se(dn,co,void 0))&&
+  //     !we.has(dn)&&!Se(dn,L,h)))
+  // A matcher that does NOT match the call tool's own name but DOES match one
+  // of its family names (cnt @256569635 — Monitor+command → "Bash"; filtered
+  // through wxe @256569840's negative-pattern text check) still selects the
+  // hook, flagged throughFamilyOnly+matcherMetThroughOtherName (@256595900).
+  // OCC reductions: Te≡true and we≡∅ (no MCP deny/ask stand-ins), and ze's
+  // matcher-error arm is inert because matchesPattern never throws.
+  const callToolInputForFamily = hookInputToolInputForFamily(hookInput)
+  const callFamilyNames =
+    matchQuery !== undefined
+      ? familyNamesForCall(matchQuery, callToolInputForFamily)
+      : []
+  const familyOnlyMatchers = new Set<object>()
   const filteredMatchers = matchQuery !== undefined
-    ? hookMatchers.filter(
-        matcher =>
+    ? hookMatchers.filter(matcher => {
+        if (
           !matcher.matcher ||
-          matchesPattern(matchQuery, matcher.matcher, commaHyphenSupport),
-      )
+          matchesPattern(matchQuery, matcher.matcher, commaHyphenSupport)
+        ) {
+          return true
+        }
+        const viaFamily = familyNamesForMatcher(callFamilyNames, matcher.matcher)
+          .some(familyName =>
+            matchesPattern(familyName, matcher.matcher, commaHyphenSupport),
+          )
+        if (viaFamily) {
+          familyOnlyMatchers.add(matcher)
+        }
+        return viaFamily
+      })
     : hookMatchers
 
   const matchedHooks: MatchedHook[] = filteredMatchers.flatMap(matcher => {
@@ -3162,12 +3226,18 @@ export async function getMatchingHooks(
           ? `skill:${matcher.skillName}`
           : 'skill'
         : 'settings'
+    // Official flags spread @256595900 — ze≡Ee in OCC, so both flags land
+    // together on every hook of a family-only matcher.
+    const familyOnly = familyOnlyMatchers.has(matcher)
     return matcher.hooks.map(hook => ({
       hook,
       pluginRoot,
       pluginId,
       skillRoot,
       hookSource,
+      ...(familyOnly
+        ? { throughFamilyOnly: true, matcherMetThroughOtherName: true }
+        : {}),
     }))
   })
 
@@ -3300,7 +3370,23 @@ export async function getMatchingHooks(
   const ifMatcher = hasIfCondition
     ? await prepareIfConditionMatcher(hookInput, tools)
     : undefined
-  const ifFilteredHooks = uniqueHooks.filter(h => {
+  // claude-code 2.1.314 item 33 — official if-filter family rules @256598900,
+  // applied AFTER the condition matched (verbatim):
+  //   if(dn.matcherMetThroughOtherName===!0&&yr===L&&hz(L,vU(s))!==void 0)
+  //     return t(`Skipping hook: its if condition "${co}" names Monitor, and
+  //     its matcher met the call only through Bash`),[];
+  //   if(L!==void 0&&cnt(L,vU(s)).includes(yr))
+  //     return[{...Oo,throughFamilyOnly:!0}];
+  //   return [We===void 0?Oo:...]
+  // (yr = the if-condition's tool name, L = the call tool name, co = the
+  // if-condition string, Oo = the matched hook; We — the
+  // hookMatcherFamilyNames tool — does not exist in OCC, so the final branch
+  // returns the hook unchanged.)
+  const callFamilyName =
+    matchQuery !== undefined
+      ? familyCallName(matchQuery, callToolInputForFamily)
+      : undefined
+  const ifFilteredHooks = uniqueHooks.flatMap(h => {
     if (
       h.hook.type !== 'command' &&
       h.hook.type !== 'prompt' &&
@@ -3308,25 +3394,44 @@ export async function getMatchingHooks(
       h.hook.type !== 'http' &&
       h.hook.type !== 'mcp_tool'
     ) {
-      return true
+      return [h]
     }
     const ifCondition = (h.hook as { if?: string }).if
     if (!ifCondition) {
-      return true
+      return [h]
     }
     if (!ifMatcher) {
       logForDebugging(
         `Hook if condition "${ifCondition}" cannot be evaluated for non-tool event ${hookInput.hook_event_name}`,
       )
-      return false
+      return []
     }
-    if (ifMatcher(ifCondition)) {
-      return true
+    if (!ifMatcher(ifCondition)) {
+      logForDebugging(
+        `Skipping hook due to if condition "${ifCondition}" not matching`,
+      )
+      return []
     }
-    logForDebugging(
-      `Skipping hook due to if condition "${ifCondition}" not matching`,
+    const condToolName = normalizeLegacyToolName(
+      permissionRuleValueFromString(ifCondition).toolName,
     )
-    return false
+    if (
+      h.matcherMetThroughOtherName === true &&
+      callFamilyName !== undefined &&
+      condToolName === normalizeLegacyToolName(matchQuery as string)
+    ) {
+      logForDebugging(
+        `Skipping hook: its if condition "${ifCondition}" names Monitor, and its matcher met the call only through Bash`,
+      )
+      return []
+    }
+    if (
+      matchQuery !== undefined &&
+      callFamilyNames.includes(condToolName)
+    ) {
+      return [{ ...h, throughFamilyOnly: true }]
+    }
+    return [h]
   })
 
   // HTTP hooks are not supported for SessionStart/Setup events. In headless
@@ -3662,27 +3767,44 @@ async function* executeHooks({
     | { ok: true; value: string }
     | { ok: false; error: unknown }
     | undefined
+  // claude-code 2.1.314 item 33 — official stdin cache `Nr` (@256610100)
+  // keys the stringified input by variant: "base" / "elsewhere" / "asBash"
+  // (`Ii=Ra!==void 0?"asBash":Jr?"elsewhere":"base"`). OCC ports the "asBash"
+  // slot — the jN-transformed family input; "elsewhere" (ranElsewhere async
+  // machinery, Vf @256625900) has no OCC surface.
+  let jsonInputAsBashResult:
+    | { ok: true; value: string }
+    | { ok: false; error: unknown }
+    | undefined
   // claude-code 2.1.288 #57 (official `Mo`): why this batch's hook input
   // could not be serialized — consumed by the batch-tail tengu_feature_bad.
   let jsonInputFailureCode:
     | 'hook_input_too_large'
     | 'hook_input_stringify_failed'
     | undefined
-  function getJsonInput() {
-    if (jsonInputResult !== undefined) {
-      return jsonInputResult
+  function getJsonInput(familyInput?: HookInput) {
+    const isAsBash = familyInput !== undefined
+    const cached = isAsBash ? jsonInputAsBashResult : jsonInputResult
+    if (cached !== undefined) {
+      return cached
     }
     // Official `_o` serializer: stringify, then the a2t size cap →
     // RangeError("Hook input is over the size limit"); the catch records
     // Mo = oversize ? hook_input_too_large : hook_input_stringify_failed.
     let isOverSizeLimit = false
     try {
-      const value = jsonStringify(hookInput)
+      const value = jsonStringify(familyInput ?? hookInput)
       isOverSizeLimit = isHookInputOverSizeLimit(hookEvent, value)
       if (isOverSizeLimit) {
         throw new RangeError('Hook input is over the size limit')
       }
-      return (jsonInputResult = { ok: true, value })
+      const result: { ok: true; value: string } = { ok: true, value }
+      if (isAsBash) {
+        jsonInputAsBashResult = result
+      } else {
+        jsonInputResult = result
+      }
+      return result
     } catch (error) {
       jsonInputFailureCode = isOverSizeLimit
         ? 'hook_input_too_large'
@@ -3690,15 +3812,28 @@ async function* executeHooks({
       logError(
         Error(`Failed to stringify hook ${hookName} input`, { cause: error }),
       )
-      return (jsonInputResult = { ok: false, error })
+      const result: { ok: false; error: unknown } = { ok: false, error }
+      if (isAsBash) {
+        jsonInputAsBashResult = result
+      } else {
+        jsonInputResult = result
+      }
+      return result
     }
   }
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(async function* (
-    { hook, pluginRoot, pluginId, skillRoot },
+    { hook, pluginRoot, pluginId, skillRoot, throughFamilyOnly, matcherMetThroughOtherName },
     hookIndex,
   ): AsyncGenerator<HookResult> {
+    // claude-code 2.1.314 item 33 — official `ss` (@256610100 region):
+    // `Ra=jN(gr,n)` — the asBash stdin variant, defined only when BOTH
+    // family flags are set (jN @256567045).
+    const familyHookInput = familyHookInputForMatched(
+      { throughFamilyOnly, matcherMetThroughOtherName },
+      hookInput,
+    )
     if (hook.type === 'callback') {
       const callbackTimeoutMs = hook.timeout ? hook.timeout * 1000 : timeoutMs
       const { signal: abortSignal, cleanup } = createCombinedAbortSignal(
@@ -3815,7 +3950,11 @@ async function* executeHooks({
     const hookCommand = getHookDisplayText(hook)
 
     try {
-      const jsonInputRes = getJsonInput()
+      // claude-code 2.1.314 item 33 — official @256625900:
+      // `up=ah!==void 0&&br?IV(ah,jN(go[Gs],n)??n):ah` — hooks with both
+      // family flags receive the asBash-transformed input; everyone else the
+      // original (jN(...)??n).
+      const jsonInputRes = getJsonInput(familyHookInput)
       if (!jsonInputRes.ok) {
         // claude-code 2.1.288 #57 (official per-hook block @209530200):
         //   if(!Os.ok){Jr();…na=lee(Ne,Xr,`[${Xr}]: ${Ilt(Os.error)}${ds}`);
@@ -4796,6 +4935,40 @@ async function* executeHooks({
       )
       yield {
         updatedMCPToolOutput: result.updatedMCPToolOutput,
+      }
+    }
+
+    // claude-code 2.1.314 item 33 — official decision strip @256637701
+    // (verbatim):
+    //   if(Mr.get(ur.hook)?.throughFamilyOnly===!0){if(ur.updatedInput=void 0,
+    //   ur.permissionBehavior==="allow")t(`Hook ${lt} (${AM(ur.hook)})
+    //   permissionDecision=allow ignored: it matched this tool only through
+    //   another of its names, which can deny or ask but not allow`),
+    //   ur.permissionBehavior=void 0;if(ur.permissionRequestResult?.behavior===
+    //   "allow")t(`Hook ${lt} (${AM(ur.hook)}) PermissionRequest allow
+    //   ignored: it matched this tool only through another of its names,
+    //   which can deny or ask but not allow`),ur.permissionRequestResult=void 0}
+    // A family-only hook (e.g. a Bash-matching hook on a Monitor shell
+    // command) can deny or ask, but NOT allow or rewrite the call. deny/ask/
+    // blockingError are untouched; updatedToolOutput yields above are NOT
+    // stripped (the official strip sits after them). The companion
+    // classifierContext strip (@256634669) has no OCC surface — skipped.
+    if (
+      matchingHooks.find(m => m.hook === result.hook)?.throughFamilyOnly ===
+      true
+    ) {
+      result.updatedInput = undefined
+      if (result.permissionBehavior === 'allow') {
+        logForDebugging(
+          `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) permissionDecision=allow ignored: it matched this tool only through another of its names, which can deny or ask but not allow`,
+        )
+        result.permissionBehavior = undefined
+      }
+      if (result.permissionRequestResult?.behavior === 'allow') {
+        logForDebugging(
+          `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) PermissionRequest allow ignored: it matched this tool only through another of its names, which can deny or ask but not allow`,
+        )
+        result.permissionRequestResult = undefined
       }
     }
 
@@ -6127,6 +6300,40 @@ export async function* executeSubagentStartHooks(
 }
 
 /**
+ * claude-code 2.1.314 item 22 — the per-hook PreCompact output cap.
+ * Official `WPt=1e4` (v314 ELF @245625586: `...,$T=50,lTi=1073741824,WPt=1e4,
+ * sxn=1e4,p9t=1e5;`). A PreCompact hook whose (trimmed) output exceeds this is
+ * cut before it becomes a compaction custom instruction, so a very large hook
+ * output can no longer make compaction fail (prompt-too-long) or repeat.
+ */
+export const PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT = 10_000
+
+/**
+ * claude-code 2.1.314 item 22 — cut one PreCompact hook's trimmed output at
+ * {@link PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT} characters, byte-faithful to the
+ * official v314 aggregation `v0e` (ELF @256502723):
+ *
+ *   if(Se.length>WPt)
+ *     t(`PreCompact [${ke.command}] output cut from ${Se.length} to ${WPt} characters`,{level:"warn"}),
+ *     Se=`${ne(Se,WPt)}\n\n[PreCompact hook [${ke.command}] output cut: ${Se.length} characters is over the ${WPt}-character limit]`;
+ *
+ * `ne` is the shared surrogate-aware head slicer (OCC `sliceUtf16Head`), so a
+ * surrogate pair straddling the cap is never split. The note cites the ORIGINAL
+ * (pre-cut) length. The warn-log side effect stays at the call site (matching
+ * the official, which logs then reassigns); this helper is the pure string cut.
+ * Outputs at or under the cap are returned unchanged.
+ */
+export function cutPreCompactHookOutput(
+  command: string,
+  trimmedOutput: string,
+): string {
+  if (trimmedOutput.length <= PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT) {
+    return trimmedOutput
+  }
+  return `${sliceUtf16Head(trimmedOutput, PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT)}\n\n[PreCompact hook [${command}] output cut: ${trimmedOutput.length} characters is over the ${PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT}-character limit]`
+}
+
+/**
  * Execute pre-compact hooks if configured
  * @param compactData The compact data to pass to hooks
  * @param signal Optional AbortSignal to cancel hook execution
@@ -6175,18 +6382,27 @@ export async function executePreCompactHooks(
     }
   }
 
-  // Extract custom instructions from successful hooks with non-empty output
-  const successfulOutputs = results
-    .filter(result => result.succeeded && result.output.trim().length > 0)
-    .map(result => result.output.trim())
-
-  // Build user display messages with command info
+  // 2.1.314 item 22 (official `v0e` @256502723): single-pass aggregation — the
+  // per-hook trimmed output is cut at PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT and the
+  // (possibly cut) value feeds BOTH newCustomInstructions and the display
+  // message, so a very large hook output can no longer make compaction fail or
+  // repeat. v312 (`UHe`) mapped every successful output verbatim.
+  const customInstructionParts: string[] = []
   const displayMessages: string[] = []
   for (const result of results) {
+    let output = result.output.trim()
     if (result.succeeded) {
-      if (result.output.trim()) {
+      if (output.length > PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT) {
+        logForDebugging(
+          `PreCompact [${result.command}] output cut from ${output.length} to ${PRECOMPACT_HOOK_OUTPUT_CHAR_LIMIT} characters`,
+          { level: 'warn' },
+        )
+        output = cutPreCompactHookOutput(result.command, output)
+      }
+      if (output) {
+        customInstructionParts.push(output)
         displayMessages.push(
-          `PreCompact [${result.command}] completed successfully: ${result.output.trim()}`,
+          `PreCompact [${result.command}] completed successfully: ${output}`,
         )
       } else {
         displayMessages.push(
@@ -6194,9 +6410,9 @@ export async function executePreCompactHooks(
         )
       }
     } else {
-      if (result.output.trim()) {
+      if (output) {
         displayMessages.push(
-          `PreCompact [${result.command}] failed: ${result.output.trim()}`,
+          `PreCompact [${result.command}] failed: ${output}`,
         )
       } else {
         displayMessages.push(`PreCompact [${result.command}] failed`)
@@ -6206,7 +6422,9 @@ export async function executePreCompactHooks(
 
   return {
     newCustomInstructions:
-      successfulOutputs.length > 0 ? successfulOutputs.join('\n\n') : undefined,
+      customInstructionParts.length > 0
+        ? customInstructionParts.join('\n\n')
+        : undefined,
     userDisplayMessage:
       displayMessages.length > 0 ? displayMessages.join('\n') : undefined,
   }

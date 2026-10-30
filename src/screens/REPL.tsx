@@ -143,8 +143,9 @@ import { hasConsoleBillingAccess } from '../utils/billing.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
 import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
-import { generateSessionTitle } from '../utils/sessionTitle.js';
-import { BASH_INPUT_TAG, COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
+import { requestSessionTitle } from '../utils/sessionTitle.js';
+import { contentToText, firstTitleEligibleMessage, isUsageLimitContinuationText, makeTitleFallback, reduceTitleFallback, titleInputFromQueuedMessage, type SessionTitleRequestResult, type TitleFallback } from '../utils/sessionTitleInput.js';
+import { LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
 import { escapeXml } from '../utils/xml.js';
 import type { ThinkingConfig } from '../utils/thinking.js';
 import { gracefulShutdownSync } from '../utils/gracefulShutdown.js';
@@ -1234,6 +1235,12 @@ export function REPL({
   // on resume (initialMessages present) so we don't re-title a resumed
   // session from mid-conversation context.
   const haikuTitleAttemptedRef = useRef((initialMessages?.length ?? 0) > 0);
+  // CC 2.1.314 items 61+78 — official QueryEngine keeps a title fallback
+  // (`_titleFallback`) and an in-flight request ref (`_titleRequest`) so a
+  // FAILED title request retries from the ORIGINAL prompt next turn and stale
+  // resolutions are ignored (@280397970).
+  const titleFallbackRef = useRef<TitleFallback | undefined>(undefined);
+  const titleRequestRef = useRef<Promise<SessionTitleRequestResult> | null>(null);
   const agentTitle = mainThreadAgentDefinition?.agentType;
   const terminalTitle = sessionTitle ?? agentTitle ?? haikuTitle ?? 'OCC';
   const isWaitingForApproval = toolUseConfirmQueue.length > 0 || promptQueue.length > 0 || pendingWorkerRequest || pendingSandboxRequest;
@@ -2042,6 +2049,11 @@ export function REPL({
       // Haiku title shouldn't carry over.
       haikuTitleAttemptedRef.current = true;
       setHaikuTitle(undefined);
+      // CC 2.1.314 items 61+78: a session switch invalidates any in-flight
+      // title request and the preserved fallback (official resets
+      // _titleFallback/_titleRequest with _haikuTitleAttempted).
+      titleFallbackRef.current = undefined;
+      titleRequestRef.current = null;
 
       // Exit any worktree a prior /resume entered, then cd into the one
       // this session was in. Without the exit, resuming from worktree B
@@ -2943,26 +2955,70 @@ export function REPL({
     // Mark onboarding as complete when any user message is sent to Claude
     void maybeMarkProjectOnboardingComplete();
 
-    // Extract a session title from the first real user message. One-shot
-    // via ref (was tengu_birch_mist experiment: first-message-only to save
-    // Haiku calls). The ref replaces the old `messages.length <= 1` check,
-    // which was broken by SessionStart hook messages (prepended via
-    // useDeferredHookMessages) and attachment messages (appended by
-    // processTextPrompt) — both pushed length past 1 on turn one, so the
-    // title silently fell through to the "Claude Code" default.
-    if (!titleDisabled && !sessionTitle && !agentTitle && !haikuTitleAttemptedRef.current) {
-      const firstUserMessage = newMessages.find(m => m.type === 'user' && !m.isMeta);
-      const text = firstUserMessage?.type === 'user' ? getContentText(firstUserMessage.message.content as string | ContentBlockParam[]) : null;
-      // Skip synthetic breadcrumbs — slash-command output, prompt-skill
-      // expansions (/commit → <command-message>), local-command headers
-      // (/help → <command-name>), and bash-mode (!cmd → <bash-input>).
-      // None of these are the user's topic; wait for real prose.
-      if (text && !text.startsWith(`<${LOCAL_COMMAND_STDOUT_TAG}>`) && !text.startsWith(`<${COMMAND_MESSAGE_TAG}>`) && !text.startsWith(`<${COMMAND_NAME_TAG}>`) && !text.startsWith(`<${BASH_INPUT_TAG}>`)) {
+    // Extract a session title from the first real user message — CC 2.1.314
+    // items 61+78, port of the official QueryEngine trigger (@280397970):
+    //   let cr=new Set(D.map(Zr=>Zr.uuid)),
+    //       ir=KFs(x.filter(Zr=>cr.has(Zr.uuid))),
+    //       hr=ir?em(ir.message.content):null,
+    //       Qn=hr!==null&&uBs(hr),
+    //       ar=fzn({prose:Qn||!ir?null:uzn({...}),
+    //               isContinuationTurn:Qn||D.some(user&&auto-continuation),
+    //               fallback:this._titleFallback});
+    //   if(ar){attempted=!0; fallback=ar; sid=Et.id; Cr=requestSessionTitle(...);
+    //     _titleRequest=Cr; Cr.then(stale-guards → pzn → apply|reset)
+    //     .catch(clear request ref + attempted=!1)}
+    // Item 78: title input now flows through titleInputFromQueuedMessage
+    // (official uzn/zMr) so a leading skill/prompt-command message
+    // (/security-review → "/security-review …\n<description>") becomes the
+    // title text instead of being skipped as a synthetic breadcrumb.
+    // Item 61: requestSessionTitle's three-way result + the fallback ref keep
+    // the ORIGINAL prompt titleable when the first request fails (e.g. usage
+    // limit) and the conversation continues afterward.
+    if (!titleDisabled && !sessionTitle && !haikuTitle && !agentTitle && !haikuTitleAttemptedRef.current) {
+      const newMessageUuids = new Set(newMessages.map(m => m.uuid));
+      const firstEligible = firstTitleEligibleMessage(messagesIncludingNewMessages.filter(m => newMessageUuids.has(m.uuid)));
+      const eligibleContent = firstEligible?.type === 'user' ? firstEligible.message.content : undefined;
+      const eligibleText = firstEligible ? contentToText(eligibleContent) : null;
+      const isContinuationText = eligibleText !== null && isUsageLimitContinuationText(eligibleText);
+      const fallback = makeTitleFallback({
+        prose: isContinuationText || !firstEligible ? null : titleInputFromQueuedMessage({
+          content: eligibleContent,
+          origin: (firstEligible as { origin?: { kind?: string } }).origin,
+          // OCC messages don't carry the queue's skipSlashCommands flag;
+          // undefined → official uzn l=false → dispatchesSlashCommands=true.
+          queueSkipSlashCommands: undefined,
+          commands,
+        }),
+        isContinuationTurn: isContinuationText || newMessages.some(m => m.type === 'user' && (m as { origin?: { kind?: string } }).origin?.kind === 'auto-continuation'),
+        fallback: titleFallbackRef.current,
+      });
+      if (fallback) {
         haikuTitleAttemptedRef.current = true;
-        void generateSessionTitle(text, new AbortController().signal).then(title => {
-          if (title) setHaikuTitle(title);else haikuTitleAttemptedRef.current = false;
-        }, () => {
-          haikuTitleAttemptedRef.current = false;
+        titleFallbackRef.current = fallback;
+        const sessionIdAtRequest = getSessionId();
+        const titleRequest = requestSessionTitle(fallback.text, new AbortController().signal);
+        titleRequestRef.current = titleRequest;
+        void titleRequest.then(result => {
+          // Official stale-guards: request identity, then session id, then a
+          // fresh look at the current titles.
+          if (titleRequestRef.current !== titleRequest) return;
+          titleRequestRef.current = null;
+          if (sessionIdAtRequest !== getSessionId()) return;
+          if (getCurrentSessionTitle(getSessionId())) return;
+          titleFallbackRef.current = reduceTitleFallback(fallback, result);
+          if (result.kind !== 'titled') {
+            haikuTitleAttemptedRef.current = false;
+            return;
+          }
+          // Functional set mirrors the official `Jn.aiSessionTitle` re-check:
+          // never clobber a title that landed while the request was in flight.
+          setHaikuTitle(prev => prev ?? result.title);
+        }, error => {
+          if (titleRequestRef.current === titleRequest) {
+            titleRequestRef.current = null;
+            haikuTitleAttemptedRef.current = false;
+          }
+          logForDebugging(`session title request rejected: ${error}`, { level: 'error' });
         });
       }
     }
@@ -3120,7 +3176,7 @@ export function REPL({
 
     // Signal that a query turn has completed successfully
     await onTurnComplete?.(messagesRef.current);
-  }, [initialMcpClients, resetLoadingState, getToolUseContext, toolPermissionContext, setAppState, customSystemPrompt, onTurnComplete, appendSystemPrompt, canUseTool, mainThreadAgentDefinition, onQueryEvent, sessionTitle, titleDisabled]);
+  }, [initialMcpClients, resetLoadingState, getToolUseContext, toolPermissionContext, setAppState, customSystemPrompt, onTurnComplete, appendSystemPrompt, canUseTool, mainThreadAgentDefinition, onQueryEvent, sessionTitle, titleDisabled, haikuTitle, agentTitle, commands]);
   const onQuery = useCallback(async (newMessages: MessageType[], abortController: AbortController, shouldQuery: boolean, additionalAllowedTools: string[], mainLoopModelParam: string, onBeforeQueryCallback?: (input: string, newMessages: MessageType[]) => Promise<boolean>, input?: string, effort?: EffortValue, isQueuedDispatch?: boolean): Promise<void> => {
     // If this is a teammate, mark them as active when starting a turn
     if (isAgentSwarmsEnabled()) {
@@ -3334,6 +3390,9 @@ export function REPL({
         });
         haikuTitleAttemptedRef.current = false;
         setHaikuTitle(undefined);
+        // CC 2.1.314 items 61+78: new session → drop stale fallback + in-flight request.
+        titleFallbackRef.current = undefined;
+        titleRequestRef.current = null;
         bashTools.current.clear();
         bashToolsProcessedIdx.current = 0;
 
@@ -5250,6 +5309,9 @@ export function REPL({
               });
               haikuTitleAttemptedRef.current = false;
               setHaikuTitle(undefined);
+              // CC 2.1.314 items 61+78: new session → drop stale fallback + in-flight request.
+              titleFallbackRef.current = undefined;
+              titleRequestRef.current = null;
               bashTools.current.clear();
               bashToolsProcessedIdx.current = 0;
             }

@@ -2,11 +2,21 @@ import { randomUUID } from 'crypto'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import { parseForSecurity } from '../../utils/bash/ast.js'
 import { formatDuration } from '../../utils/format.js'
+import { extractFamilyCommand } from '../../utils/hooks/monitorFamily314.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { pluralize } from '../../utils/oauthLoginExpiry.js'
+import {
+  matchWildcardPattern,
+  permissionRuleExtractPrefix,
+} from '../BashTool/bashPermissions.js'
+import { MONITOR_TOOL_NAME } from './toolName.js'
 
-export const MONITOR_TOOL_NAME = 'Monitor'
+// Re-exported for surface compatibility; the const lives in the dependency-free
+// leaf module ./toolName.js so toolPermission/safetyEvent.ts can read it
+// without cycling back through this module (OCC-138 TDZ fix — see toolName.ts).
+export { MONITOR_TOOL_NAME }
 
 /** Default monitor deadline (ms). Mirrors the binary's nOl=300000. */
 const DEFAULT_TIMEOUT_MS = 300_000
@@ -411,6 +421,40 @@ export const MonitorTool = buildTool({
   },
   toAutoClassifierInput(input) {
     return input.description ?? ''
+  },
+  // claude-code 2.1.314 item 89 — the Monitor def GREW this (v314 ELF
+  // @260931165, verbatim):
+  //   async preparePermissionMatcher(e){let n=$Fr(e);return n===void 0?()=>!1:Gjr(n)}
+  // `$Fr` (@253917406) extracts the non-empty string command — no command
+  // (ws-only monitors) → never match. `Gjr` (@257866096) is the SHARED command
+  // matcher the Bash def also uses (@257927607:
+  // `async preparePermissionMatcher({command:e}){return Gjr(e)}`), which is the
+  // changelog's "as `Bash(tail *)` matches Bash's". v312's Monitor def
+  // (@256378924) has NO preparePermissionMatcher — NEW in v314. OCC has no
+  // shared Gjr module (BashTool.tsx carries its own inline body, out-of-cluster
+  // for edits), so the matcher body below mirrors BashTool's verbatim.
+  async preparePermissionMatcher(input) {
+    const command = extractFamilyCommand(input)
+    if (command === undefined) {
+      return () => false
+    }
+    // Hook `if` filtering is "no match → skip hook" (deny-like semantics), so
+    // compound commands must fire the hook if ANY subcommand matches.
+    const parsed = await parseForSecurity(command)
+    if (parsed.kind !== 'simple') {
+      // parse-unavailable / too-complex: fail safe by running the hook.
+      return () => true
+    }
+    const subcommands = parsed.commands.map(c => c.argv.join(' '))
+    return pattern => {
+      const prefix = permissionRuleExtractPrefix(pattern)
+      return subcommands.some(cmd => {
+        if (prefix !== null) {
+          return cmd === prefix || cmd.startsWith(`${prefix} `)
+        }
+        return matchWildcardPattern(pattern, cmd)
+      })
+    }
   },
   async call(input, _context) {
     const taskId = `monitor-${randomUUID()}`

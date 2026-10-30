@@ -1,5 +1,5 @@
 import chalk from 'chalk'
-import type { Token } from 'marked'
+import type { Token, Tokens } from 'marked'
 import stripAnsi from 'strip-ansi'
 import { BLOCKQUOTE_BAR } from '../constants/figures.js'
 
@@ -154,4 +154,88 @@ export function renderBlockquoteWindowed(
   return renderQuoteLevel(tokens, around, { around, draw })
     .map(group => group.rows)
     .join('')
+}
+
+/**
+ * CC 2.1.314 changelog #47 — "Fixed blank lines at the top of a code block
+ * disappearing when the code block opens a quote."
+ *
+ * Byte-faithful port of the official v314 hoist detector recovered from the
+ * 2.1.314 linux-x64 binary @259564600 region:
+ *   function Ve(e,t){switch(e.type){case"space":return!0;case"code":
+ *     return e.text===""&&(!e.lang||t?.supportsLanguage(e.lang)===!0);
+ *     case"heading":return e.text==="";case"blockquote":
+ *     return(e.tokens??[]).every((n)=>Ve(n,t));default:return!1}}
+ *   function ELt(e,t){let n=e.tokens.findIndex((s)=>!Ve(s,t)),r=e.tokens[n],
+ *     o=r?.type==="blockquote"?ELt(r,t):r?.type==="code"?r:void 0;
+ *     return o&&{...e,tokens:[o,...e.tokens.slice(n+1)]}}
+ * It replaces the v312 detector `Ye` @254948700 region, which skipped only
+ * space tokens and lang-less empty code, required a NON-empty code text to
+ * hoist, and was not recursive over empty nested quotes.
+ *
+ * Official consumers (v314): the blockquote component `Eo` gates its leading
+ * strip on it — `U=he.italic((E?L:L.replace(/^\n+/,"")).trimEnd())` with
+ * `E=ELt(p,m)` (v312 `yo` stripped unconditionally — the bug); the list
+ * renderer `js` gates `(D?G:G.replace(/^\n+/,""))` with
+ * `D=M.type==="blockquote"?ELt(M,c):void 0`; and formatToken's list_item
+ * per-child gate keeps `x.type==="blockquote"&&G===void 0||x.type==="hr"||
+ * x.type==="table"?N.replace(/^\n+/,""):N` with the `Ye`→`ELt` upgrade.
+ *
+ * `highlight` is the official `t` context: only `supportsLanguage` is
+ * consulted (Ve's empty-code case), so a structural type keeps this module
+ * decoupled from CliHighlight.
+ */
+export type QuoteHoistHighlight = {
+  supportsLanguage: (language: string) => boolean
+} | null
+
+/** Official `Ve(e,t)` — is this token visually empty (skippable prefix)? */
+function isVisuallyEmptyQuoteToken(
+  token: Token,
+  highlight: QuoteHoistHighlight,
+): boolean {
+  switch (token.type) {
+    case 'space':
+      return true
+    case 'code': {
+      const code = token as Tokens.Code
+      return (
+        code.text === '' &&
+        (!code.lang || highlight?.supportsLanguage(code.lang) === true)
+      )
+    }
+    case 'heading':
+      return (token as Tokens.Heading).text === ''
+    case 'blockquote':
+      return ((token as Tokens.Blockquote).tokens ?? []).every(child =>
+        isVisuallyEmptyQuoteToken(child, highlight),
+      )
+    default:
+      return false
+  }
+}
+
+/** Official `ELt(e,t)` — when the first non-empty token of a blockquote is a
+ * code block (possibly via a nested quote), return the rebuilt quote token
+ * with that block hoisted to the front; otherwise `undefined`. Callers use
+ * the truthiness to SKIP their leading-newline strip, preserving the blank
+ * line at the top of the opening code block. */
+export function hoistQuoteOpeningBlock(
+  quote: Tokens.Blockquote,
+  highlight: QuoteHoistHighlight,
+): Tokens.Blockquote | undefined {
+  const children = quote.tokens ?? []
+  const index = children.findIndex(
+    child => !isVisuallyEmptyQuoteToken(child, highlight),
+  )
+  const first = index >= 0 ? children[index] : undefined
+  const hoisted =
+    first?.type === 'blockquote'
+      ? hoistQuoteOpeningBlock(first as Tokens.Blockquote, highlight)
+      : first?.type === 'code'
+        ? first
+        : undefined
+  return hoisted
+    ? { ...quote, tokens: [hoisted, ...children.slice(index + 1)] }
+    : undefined
 }

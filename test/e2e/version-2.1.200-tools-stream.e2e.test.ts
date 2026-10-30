@@ -20,7 +20,16 @@ describe('2.1.200 tools (H1/H2/H3/H10) — source-grep + parse', () => {
 
     // Exact name + description prefix from the binary's `ago` description.
     expect(src.includes("name: MONITOR_TOOL_NAME")).toBe(true)
-    expect(src).toContain("export const MONITOR_TOOL_NAME = 'Monitor'")
+    // OCC-138: the const moved to a dependency-free leaf module (toolName.ts,
+    // matching BashTool/PowerShellTool convention) to break the import cycle
+    // MonitorTool → bashPermissions → … → safetyEvent → MonitorTool (TDZ).
+    // MonitorTool.ts re-exports it for surface compatibility.
+    const nameSrc = await Bun.file(
+      `${REPO_ROOT}/src/tools/MonitorTool/toolName.ts`,
+    ).text()
+    expect(nameSrc).toContain("export const MONITOR_TOOL_NAME = 'Monitor'")
+    expect(src).toContain("import { MONITOR_TOOL_NAME } from './toolName.js'")
+    expect(src).toContain('export { MONITOR_TOOL_NAME }')
     expect(src).toContain(
       'Start a background monitor that streams events from a long-running script',
     )

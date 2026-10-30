@@ -16,15 +16,28 @@ import { z } from 'zod/v4'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { logEvent } from '../services/analytics/index.js'
 import { queryHaiku } from '../services/api/claude.js'
-import type { Message } from '../types/message.js'
+import { PROMPT_TOO_LONG_ERROR_MESSAGE } from '../services/api/errors.js'
+import type { AssistantMessage, Message } from '../types/message.js'
 import { logForDebugging } from './debug.js'
 import { safeParseJSON } from './json.js'
 import { lazySchema } from './lazySchema.js'
 import { extractTextContent } from './messages.js'
+import { isMeaningfulTitleText } from './sessionTitleInput.js'
+import type { SessionTitleRequestResult } from './sessionTitleInput.js'
 import { asSystemPrompt } from './systemPromptType.js'
 import { getInitialSettings } from './settings/settings.js'
 
 const MAX_CONVERSATION_TEXT = 1000
+
+/**
+ * Official `wfn=2000` @255029272 — the session-title input cap. The cap is
+ * only applied behind `w()` = the `tengu_lucky_brooks` Statsig gate (default
+ * off, catch→false), so with the flag off the official never truncates the
+ * input; `wfn` survives only as the `input_over_cap` analytics threshold.
+ * OCC has no Statsig — flag-off semantics are ported exactly (no capping,
+ * `input_capped: false`, `input_over_cap: length > 2000`).
+ */
+const SESSION_TITLE_INPUT_CAP = 2000
 
 /**
  * Flatten a message array into a single text string for Haiku title input.
@@ -71,18 +84,53 @@ Bad (wrong case): {"title": "Fix Login Button On Mobile"}`
 const titleSchema = lazySchema(() => z.object({ title: z.string() }))
 
 /**
- * Generate a sentence-case session title from a description or first message.
- * Returns null on error or if Haiku returns an unparseable response.
- *
- * @param description - The user's first message or a description of the session
- * @param signal - Abort signal for cancellation
+ * Official `B3(e)` @246467524 (byte-verified):
+ * `if(!e.isApiErrorMessage)return!1; let t=e.message.content;
+ *  if(!Array.isArray(t))return!1;
+ *  return t.some((r)=>r.type==="text"&&r.text.startsWith(YN))`
+ * with `YN="Prompt is too long"`. (Same shape as OCC's existing
+ * `isPromptTooLongMessage` in services/api/errors.ts — kept local here so
+ * this module's import surface stays minimal, per its header contract.)
  */
-export async function generateSessionTitle(
+export function isPromptTooLongApiError(result: AssistantMessage): boolean {
+  if (!result.isApiErrorMessage) return false
+  const content = result.message.content
+  if (!Array.isArray(content)) return false
+  return content.some(
+    (block: { type?: string; text?: string }) =>
+      block.type === 'text' &&
+      typeof block.text === 'string' &&
+      block.text.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE),
+  )
+}
+
+/**
+ * Official `nin(text,signal,credentials)` @261924458 + inner `C(...)`
+ * (byte-verified) — CC 2.1.314 item 61. Returns a three-way result instead
+ * of title-or-null so the REPL can distinguish:
+ *  - `titled`   → apply the title, drop the fallback (official pzn case 1);
+ *  - `unusable` → input/output unusable (too short, unparseable, or the
+ *    "Prompt is too long" API error — official `B3` exemption: C() does NOT
+ *    throw for it, the json_schema parse fails → null → unusable); burns one
+ *    fallback reply (pzn case 3);
+ *  - `failed`   → API/network error (C() throws
+ *    `"Session title request failed with an API error"` when
+ *    `isApiErrorMessage && !B3`); the fallback is PRESERVED and the REPL
+ *    resets `_haikuTitleAttempted` so the next turn retries with the
+ *    ORIGINAL prompt — the item 61 fix.
+ *
+ * Official `C()` sends `language`-aware instructions and wraps the input in
+ * `<session>…</session>`; OCC keeps its pre-existing SESSION_TITLE_PROMPT
+ * language-suffix wiring (documented pre-existing divergence). The
+ * `wfn`/`b1r` input cap is skipped (flag off — see SESSION_TITLE_INPUT_CAP).
+ */
+export async function requestSessionTitle(
   description: string,
   signal: AbortSignal,
-): Promise<string | null> {
+): Promise<SessionTitleRequestResult> {
   const trimmed = description.trim()
-  if (!trimmed) return null
+  if (!isMeaningfulTitleText(trimmed)) return { kind: 'unusable' }
+  const inputOverCap = trimmed.length > SESSION_TITLE_INPUT_CAP
 
   try {
     const language = getInitialSettings()?.language
@@ -116,19 +164,53 @@ export async function generateSessionTitle(
       },
     })
 
-    const text = extractTextContent(result.message.content as any)
+    // Official C(): `if(d.isApiErrorMessage&&!B3(d))throw Error("Session
+    // title request failed with an API error")`.
+    if (result.isApiErrorMessage && !isPromptTooLongApiError(result)) {
+      throw new Error('Session title request failed with an API error')
+    }
 
+    const text = extractTextContent(result.message.content as never)
     const parsed = titleSchema().safeParse(safeParseJSON(text))
     const title = parsed.success ? parsed.data.title.trim() || null : null
 
-    logEvent('tengu_session_title_generated', { success: title !== null })
+    logEvent('tengu_session_title_generated', {
+      success: title !== null,
+      input_capped: false,
+      input_over_cap: inputOverCap,
+    })
 
-    return title
+    return title === null ? { kind: 'unusable' } : { kind: 'titled', title }
   } catch (error) {
-    logForDebugging(`generateSessionTitle failed: ${error}`, {
+    logForDebugging(`requestSessionTitle failed: ${error}`, {
       level: 'error',
     })
-    logEvent('tengu_session_title_generated', { success: false })
-    return null
+    logEvent('tengu_session_title_generated', {
+      success: false,
+      input_capped: false,
+      input_over_cap: inputOverCap,
+    })
+    return { kind: 'failed' }
   }
+}
+
+/**
+ * Official `Uht(e,c,r)` @261925003 (byte-verified):
+ * `let n=await nin(e,c,r); return n.kind==="titled"?n.title:null`.
+ *
+ * Generate a sentence-case session title from a description or first message.
+ * Returns null on error or if Haiku returns an unparseable response. Kept as
+ * the string-or-null facade for the existing callers (print.ts,
+ * initReplBridge.ts, useRemoteSession.ts); the REPL uses requestSessionTitle
+ * directly for the item 61 fallback state machine.
+ *
+ * @param description - The user's first message or a description of the session
+ * @param signal - Abort signal for cancellation
+ */
+export async function generateSessionTitle(
+  description: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const result = await requestSessionTitle(description, signal)
+  return result.kind === 'titled' ? result.title : null
 }

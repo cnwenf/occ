@@ -11,6 +11,10 @@ import { useInput } from '../ink.js'
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js'
 import type { PromptInputMode } from '../types/textInputTypes.js'
 import type { HistoryEntry } from '../utils/config.js'
+import {
+  findSearchCursorPosition,
+  historyEntryMatchesQuery,
+} from '../utils/historySearchMatch.js'
 
 export function useHistorySearch(
   onAcceptHistory: (entry: HistoryEntry) => void,
@@ -130,22 +134,30 @@ export function useHistorySearch(
         }
 
         const display = item.value.display
+        const pastedContents = item.value.pastedContents
 
-        const matchPosition = display.lastIndexOf(historyQuery)
-        if (matchPosition !== -1 && !seenPrompts.current.has(display)) {
+        // 2.1.314 item 70: match the display text OR the expanded
+        // [Pasted text] pill contents (official
+        // `Ho.toLowerCase().includes(yn)||uKo(Ho,Co).toLowerCase().includes(yn)`),
+        // replacing the v312-era display-only `lastIndexOf` match.
+        if (
+          historyEntryMatchesQuery(display, pastedContents, historyQuery) &&
+          !seenPrompts.current.has(display)
+        ) {
           seenPrompts.current.add(display)
           setHistoryMatch(item.value)
           setHistoryFailedMatch(false)
           const mode = getModeFromInput(display)
           onModeChange(mode)
           onInputChange(display)
-          setPastedContents(item.value.pastedContents)
+          setPastedContents(pastedContents)
 
-          // Position cursor relative to the clean value, not the display
+          // Position cursor relative to the clean value, not the display.
+          // Official M1e: last match in the value, else the index of the
+          // last pill whose text content matches, else end of value.
           const value = getValueFromInput(display)
-          const cleanMatchPosition = value.lastIndexOf(historyQuery)
           onCursorChange(
-            cleanMatchPosition !== -1 ? cleanMatchPosition : matchPosition,
+            findSearchCursorPosition(value, pastedContents, historyQuery),
           )
           return
         }

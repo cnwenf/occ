@@ -36,6 +36,7 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import * as CHILD_PROCESS_NAMESPACE from 'child_process'
 import * as FS_PROMISES_NAMESPACE from 'fs/promises'
+import * as BASH_PROVIDER_NAMESPACE from '../shell/bashProvider.js'
 
 // Snapshot the REAL exports by value BEFORE mock.module patches the live
 // namespace bindings (precedent: hookStdioFlags285RealChild.test.ts) —
@@ -43,6 +44,7 @@ import * as FS_PROMISES_NAMESPACE from 'fs/promises'
 // `open` mock into later test files in the same worker.
 const REAL_CHILD_PROCESS = { ...CHILD_PROCESS_NAMESPACE }
 const REAL_FS_PROMISES = { ...FS_PROMISES_NAMESPACE }
+const REAL_BASH_PROVIDER = { ...BASH_PROVIDER_NAMESPACE }
 import { join } from 'path'
 import { getClaudeTempDirName } from '../permissions/filesystem.js'
 import { getTmpRootDir } from '../tmpDirBackstop.js'
@@ -108,6 +110,12 @@ async function installFailingOpen(
 async function restoreMocks(): Promise<void> {
   await mock.module('fs/promises', () => ({ ...REAL_FS_PROMISES }))
   await mock.module('child_process', () => ({ ...REAL_CHILD_PROCESS }))
+  // OCC-97 hygiene: restore the fake bash provider too — leaking the
+  // raw-command stub into later files in the same `bun test` process broke
+  // their real-provider assertions (e.g. tmpdirBackstop277).
+  await mock.module('../shell/bashProvider.js', () => ({
+    ...REAL_BASH_PROVIDER,
+  }))
 }
 
 describe('CC 2.1.306 isDiskFullError (official FSn predicate)', () => {

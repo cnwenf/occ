@@ -3378,9 +3378,14 @@ async function run(): Promise<CommanderCommand> {
       logSessionTelemetry();
       profileCheckpoint('before_print_import');
       const {
-        runHeadless
+        runHeadless,
+        endHeadlessSessionOnEscapedError
       } = await import('src/cli/print.js');
       profileCheckpoint('after_print_import');
+      // CC 2.1.314 item 6 — official print dispatch attaches
+      // `Po(J,re,…).catch((O)=>Eo(J,O,x))` (v312 `eo` identical): an escaped
+      // runHeadless rejection prints "An internal error ended the session
+      // (…)." and exits 1 instead of dying silently with code 0.
       void runHeadless(inputPrompt, () => headlessStore.getState(), headlessStore.setState, commandsHeadless, tools, sdkMcpConfigs, agentDefinitions.activeAgents, {
         continue: options.continue,
         resume: options.resume,
@@ -3419,6 +3424,8 @@ async function run(): Promise<CommanderCommand> {
         // into the first user message (see print.ts).
         promptSuggestions: (options as { promptSuggestions?: boolean }).promptSuggestions,
         excludeDynamicSections: (options as { excludeDynamicSystemPromptSections?: boolean }).excludeDynamicSystemPromptSections || undefined,
+      }).catch(error => {
+        endHeadlessSessionOnEscapedError(error, outputFormat);
       });
       return;
     }
@@ -5056,7 +5063,10 @@ async function run(): Promise<CommanderCommand> {
     // Skip when tengu_auto_mode_config.enabled === 'disabled' (circuit breaker).
     // Reads from disk cache — GrowthBook isn't initialized at registration time.
     if (getAutoModeEnabledStateIfCached() !== 'disabled') {
-      const autoModeCmd = program.command('auto-mode').description('Inspect or reset auto mode classifier configuration');
+      // CC 2.1.314 (OCC-138): description drops "classifier" — byte-verified
+      // `Inspect or reset auto mode configuration` ×2 in the v314 ELF
+      // (v312 had `...classifier configuration` ×2; 0 hits in v314).
+      const autoModeCmd = program.command('auto-mode').description('Inspect or reset auto mode configuration');
       autoModeCmd.command('defaults').description('Print the default auto mode environment, allow, soft_deny, and hard_deny rules as JSON').option('--label <prefix>', 'Show only rules whose label starts with this prefix (case-insensitive)').action(async options => {
         const {
           autoModeDefaultsHandler

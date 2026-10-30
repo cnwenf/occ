@@ -17,6 +17,7 @@ import {
   getSettings_DEPRECATED,
   rawSettingsContainsKey,
 } from './settings/settings.js'
+import { cleanupSkillsTrashCap } from './skills/syncTrashTrim.js'
 import { TOOL_RESULTS_SUBDIR } from './toolResultStorage.js'
 import { cleanupStaleAgentWorktrees } from './worktree.js'
 
@@ -737,6 +738,13 @@ export async function cleanupOldMessageFilesInBackground(): Promise<void> {
       logEvent('tengu_worktree_cleanup', { removed: removedWorktrees })
     }
   }
+  // CC 2.1.314 #66: skills/.trash ~1024-entry cap sweep. Official BIN314
+  // (wpc-100920 @17420): `...if(O!==null){...}w.push(await De(e)),
+  // w.push(await D())` — De runs AFTER and OUTSIDE the cutoff-null guard, so
+  // the cap applies "whatever cleanupPeriodDays says". Official De sweeps
+  // [gYe,aFe] (skills/.trash + plugins/.trash); plugins is N-A in OCC
+  // (marketplace removed, OCC-31) → skills only.
+  await cleanupSkillsTrashCap()
   if (process.env.USER_TYPE === 'ant') {
     await cleanupNpmCacheForAnthropicPackages()
   }

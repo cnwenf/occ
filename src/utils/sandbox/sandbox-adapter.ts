@@ -72,6 +72,10 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
+import {
+  checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
+  refreshGrowthBookFeatures,
+} from '../../services/analytics/growthbook.js'
 import { errorMessage, getErrnoCode } from '../errors.js'
 import { getClaudeTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
@@ -1922,6 +1926,152 @@ async function reset(): Promise<void> {
 
   // Reset the base sandbox manager
   return BaseSandboxManager.reset()
+}
+
+// ============================================================================
+// CC 2.1.314 #32 — sandbox protections for a worktree entered by
+// `claude -p --resume` / `--continue`
+// ============================================================================
+//
+// Official mechanism, byte-verified against scratch-occ138/v314/package/claude
+// (resume-validation function `YF` @282197900 region; absent from v312):
+//   `let h=ve(),y=null;` at the top, then before the persist branch:
+//   `if(!y&&ve()!==h&&kVt()){if(await Re(ui().catch(()=>null),sG),bn(oG,{safe:!0})){let C=!1;try{C=Ke.refreshConfig()}catch(w){JI(w,"configNotRebuilt")}if(!C)return m("sandbox_resume_rebuild","rebuild_failed"),as("Error: could not apply the sandbox's protections to this session's worktree, so the session was not resumed. Run the resume again. If it fails the same way, check the sandbox paths in your settings, or re-run with --fork-session to continue without the worktree.",s),mi(1),!0;g("sandbox_resume_rebuild")}}`
+// Symbol resolutions: `oG="tengu_anchored_lantern"`, `sG=2000` @281953480;
+// `kVt()` sandbox-active predicate @250912474; `Ke` sandbox manager singleton
+// @250938634; `tb` (refreshConfig, boolean) @250937055; `Re(promise,ms)`
+// timeout-race; `ui()` GrowthBook init/fetch promise; `m`/`g` failure/success
+// analytics pair; error string @122721011; event `sandbox_resume_rebuild`
+// registered @120054336.
+//
+// SCOPE: this file provides the SANDBOX-SIDE wiring (WP-D). The caller-side
+// refuse-resume branch (stderr write + exit(1)) lands in the print-mode
+// startup-error region owned by WP-F and is delivered as a reported patch.
+
+/** Official `oG` — gate for the resume rebuild (@281953480). */
+export const SANDBOX_RESUME_REBUILD_GATE = 'tengu_anchored_lantern'
+
+/** Official `sG=2000` — GrowthBook wait bound in ms (@281953480). */
+export const SANDBOX_RESUME_GROWTHBOOK_WAIT_MS = 2000
+
+/** Official refuse-resume message, byte-exact (@122721011). */
+export const SANDBOX_RESUME_REBUILD_ERROR_MESSAGE =
+  "Error: could not apply the sandbox's protections to this session's worktree, so the session was not resumed. Run the resume again. If it fails the same way, check the sandbox paths in your settings, or re-run with --fork-session to continue without the worktree."
+
+/** Test seams mirroring the official internals (see flow tests). */
+export type SandboxResumeRebuildOverrides = {
+  sandboxActive?: boolean
+  growthBookWaitMs?: number
+}
+
+/**
+ * Official `ve()!==h&&kVt()` decision — pure function so it is testable on
+ * any platform. Rebuild only when the cwd changed (worktree entered) AND the
+ * sandbox is active in this process.
+ */
+export function shouldRebuildSandboxOnWorktreeResume(input: {
+  previousCwd: string
+  currentCwd: string
+  sandboxActive: boolean
+}): boolean {
+  return input.currentCwd !== input.previousCwd && input.sandboxActive
+}
+
+/** Official `kVt()` @250912474 — sandbox initialized AND enabled. */
+function isSandboxActiveForResume(): boolean {
+  return initializationPromise !== undefined && isSandboxingEnabled()
+}
+
+/**
+ * Boolean-result variant of refreshConfig() mirroring the official `tb`
+ * @250937055: `if(We().configBuildFailed)return!1;if(!Pc())return!0;let e=Ew();if(e===void 0)return!1;return bi(e),!0`
+ * — success when sandboxing is off (nothing to rebuild), failure when the
+ * config build throws. The existing void refreshConfig() keeps its throw
+ * behavior (the per-command fail-closed cadence relies on it).
+ *
+ * OCC adaptation: the official's `configBuildFailed` cached flag is checked
+ * BEFORE `!Pc()`; OCC has no such flag, so the settings read + config build
+ * run inside the try first (any throw → false = configBuildFailed analog),
+ * then the disabled early-return (→ true = `!Pc()` branch). Same observable
+ * outcomes in both official orderings.
+ */
+function rebuildSandboxConfigForResult(): boolean {
+  try {
+    const settings = getSettings_DEPRECATED()
+    if (!isSandboxingEnabled()) return true
+    const newConfig = convertToSandboxRuntimeConfig(settings)
+    BaseSandboxManager.updateConfig(newConfig)
+    return true
+  } catch (error) {
+    // Official `catch(w){JI(w,"configNotRebuilt")}`
+    logForDebugging(
+      `[sandbox] configNotRebuilt: failed to rebuild sandbox config on worktree resume: ${errorMessage(error)}`,
+    )
+    return false
+  }
+}
+
+/** Official `Re(ui().catch(()=>null),sG)` — timeout race, never rejects. */
+async function waitForGrowthBookWithBound(timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      refreshGrowthBookFeatures().catch(() => null),
+      new Promise<void>(resolveTimeout => {
+        timer = setTimeout(resolveTimeout, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
+ * Official #32 block as an async helper the resume path awaits after the
+ * worktree restore. Returns true when the session may continue; false when
+ * the rebuild failed and the caller must refuse the resume (official
+ * `m("sandbox_resume_rebuild","rebuild_failed")` → stderr → `mi(1)`).
+ */
+export async function refreshSandboxConfigForResumedWorktree(
+  previousCwd: string,
+  overrides?: SandboxResumeRebuildOverrides,
+): Promise<boolean> {
+  const sandboxActive =
+    overrides?.sandboxActive ?? isSandboxActiveForResume()
+  if (
+    !shouldRebuildSandboxOnWorktreeResume({
+      previousCwd,
+      currentCwd: getCwdState(),
+      sandboxActive,
+    })
+  ) {
+    return true
+  }
+
+  // Official: `await Re(ui().catch(()=>null),sG)` BEFORE reading the gate so
+  // the freshly-fetched flag value is used.
+  await waitForGrowthBookWithBound(
+    overrides?.growthBookWaitMs ?? SANDBOX_RESUME_GROWTHBOOK_WAIT_MS,
+  )
+  if (!checkStatsigFeatureGate_CACHED_MAY_BE_STALE(SANDBOX_RESUME_REBUILD_GATE)) {
+    return true
+  }
+
+  // OCC-specific: `worktreeMainRepoPath` was cached at initialize() from the
+  // pre-resume cwd; entering the worktree makes it stale, so re-detect
+  // against the new cwd before rebuilding (otherwise the rebuilt config
+  // would still carry the old worktree allow-write paths).
+  worktreeMainRepoPath = await detectWorktreeMainRepoPath(getCwdState())
+
+  const rebuilt = rebuildSandboxConfigForResult()
+  if (!rebuilt) {
+    // Official `m("sandbox_resume_rebuild","rebuild_failed")`
+    logEvent('sandbox_resume_rebuild', { reason: 'rebuild_failed' })
+    return false
+  }
+  // Official `g("sandbox_resume_rebuild")`
+  logEvent('sandbox_resume_rebuild', {})
+  return true
 }
 
 /**

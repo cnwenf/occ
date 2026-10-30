@@ -7,7 +7,10 @@ import { supportsHyperlinks } from '../ink/supports-hyperlinks.js'
 import type { CliHighlight } from './cliHighlight.js'
 import { logForDebugging } from './debug.js'
 import { createHyperlink } from './hyperlink.js'
-import { renderBlockquoteWindowed } from './markdownBlockquote.js'
+import {
+  hoistQuoteOpeningBlock,
+  renderBlockquoteWindowed,
+} from './markdownBlockquote.js'
 import {
   markdownLexGuard,
   maxNestingFallbackToken,
@@ -291,6 +294,53 @@ export function renderTokenWindowed(
 }
 
 /**
+ * CC 2.1.314 changelog #47 — does this token's rendered output legitimately
+ * START with the leading blank line of a code block opening a quote?
+ *
+ * The official fixes the strip inside its blockquote/list COMPONENTS (`Eo`:
+ * `(E?L:L.replace(/^\n+/,"")).trimEnd()` with `E=ELt(p,m)`; `js`:
+ * `(D?G:G.replace(/^\n+/,""))` with `D=M.type==="blockquote"?ELt(M,c):
+ * void 0`), and those components render quotes/lists as standalone elements
+ * — no prose-batch trim ever touches them. OCC's MarkdownBody batches the
+ * string-path renders into one ANSI string and trims the batch, so this
+ * walker adapts the same detection to the batch seam: it answers whether the
+ * FIRST thing a token renders is a hoisted opening-code-block quote (quote
+ * directly, or via the first list item / first non-checkbox child chain).
+ * Callers keep the leading newlines (trimEnd only) when it returns true.
+ */
+export function opensWithHoistedQuoteCode(
+  token: Token,
+  highlight: CliHighlight | null,
+): boolean {
+  switch (token.type) {
+    case 'blockquote':
+      return (
+        hoistQuoteOpeningBlock(token as Tokens.Blockquote, highlight) !==
+        undefined
+      )
+    case 'list': {
+      const firstItem = (token as Tokens.List).items[0]
+      return (
+        firstItem !== undefined &&
+        opensWithHoistedQuoteCode(firstItem, highlight)
+      )
+    }
+    case 'list_item': {
+      const item = token.tokens
+        ? normalizeNumericListItem(token as Tokens.ListItem)
+        : token
+      const firstChild = (item.tokens ?? []).find(_ => _.type !== 'checkbox')
+      return (
+        firstChild !== undefined &&
+        opensWithHoistedQuoteCode(firstChild, highlight)
+      )
+    }
+    default:
+      return false
+  }
+}
+
+/**
  * Domain bounds of an ordered list, mirrored from the official v281 `a6n`
  * @205766744 region (`{first: e.start === "" ? 1 : e.start,
  * last: first + e.items.length - 1}`) — the letter/roman conversions in
@@ -506,15 +556,33 @@ export function formatToken(
       // serializer has a single return path and prefixes every child with
       // the depth indent — so a leading blank child line can be "\n" or
       // "  \n"; the adapted strip removes all leading whitespace-only lines.
-      const inner = (item.tokens ?? [])
-        .filter(_ => _.type !== 'checkbox')
+      //
+      // CC 2.1.314 #47 gate: the official formatToken list_item per-child
+      // strip is gated on the hoist detector — v314 @259564xxx region:
+      //   G=x.type==="blockquote"?ELt(x,l):void 0 …
+      //   return x.type==="blockquote"&&G===void 0||x.type==="hr"||
+      //     x.type==="table"?N.replace(/^\n+/,""):N
+      // (v312 identical with `Ye` in place of `ELt`), and the official list
+      // component `js` keeps `(D?G:G.replace(/^\n+/,"")).trimEnd()` with
+      // `D=M.type==="blockquote"?ELt(M,c):void 0`. So when the item OPENS
+      // with a quote whose first non-empty token is a code block, the
+      // leading blank line of that code block must survive — the adapted
+      // whole-join strip is skipped for exactly that case.
+      const children = (item.tokens ?? []).filter(_ => _.type !== 'checkbox')
+      const firstChild = children[0]
+      const keepLeadNewlines =
+        firstChild?.type === 'blockquote' &&
+        hoistQuoteOpeningBlock(
+          firstChild as Tokens.Blockquote,
+          highlight,
+        ) !== undefined
+      const inner = children
         .map(
           _ =>
             `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, item, highlight, orderedListMeta, quotesAround)}`,
         )
         .join('')
-        .replace(/^(?:[ \t]*\n)+/, '')
-      return inner
+      return keepLeadNewlines ? inner : inner.replace(/^(?:[ \t]*\n)+/, '')
     }
     case 'paragraph':
       return (

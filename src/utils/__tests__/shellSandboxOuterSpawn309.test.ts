@@ -27,6 +27,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import * as REAL_CHILD_PROCESS from 'child_process'
 import { exec } from '../Shell.js'
 import * as REAL_SANDBOX_ADAPTER from '../sandbox/sandbox-adapter.js'
+import * as REAL_BASH_PROVIDER from '../shell/bashProvider.js'
 
 // Snapshot the REAL exports by value BEFORE mock.module patches the live
 // namespace bindings (precedent: hookStdioFlags285RealChild.test.ts) —
@@ -34,6 +35,7 @@ import * as REAL_SANDBOX_ADAPTER from '../sandbox/sandbox-adapter.js'
 // the spy, and restoring from the patched namespace would leak the mock.
 const PRISTINE_CHILD_PROCESS = { ...REAL_CHILD_PROCESS }
 const PRISTINE_SANDBOX_ADAPTER = { ...REAL_SANDBOX_ADAPTER }
+const PRISTINE_BASH_PROVIDER = { ...REAL_BASH_PROVIDER }
 const realSpawn = PRISTINE_CHILD_PROCESS.spawn as (...args: unknown[]) => unknown
 
 type SpawnCapture = { binary: string; args: string[] }
@@ -87,6 +89,12 @@ async function restoreMocks(): Promise<void> {
     ...PRISTINE_SANDBOX_ADAPTER,
   }))
   await mock.module('child_process', () => ({ ...PRISTINE_CHILD_PROCESS }))
+  // OCC-97 hygiene: the fake bash provider must be restored too — leaking it
+  // into later files in the same `bun test` process made their real-provider
+  // assertions (e.g. tmpdirBackstop277) see the raw-command stub.
+  await mock.module('../shell/bashProvider.js', () => ({
+    ...PRISTINE_BASH_PROVIDER,
+  }))
 }
 
 describe('CC 2.1.309 item 1 — sandboxed POSIX outer spawn is /bin/sh', () => {

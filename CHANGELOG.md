@@ -2,6 +2,24 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.408 - 2026-10-31 (OCC-138 — 官方 2.1.312→2.1.314 追齐轮：三方核验官方 latest==next==**2.1.314**（stable 2.1.308），**2.1.313 从未发布**（`npm view @anthropic-ai/claude-code@2.1.313` → E404，单步跨越 312→314）；~120 条 2.1.314 changelog 逐条对 v312/v314 ELF（md5 `be77f40…`/`5ea08c5…`，21,688 added / 19,302 removed unique strings）分诊，全程 `strings`/`grep -aboF`/`dd` 字节取证——官方二进制从未作为模型后端执行（仅 --version/--help/arg-error 表面核对）；ledger §3.A 17 项 → **IMPLEMENTED 15 · PARTIAL 1 · grounded NO-OP 1**，经 5 个并行工作包 + orchestrator 直改落地；gate ci-test.sh **15,221 pass / 6 fail / 12 skip**，6 例首轮失败全部 triage（2 例 Monitor TDZ 修复、2 例过时 v312 断言升级到 v314 契约、1 例 `/feedback` 真 API flake 复跑 16/16 绿、1 例 bun-1.3.14 本地已知 artifact clean-HEAD A/B 实证与本轮改动无关——CI 锁 1.4.2）；build 30.62 MB；tmux 真模型 REPL 真人式任务矩阵 + headless `-p` PONG + item-6 arg-error 对官方 v314 字节级一致 + 官方 v312↔v314 `--help` 全 flag 面比对（唯一变化 = auto-mode 描述，已移植）；台账 `docs/upstream-version-gap-occ138-2026-10.md`)
+
+- **item 6** — `claude -p` 启动失败不再静默 exit 0：打印错误并 **exit 1**（官方 `GXe`/`as`/`$N`/`jFe` 字节移植 + main.tsx print 派发补回缺失的 `.catch`）；对官方 v314 `--resume-session-at` 无 `--resume` 的 arg-error 路径字节级一致（同 stderr 文本 + exit 1）
+- **item 61/78** — 首条 prompt 失败（如 usage limit）后会话不再无标题；skill/prompt-based 命令（如 `/security-review`）开头的会话据此自动取名
+- **item 70** — Ctrl+R 历史搜索匹配折叠 `[Pasted text]` pill 内的文本
+- **item 47/48** — blockquote 开头代码块的首部空行不再丢失（官方 `ELt`）；transcript 视图（Ctrl+O）部分 `⎿` 行上方缺空行的问题修复
+- **item 22** — PreCompact hook 输出在 **10,000 chars** 截断，超大输出不再导致 compaction 失败/重复
+- **item 89/33** — hook `if` 条件（如 `Monitor(tail *)`）家族匹配 Monitor 工具的 shell 命令；Bash 家族 hook 也作用于 Monitor 命令——可 block/ask 但**不可** approve/rewrite；两者经官方 `Gjr` 共享 preparePermissionMatcher 移植
+- **item 66/62** — `~/.claude/skills/.trash`（含 `plugins/.trash`）封顶 **1024 entries**；skill 文件 watcher 不再反复重查已 trash 的 skill
+- **item 86/94** — Bash tool 清理继承的 `which` alias/function 且不再传递导出的 which/unsetenv 函数（官方 `ZSn`）；macOS `git grep` 使用 C locale 规避 regex 内存泄漏（官方 `TSn`）
+- **item 30** — `sandbox.excludedCommands` 设置描述更新为"调用中每个命令都必须命中某条目"（旧文案"always run outside the sandbox"低报约束）
+- **item 93** — `FORCE_HYPERLINK` 改为值感知：falsy 值（空串/unset）不再强制开启而是 fall-through 到检测，`0`/`false`/`no`/`off` 显式禁用（官方 `ZWe`/`os`）
+- **item 24** — markdown 表格流式布局稳定性 grounded NO-OP：官方修复完全落在 v314 4096-char chunker `Kgo`（openTable 状态），OCC 的 StreamingMarkdown 无 chunker（block-boundary stablePrefix），两种症状结构上不可能出现；characterization test 固化
+- **item 32** — `-p --resume`/`--continue` 进入 worktree 的 sandbox 保护 PARTIAL：rebuild 块已字节精确移植到 sandbox adapter（12 tests），但因 OCC print-mode worktree-binding 子系统缺失（官方 `LWe` 前置条件是 OCC 既有 gap）而 dormant（§3.B STAGE）
+- **auto-mode 描述** — `Inspect or reset auto mode configuration`（去掉 "classifier"），官方 v312↔v314 `--help` 实时 diff 的唯一 help-surface 变化，×2 字节验证
+- **Monitor TDZ 修复** — `MONITOR_TOOL_NAME` 提取到无依赖叶子模块 `src/tools/MonitorTool/toolName.ts`（对齐 BashTool/PowerShellTool 约定），打破 MonitorTool→bashPermissions→…→safetyEvent import cycle；MonitorTool.ts 再导出保持表面兼容
+- **README** Tracks badge/anchors → 2.1.314 (partial)
+
 ## 2.1.407 - 2026-10-30 (OCC-137 — 无版本差距自验收轮 + 验收打回修复：三方核验官方 latest 2.1.312 == OCC 追踪 2.1.312（npm dist-tags + GitHub tags + ELF 重下载），按"版本追齐后的自验收"分支执行严格自验收；tmux 真机 REPL 3 个真实编码任务（Write+Bash fib → 55、多步 type hints+pytest 2 pass、21×2=42）+ Shift+Tab 模式循环 + `/status` 面板 + headless `-p` 真模型 PONG 全绿；`--help` 全 flag 面与 `mcp`/`mcp add` 子命令帮助对官方 2.1.312 逐 token 核对；发现并修复 3 处 gap（Gap-137a/b/c，PR #561 + #562 均经验收员全量复验通过：官方二进制判别用例实锤 + 双运输输出字节级 A/B 一致 + code review 0C/0H/0M APPROVED）；台账 `docs/upstream-version-gap-occ137-2026-10.md`)
 
 - 安全修复：`mcp add` 确认输出敏感 header 脱敏（Gap-137b，HIGH）——官方 2.1.312 `uxn`/`pt`/`O6e`/`Nlt`/`lBe`/`tto` 逐字节移植（`src/services/mcp/headerRedaction.ts`）：按敏感 header **名字**脱敏（大小写不敏感、非锚定子串匹配、零宽字符/软连字符绕过加固），sse/http 两处确认打印显示 `[REDACTED]`；**display-only** —— `.claude.json` 配置仍按官方行为存明文；`Authorization: Bearer …` 等秘密不再泄露到 stdout/终端历史/CI 日志；单测 10 例（56 断言，含 `pt` 全分支、bare-key 反例、不可见字符绕过 ×5、不可变 + null 原型）+ 行为 e2e 2 例（23 断言，http+sse 构建产物 + 隔离临时 HOME，断言 stdout 绝不含秘密值）；MCP 套件回归 627 pass / 0 fail / 1989 expect

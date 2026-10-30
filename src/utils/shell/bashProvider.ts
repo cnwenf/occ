@@ -24,7 +24,22 @@ import {
   hasTmuxToolBeenUsed,
 } from '../tmuxSocket.js'
 import { windowsPathToPosixPath } from '../windowsPaths.js'
+import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { buildGitGrepLocalePrefix } from './gitGrepLocale.js'
 import type { ShellProvider } from './shellProvider.js'
+
+/**
+ * CC 2.1.314 #86 — clears an inherited shell alias/function of `name` so the
+ * Bash tool shell always sees the real builtin-less external `which`/
+ * `unsetenv`. Official `ZSn` @256154751 (v314):
+ * `function ZSn(e){return`{ \\builtin unalias -- '${e}'; \\builtin unset -f -- '${e}'; } >/dev/null 2>&1 || true`}`
+ * `\builtin` (backslash-prefixed) bypasses any alias expansion of `builtin`
+ * itself; the `>/dev/null 2>&1 || true` keeps unknown shells/fresh sessions
+ * (nothing to unalias) from breaking the `&&` chain.
+ */
+function buildUnaliasUnsetFunctionCommand(name: string): string {
+  return `{ \\builtin unalias -- '${name}'; \\builtin unset -f -- '${name}'; } >/dev/null 2>&1 || true`
+}
 
 /**
  * Returns a shell command to disable extended glob patterns for security.
@@ -44,14 +59,14 @@ function getDisableExtglobCommand(shellPath: string): string | null {
   if (process.env.CLAUDE_CODE_SHELL_PREFIX) {
     // Redirect both stdout and stderr because zsh's command_not_found_handler
     // writes to stdout instead of stderr
-    return '{ shopt -u extglob || setopt NO_EXTENDED_GLOB; } >/dev/null 2>&1 || true'
+    return '{ shopt -u extglob || setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL; } >/dev/null 2>&1 || true'
   }
 
   // No shell prefix - use shell-specific command
   if (shellPath.includes('bash')) {
     return 'shopt -u extglob 2>/dev/null || true'
   } else if (shellPath.includes('zsh')) {
-    return 'setopt NO_EXTENDED_GLOB 2>/dev/null || true'
+    return 'setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true'
   }
   // Unknown shell - do nothing, we don't know the right command
   return null
@@ -200,6 +215,29 @@ export async function createBashShellProvider(
       const disableExtglobCmd = getDisableExtglobCommand(shellPath)
       if (disableExtglobCmd) {
         commandParts.push(disableExtglobCmd)
+      }
+
+      // CC 2.1.314 #86 — stop inherited `which`/`unsetenv` aliases or exported
+      // functions from shadowing the real tools inside the eval'd command.
+      // Official preamble call site @256158096 (byte-verified ordering):
+      //   `if(bn(ebn,{safe:!0}))Je.push(Jwr());Je.push(eTr());let At=await ESn(De);if(At!==null)Je.push(At)`
+      // → gated `which` cleanup (tengu_swirling_koala), then UNCONDITIONAL
+      // `unsetenv` cleanup, then the awaited git-grep locale prefix (#94) —
+      // all between the extglob-disable part and the `eval` part.
+      if (checkStatsigFeatureGate_CACHED_MAY_BE_STALE('tengu_swirling_koala')) {
+        commandParts.push(buildUnaliasUnsetFunctionCommand('which'))
+      }
+      commandParts.push(buildUnaliasUnsetFunctionCommand('unsetenv'))
+
+      // CC 2.1.314 #94 — macOS `git grep` runs under LC_ALL=C via a shell
+      // wrapper installed through the preamble (official `ESn(De)`, called
+      // with the NORMALIZED command — `De=LSn(L)` matches OCC's
+      // `normalizedCommand` after rewriteWindowsNullRedirect). Null when the
+      // command isn't a safe git-grep invocation or the platform isn't macOS.
+      const gitGrepLocalePrefix =
+        await buildGitGrepLocalePrefix(normalizedCommand)
+      if (gitGrepLocalePrefix !== null) {
+        commandParts.push(gitGrepLocalePrefix)
       }
 
       // When sourcing a file with aliases, they won't be expanded in the same command line

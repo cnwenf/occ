@@ -40,6 +40,7 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import * as CHILD_PROCESS_NAMESPACE from 'child_process'
 import * as FS_PROMISES_NAMESPACE from 'fs/promises'
+import * as BASH_PROVIDER_NAMESPACE from '../shell/bashProvider.js'
 
 // Snapshot the REAL exports by value BEFORE mock.module patches the live
 // namespace bindings (precedent: hookStdioFlags285RealChild.test.ts) —
@@ -47,6 +48,7 @@ import * as FS_PROMISES_NAMESPACE from 'fs/promises'
 // restoring from the patched namespace would leak it across files.
 const REAL_CHILD_PROCESS = { ...CHILD_PROCESS_NAMESPACE }
 const REAL_FS_PROMISES = { ...FS_PROMISES_NAMESPACE }
+const REAL_BASH_PROVIDER = { ...BASH_PROVIDER_NAMESPACE }
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -122,6 +124,12 @@ function fakeFailingWriteHandle(code: string): object {
 afterEach(async () => {
   await mock.module('fs/promises', () => ({ ...REAL_FS_PROMISES }))
   await mock.module('child_process', () => ({ ...REAL_CHILD_PROCESS }))
+  // OCC-97 hygiene: one test below mocks the bash provider; restoring it here
+  // prevents the raw-command stub from leaking into later files in the same
+  // `bun test` process (broke tmpdirBackstop277 / bashPreambleCleanup314).
+  await mock.module('../shell/bashProvider.js', () => ({
+    ...REAL_BASH_PROVIDER,
+  }))
 })
 
 describe('CC 2.1.309 item 46 — DISK_FULL_REMEDY (official j9)', () => {

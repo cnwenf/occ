@@ -430,8 +430,8 @@ describe('CC 2.1.282 P1 — addToExcludedCommands write path (binary OIt)', () =
   })
 })
 
-describe('CC 2.1.282 P1 — excludedCommands schema describe (binary Md)', () => {
-  test('describe carries the official base sentence + the 282 restriction sentence', () => {
+describe('CC 2.1.314 #30 — excludedCommands schema describe (binary v314 @244324279)', () => {
+  test('describe carries the official v314 every-part sentence + the 282 restriction suffix', () => {
     const schema = SandboxSettingsSchema()
     const description =
       (
@@ -439,8 +439,11 @@ describe('CC 2.1.282 P1 — excludedCommands schema describe (binary Md)', () =>
       )?.description ??
       (schema.shape.excludedCommands as unknown as { description?: string })
         .description
+    // CC 2.1.314 #30: the base sentences were REWORDED (v312 @239635789 said
+    // "that always run outside the sandbox"); the `Md` suffix is unchanged
+    // (byte-identical v312→v314). v314 base byte-verified @244324279.
     expect(description).toBe(
-      'Command patterns (Bash permission-rule syntax) that always run outside the sandbox. A convenience, not a security boundary: excluded commands still go through the permission flow. Merged across settings sources. ' +
+      'Command patterns (Bash permission-rule syntax) for commands to run outside the sandbox. An entry takes a call out of the sandbox only when every command in the call matches an entry: in a Bash pipe or a chain such as `a && b`, each part needs its own match. Some calls stay sandboxed whatever the entries, such as one with a `cd`, a command substitution, or a redirect other than a file-descriptor duplication like `2>&1`, a heredoc included. A convenience, not a security boundary: excluded commands still go through the permission flow. Merged across settings sources. ' +
         'When managed settings or a --settings file set allowUnsandboxedCommands: false, or managed settings set network.allowManagedDomainsOnly: true, values from project settings (.claude/settings.json and .claude/settings.local.json) are ignored.',
     )
   })

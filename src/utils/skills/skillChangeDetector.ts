@@ -19,6 +19,7 @@ import { logForDebugging } from '../debug.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { executeConfigChangeHooks, hasBlockingResult } from '../hooks.js'
 import { createSignal } from '../signal.js'
+import { TRASH_DIR_NAME } from './syncTrashTrim.js'
 
 /**
  * Time in milliseconds to wait for file writes to stabilize before processing.
@@ -79,6 +80,46 @@ let testOverrides: {
 } | null = null
 
 /**
+ * Chokidar `ignored` predicate for skill/command watches.
+ *
+ * CC 2.1.314 #62 — the official BIN314 callback @263295061 (byte-verified;
+ * BIN312 @258787631 is identical minus the `.trash` line):
+ *   ignored:(m,c)=>{if(c&&!c.isFile()&&!c.isDirectory()&&!c.isSymbolicLink())
+ *   return!0;if(m.split(/[/\\]/).some((T)=>T===".git"))return!0;
+ *   if(h.relative(r,m).split(h.sep)[0]===yYt)return!0;
+ *   if(c?.isFile())return!m.endsWith(".md");return!1}
+ * with `r=zwt("userSettings","skills")` and `yYt=".trash"`. Removed skills
+ * kept in `~/.claude/skills/.trash` must not be watched/re-checked — the fs
+ * load grew with each removal.
+ *
+ * OCC scope: only the `.trash` line is this item's delta. The symlink
+ * allowance and the `.md` file filter already existed in BIN312 and remain a
+ * pre-existing OCC divergence (reported, not ported here). Exported for tests
+ * (module-internal closure in the binary).
+ */
+export function shouldIgnoreWatchPath(
+  path: string,
+  stats: { isFile(): boolean; isDirectory(): boolean } | undefined,
+  userSkillsRoot: string,
+): boolean {
+  // Ignore special file types (sockets, FIFOs, devices) - they cannot be
+  // watched and will error with EOPNOTSUPP on macOS.
+  if (stats && !stats.isFile() && !stats.isDirectory()) return true
+  // Ignore .git directories
+  if (path.split(platformPath.sep).some(dir => dir === '.git')) return true
+  // CC 2.1.314 #62: skip anything whose first segment relative to the USER
+  // skills root is `.trash` (official: h.relative(r,m).split(h.sep)[0]===yYt).
+  if (
+    userSkillsRoot !== '' &&
+    platformPath.relative(userSkillsRoot, path).split(platformPath.sep)[0] ===
+      TRASH_DIR_NAME
+  ) {
+    return true
+  }
+  return false
+}
+
+/**
  * Initialize file watching for skill directories
  */
 export async function initialize(): Promise<void> {
@@ -102,6 +143,10 @@ export async function initialize(): Promise<void> {
   const paths = await getWatchablePaths()
   if (paths.length === 0) return
 
+  // Official BIN314: `r=zwt("userSettings","skills")` — the .trash skip in
+  // the ignored callback is relative to the user skills root (CC 2.1.314 #62).
+  const userSkillsRoot = getSkillsPath('userSettings', 'skills')
+
   logForDebugging(
     `Watching for changes in skill/command directories: ${paths.join(', ')}...`,
   )
@@ -116,13 +161,7 @@ export async function initialize(): Promise<void> {
       pollInterval:
         testOverrides?.pollInterval ?? FILE_STABILITY_POLL_INTERVAL_MS,
     },
-    // Ignore special file types (sockets, FIFOs, devices) - they cannot be watched
-    // and will error with EOPNOTSUPP on macOS. Only allow regular files and directories.
-    ignored: (path, stats) => {
-      if (stats && !stats.isFile() && !stats.isDirectory()) return true
-      // Ignore .git directories
-      return path.split(platformPath.sep).some(dir => dir === '.git')
-    },
+    ignored: (path, stats) => shouldIgnoreWatchPath(path, stats, userSkillsRoot),
     ignorePermissionErrors: true,
     usePolling: USE_POLLING,
     interval: testOverrides?.chokidarInterval ?? POLLING_INTERVAL_MS,

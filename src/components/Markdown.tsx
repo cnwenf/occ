@@ -6,7 +6,7 @@ import { Ansi, Box, Text, useTheme } from '../ink.js';
 import { BLACK_CIRCLE } from '../constants/figures.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
-import { configureMarked, formatToken, MARKDOWN_STACK_FALLBACK_MESSAGE, renderTokenWindowed } from '../utils/markdown.js';
+import { configureMarked, formatToken, MARKDOWN_STACK_FALLBACK_MESSAGE, opensWithHoistedQuoteCode, renderTokenWindowed } from '../utils/markdown.js';
 import { lexWithWindowing } from '../utils/markdownWindowed.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
 import { streamingTextStore } from './streamingTextStore.js';
@@ -233,6 +233,20 @@ function MarkdownBody(t0) {
   if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme || $[4] !== maxProseWidth) {
     elements = [];
     let nonTableContent = "";
+    // CC 2.1.314 changelog #47 — "Fixed blank lines at the top of a code
+    // block disappearing when the code block opens a quote." Official v314
+    // blockquote component `Eo` @273639700 region: `b=ELt(p,m)` …
+    // `U=he.italic((E?L:L.replace(/^\n+/,"")).trimEnd())` — the leading
+    // strip is SKIPPED when the quote opens with a code block (v312 `yo`
+    // @268881500 region stripped unconditionally: `.join("").replace(/^\n+/,
+    // "").trimEnd()` — the bug). The official renders quotes as standalone
+    // components, so its prose flusher never sees them; OCC batches the
+    // string-path renders here, so the gate lives on the batch flush: a
+    // batch OPENING with a hoisted code quote keeps its leading newlines
+    // (trimEnd only). Detector + list walker: markdownBlockquote.ts
+    // `hoistQuoteOpeningBlock` (official Ve/ELt) + markdown.ts
+    // `opensWithHoistedQuoteCode`.
+    let nonTableLeadPreserved = false;
     // Official 2.1.282 Lr @216869295+: prose blocks are pushed with
     // `maxWidth:G==="prose"?k:void 0`; fenced code is special-cased
     // (`if(k!==void 0&&K.type==="code")` → no maxWidth) and tables render as
@@ -244,8 +258,10 @@ function MarkdownBody(t0) {
     };
     const flushNonTableContent = function flushNonTableContent() {
       if (nonTableContent) {
-        elements.push(wrapProse(<Ansi key={elements.length} dimColor={dimColor}>{nonTableContent.trim()}</Ansi>));
+        const text = nonTableLeadPreserved ? nonTableContent.trimEnd() : nonTableContent.trim();
+        elements.push(wrapProse(<Ansi key={elements.length} dimColor={dimColor}>{text}</Ansi>));
         nonTableContent = "";
+        nonTableLeadPreserved = false;
       }
     };
     try {
@@ -272,6 +288,11 @@ function MarkdownBody(t0) {
           flushNonTableContent();
           elements.push(<Ansi key={elements.length} dimColor={dimColor}>{renderTokenWindowed(token, theme, highlight, 0).trimEnd()}</Ansi>);
         } else {
+          // CC 2.1.314 #47: a batch OPENING with a quote whose first
+          // non-empty token is a code block keeps its leading blank line(s).
+          if (nonTableContent === "" && opensWithHoistedQuoteCode(token, highlight)) {
+            nonTableLeadPreserved = true;
+          }
           nonTableContent = nonTableContent + renderTokenWindowed(token, theme, highlight, 0);
           nonTableContent;
         }

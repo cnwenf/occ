@@ -183,15 +183,23 @@ console.log(JSON.stringify({ a, bTP: b?.traceparent, c, dTP: d?.traceparent, dTS
 });
 
 // ---------- F17: FORCE_HYPERLINK ----------
-describe("F17 FORCE_HYPERLINK (2.1.94)", () => {
+describe("F17 FORCE_HYPERLINK (2.1.94, value-aware since 2.1.314)", () => {
   test("honors FORCE_HYPERLINK from env (settings.json env flows to process.env)", async () => {
+    // CC 2.1.314 (OCC-138 changelog item 93) changed the contract: official
+    // `ZWe` (v314 ELF @259538525) is `let i=env.FORCE_HYPERLINK; if(!i)return;
+    // return !(os(i)||parseInt(i,10)===0)` — falsy values ("", unset) no
+    // longer override; they fall through to detection (here: false, since
+    // stdoutSupported:false and no TERM_PROGRAM). Falsy words ("0"/"false"/
+    // "no"/"off", via `os` @243469354) explicitly disable. The v312-era
+    // expectation `empty → true` asserted the OLD `'FORCE_HYPERLINK' in env`
+    // presence-only semantics and is updated here to the v314 contract.
     const script = `
 const { supportsHyperlinks } = await import("${REPO_ROOT}/src/ink/supports-hyperlinks.ts");
 const env = (v) => { const e = { FORCE_HYPERLINK: v }; return supportsHyperlinks({ env: e, stdoutSupported: false }); };
 console.log(JSON.stringify({
   one: env("1"),       // explicit enable
   zero: env("0"),      // explicit disable
-  empty: env(""),      // set but empty → enabled
+  empty: env(""),      // falsy → no override → detection (stdoutSupported:false) → false (2.1.314)
   junk: env("yes"),    // truthy non-zero → enabled
 }));
 `;
@@ -200,7 +208,7 @@ console.log(JSON.stringify({
     );
     expect(out.one).toBe(true);
     expect(out.zero).toBe(false);
-    expect(out.empty).toBe(true);
+    expect(out.empty).toBe(false);
     expect(out.junk).toBe(true);
   });
 

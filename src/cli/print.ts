@@ -5278,6 +5278,30 @@ function reregisterChannelHandlerAfterReconnect(
 }
 
 /**
+ * Official `$N(e,n,t)` @248624922 (v314, byte-verified): the
+ * `error_during_execution` result event shape emitted on stdout for
+ * stream-json headless runs.
+ */
+function buildErrorDuringExecutionResult(message: string) {
+  return {
+    type: 'result',
+    subtype: 'error_during_execution',
+    duration_ms: 0,
+    duration_api_ms: 0,
+    is_error: true,
+    num_turns: 0,
+    stop_reason: null,
+    session_id: getSessionId(),
+    total_cost_usd: 0,
+    usage: EMPTY_USAGE,
+    modelUsage: {},
+    permission_denials: [],
+    uuid: randomUUID(),
+    errors: [message],
+  }
+}
+
+/**
  * Emits an error message in the correct format based on outputFormat.
  * When using stream-json, writes JSON to stdout; otherwise writes plain text to stderr.
  */
@@ -5286,26 +5310,84 @@ function emitLoadError(
   outputFormat: string | undefined,
 ): void {
   if (outputFormat === 'stream-json') {
-    const errorResult = {
-      type: 'result',
-      subtype: 'error_during_execution',
-      duration_ms: 0,
-      duration_api_ms: 0,
-      is_error: true,
-      num_turns: 0,
-      stop_reason: null,
-      session_id: getSessionId(),
-      total_cost_usd: 0,
-      usage: EMPTY_USAGE,
-      modelUsage: {},
-      permission_denials: [],
-      uuid: randomUUID(),
-      errors: [message],
-    }
-    process.stdout.write(jsonStringify(errorResult) + '\n')
+    process.stdout.write(
+      jsonStringify(buildErrorDuringExecutionResult(message)) + '\n',
+    )
   } else {
     process.stderr.write(message + '\n')
   }
+}
+
+/**
+ * Official `as(e,n,{resultIndex:r=0,startupFailureReason:s}={})` @~282198000
+ * (v314, byte-verified): ALWAYS `process.stderr.write(e+"\n")` +
+ * `t(e,{level:"error"})` debug log, and for `stream-json` ALSO a stdout line
+ * `AV(jFe({sessionId:z(),message:e,reason:s,resultIndex:r}))`. `jFe`
+ * @248626066 spreads `startup_failure_reason` only when the reason is
+ * defined and `result_index` only when resultIndex !== null; OCC's callers
+ * pass neither, so both keys are omitted — matching the official for escaped
+ * startup rejections (no numbered resultDelivery exists yet → h=null).
+ */
+function reportHeadlessFailure(
+  message: string,
+  outputFormat: string | undefined,
+): void {
+  process.stderr.write(message + '\n')
+  logForDebugging(message, { level: 'error' })
+  if (outputFormat === 'stream-json') {
+    process.stdout.write(
+      jsonStringify(buildErrorDuringExecutionResult(message)) + '\n',
+    )
+  }
+}
+
+/**
+ * CC 2.1.314 item 6: "Fixed `claude -p` exiting with code 0 and no output
+ * when startup failed; it now prints the error and exits 1."
+ *
+ * Mirrors official `GXe(e,n,r)` @282197560 (v312 `BYe` @268280033 is
+ * identical apart from the v314-only `stopHoldingStreamEvents`, an env-gated
+ * diagnostic — CLAUDE_CODE_STREAM_EVENT_HOLD_MS — whose hold mechanism OCC
+ * does not have). Wired as the `.catch(...)` on the print dispatch's
+ * `runHeadless(...)` promise in main.tsx, matching the official
+ * `Po(J,re,…).catch((O)=>Eo(J,O,x))` @~263635900 (present in BOTH v312 and
+ * v314 — OCC previously used a bare `void runHeadless(...)`, so an escaped
+ * startup rejection became an unhandled rejection instead of this report).
+ *
+ * Official body (minified names resolved):
+ *   `if(vn()){t("runHeadless rejected during shutdown");return}` — isShuttingDown guard
+ *   `try{dx(n,{site:"run_headless"})}catch{}` — disk error log
+ *   ``try{as(`An internal error ended the session (${Wp(n)}).`,r,{resultIndex:h})}catch{}``
+ *   `mi(1)` — gracefulShutdownSync(1)
+ *
+ * Documented divergences (OCC structure): no HeadlessSessionState (`f_`), so
+ * there is no active-session teardown and resultIndex is always omitted;
+ * OCC's `logError(error, kind)` has no `{site}` option, so the official
+ * `{site:"run_headless"}` tag is dropped.
+ */
+export function endHeadlessSessionOnEscapedError(
+  error: unknown,
+  outputFormat: string | undefined,
+): void {
+  if (isShuttingDown()) {
+    logForDebugging('runHeadless rejected during shutdown')
+    return
+  }
+  try {
+    logError(error)
+  } catch {
+    // Official wraps the disk log in try/catch too — never let logging kill
+    // the error report.
+  }
+  try {
+    reportHeadlessFailure(
+      `An internal error ended the session (${errorMessage(error)}).`,
+      outputFormat,
+    )
+  } catch {
+    // Official: `try{as(...)}catch{}` — still exit 1 even if reporting fails.
+  }
+  gracefulShutdownSync(1)
 }
 
 /**
