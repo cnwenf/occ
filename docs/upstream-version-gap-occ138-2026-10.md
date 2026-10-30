@@ -303,5 +303,11 @@ All green against `dist/cli.js`:
 ## §9 Release
 
 - CHANGELOG `## 2.1.408 - 2026-10-31 (OCC-138 — …)` + `package.json` 2.1.407→**2.1.408** + README badge/anchors → 2.1.314 (partial).
-- Merge to `main`, tag `v2.1.408`. `publish.yml` npm step is expected to **fail** on the NPM_TOKEN E404 debt (OCC-127/129) → manual `gh release create v2.1.408 --generate-notes` per the v2.1.405–407 precedent; verify releases == tags parity.
+- Round commit `d0092e82` (`feat(2.1.314): OCC-138 alignment round — official 2.1.312→2.1.314`), pre-commit biome hook passed (0 errors on the changed set).
+- `main` fast-forwarded `284c6bfa → d0092e82` (push `d0092e82:refs/heads/main` — the local `main` branch is pinned by another task's worktree, so an ff push was used instead of checkout+merge; history identical).
+- Tag `v2.1.408` → pushed. `publish.yml` npm step **failed as expected** (run 41145527883, 21 s — NPM_TOKEN E404 debt, OCC-127/129; same pattern as v2.1.405–407).
+- Manual release created per precedent: **https://github.com/cnwenf/occ/releases/tag/v2.1.408** (`gh release create v2.1.408 --generate-notes`, marked Latest).
+- Releases == tags parity verified (v2.1.403…v2.1.408 all present in both lists).
+- Residual branches cleaned: `agent/occ/10476a32` (local+remote) and remote `agent/occ/1f430df2` deleted after merge.
+- Post-release smoke on the shipped build: `--version` → `OCC 2.1.408` exit 0; `--resume-session-at` without `--resume` → official-byte-identical stderr + exit 1; headless `-p` → PONG exit 0; `--help` auto-mode row = `Inspect or reset auto mode configuration`.
 
