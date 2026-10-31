@@ -1944,9 +1944,34 @@ async function reset(): Promise<void> {
 // analytics pair; error string @122721011; event `sandbox_resume_rebuild`
 // registered @120054336.
 //
-// SCOPE: this file provides the SANDBOX-SIDE wiring (WP-D). The caller-side
-// refuse-resume branch (stderr write + exit(1)) lands in the print-mode
-// startup-error region owned by WP-F and is delivered as a reported patch.
+// SCOPE / RUNTIME STATUS — STAGED, DORMANT (2.1.408 review re-annotation):
+// this file provides the SANDBOX-SIDE half of the port. There is deliberately
+// NO production call site for refreshSandboxConfigForResumedWorktree in this
+// release, and wiring one today would be INVENTED behavior, not a port:
+//   1. Official `YF` is STARTUP-resume validation, and it can only fire when
+//      the resume path enters a worktree (cwd change) while the sandbox is
+//      already active. OCC's print-mode resume NEVER enters worktrees —
+//      `restoreWorktreeForResume` has no print-path call site because the
+//      official `LWe` worktree-binding subsystem is a pre-existing OCC gap
+//      (same in v312; ledger §3.B STAGE: needs its own byte-verification
+//      round + refuse-path matrix).
+//   2. OCC's interactive startup enters the worktree BEFORE sandbox init
+//      (sessionRestore.ts restoreWorktreeForResume runs in
+//      processResumedConversation; SandboxManager.initialize fires later at
+//      REPL mount), so the sandbox config is built fresh against the
+//      worktree cwd — there is no stale config to rebuild, and
+//      isSandboxActiveForResume() is false at that point (a wired call would
+//      be a provable no-op).
+//   3. The only OCC point where sandbox-active + cwd-change co-occur is the
+//      MID-SESSION /resume path (REPL exitRestoredWorktree +
+//      restoreWorktreeForResume), which is outside the official `YF`
+//      startup-validation scope — extending the port there would diverge
+//      from the binary.
+// Additionally the official gate `tengu_anchored_lantern` defaults to false,
+// so even the official flow is opt-in. The exports below are byte-verified
+// ports kept warm (12 tests in sandboxResumeRebuild314.test.ts) for the
+// `LWe` round; until then, sandbox-resume protection is recorded as PENDING
+// in CLAUDE.md's security-divergence ledger.
 
 /** Official `oG` — gate for the resume rebuild (@281953480). */
 export const SANDBOX_RESUME_REBUILD_GATE = 'tengu_anchored_lantern'
@@ -2031,6 +2056,11 @@ async function waitForGrowthBookWithBound(timeoutMs: number): Promise<void> {
  * worktree restore. Returns true when the session may continue; false when
  * the rebuild failed and the caller must refuse the resume (official
  * `m("sandbox_resume_rebuild","rebuild_failed")` → stderr → `mi(1)`).
+ *
+ * DORMANT — no production call site in this release (see the STAGED block
+ * comment above for the three-path structural analysis). Tests are the only
+ * consumer until the `LWe` worktree-binding round wires the official `YF`
+ * caller side.
  */
 export async function refreshSandboxConfigForResumedWorktree(
   previousCwd: string,

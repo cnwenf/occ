@@ -529,6 +529,40 @@ export function titleInputFromQueuedMessage({
   })
 }
 
+/**
+ * OCC REPL call-site mapping — title input from a DISPATCHED message
+ * (2.1.408 review P3-2; extracted from REPL.tsx so the wiring is unit-
+ * testable without mounting the REPL).
+ *
+ * The official derives the title from the QUEUE ITEM, which still carries
+ * `skipSlashCommands` (set by bridge/CCR/print enqueue paths). OCC derives
+ * it from the rendered post-dispatch message, and the message surface does
+ * NOT carry the queue's skipSlashCommands flag (it is consumed by the
+ * dispatch gating in messageQueueManager.isSlashCommand /
+ * processUserInput and never stamped onto the UserMessage). So
+ * `queueSkipSlashCommands` stays undefined → official uzn `l=false` →
+ * dispatchesSlashCommands=true.
+ *
+ * Recorded divergence (docs/upstream-version-gap-occ138-2026-10.md §10.2
+ * P3-2, review round): a FIRST title-eligible message that came from a skipSlashCommands
+ * queue dispatch (bridge/CCR) with `/`-leading text can be titled by OCC
+ * where the official would skip it; prose messages behave identically under
+ * both flag values, and non-human origins are still filtered by zMr's
+ * isHumanOrigin gate.
+ */
+export function titleInputFromDispatchedMessage(
+  message: Message | undefined,
+  commands: TitleCommand[],
+): string | null {
+  if (!message) return null
+  return titleInputFromQueuedMessage({
+    content: message.type === 'user' ? message.message.content : undefined,
+    origin: (message as { origin?: TitleMessageOrigin }).origin,
+    queueSkipSlashCommands: undefined,
+    commands,
+  })
+}
+
 // ---------------------------------------------------------------------------
 // fzn / pzn — fallback state machine (item 61)
 // ---------------------------------------------------------------------------

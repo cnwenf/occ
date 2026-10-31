@@ -2,20 +2,20 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
-## 2.1.408 - 2026-10-31 (OCC-138 — 官方 2.1.312→2.1.314 追齐轮：三方核验官方 latest==next==**2.1.314**（stable 2.1.308），**2.1.313 从未发布**（`npm view @anthropic-ai/claude-code@2.1.313` → E404，单步跨越 312→314）；~120 条 2.1.314 changelog 逐条对 v312/v314 ELF（md5 `be77f40…`/`5ea08c5…`，21,688 added / 19,302 removed unique strings）分诊，全程 `strings`/`grep -aboF`/`dd` 字节取证——官方二进制从未作为模型后端执行（仅 --version/--help/arg-error 表面核对）；ledger §3.A 17 项 → **IMPLEMENTED 15 · PARTIAL 1 · grounded NO-OP 1**，经 5 个并行工作包 + orchestrator 直改落地；gate ci-test.sh **15,221 pass / 6 fail / 12 skip**，6 例首轮失败全部 triage（2 例 Monitor TDZ 修复、2 例过时 v312 断言升级到 v314 契约、1 例 `/feedback` 真 API flake 复跑 16/16 绿、1 例 bun-1.3.14 本地已知 artifact clean-HEAD A/B 实证与本轮改动无关——CI 锁 1.4.2）；build 30.62 MB；tmux 真模型 REPL 真人式任务矩阵 + headless `-p` PONG + item-6 arg-error 对官方 v314 字节级一致 + 官方 v312↔v314 `--help` 全 flag 面比对（唯一变化 = auto-mode 描述，已移植）；台账 `docs/upstream-version-gap-occ138-2026-10.md`)
+## 2.1.408 - 2026-10-31 (OCC-138 — 官方 2.1.312→2.1.314 追齐轮：三方核验官方 latest==next==**2.1.314**（stable 2.1.308），**2.1.313 从未发布**（`npm view @anthropic-ai/claude-code@2.1.313` → E404，单步跨越 312→314）；~120 条 2.1.314 changelog 逐条对 v312/v314 ELF（md5 `be77f40…`/`5ea08c5…`，21,688 added / 19,302 removed unique strings）分诊，全程 `strings`/`grep -aboF`/`dd` 字节取证——官方二进制从未作为模型后端执行（仅 --version/--help/arg-error 表面核对）；ledger §3.A 17 项 → **IMPLEMENTED 15 · STAGED 1 · grounded NO-OP 1**（item 32 经验收评审 re-annotate：PARTIAL→STAGED，无生产调用点、运行时不生效），经 5 个并行工作包 + orchestrator 直改落地；gate ci-test.sh **15,221 pass / 6 fail / 12 skip**，6 例首轮失败全部 triage（2 例 Monitor TDZ 修复、2 例过时 v312 断言升级到 v314 契约、1 例 `/feedback` 真 API flake 复跑 16/16 绿、1 例 bun-1.3.14 本地已知 artifact clean-HEAD A/B 实证与本轮改动无关——CI 锁 1.4.2）；build 30.62 MB；tmux 真模型 REPL 真人式任务矩阵 + headless `-p` PONG + item-6 arg-error 对官方 v314 字节级一致 + 官方 v312↔v314 `--help` 全 flag 面比对（唯一变化 = auto-mode 描述，已移植）；台账 `docs/upstream-version-gap-occ138-2026-10.md`)
 
 - **item 6** — `claude -p` 启动失败不再静默 exit 0：打印错误并 **exit 1**（官方 `GXe`/`as`/`$N`/`jFe` 字节移植 + main.tsx print 派发补回缺失的 `.catch`）；对官方 v314 `--resume-session-at` 无 `--resume` 的 arg-error 路径字节级一致（同 stderr 文本 + exit 1）
 - **item 61/78** — 首条 prompt 失败（如 usage limit）后会话不再无标题；skill/prompt-based 命令（如 `/security-review`）开头的会话据此自动取名
-- **item 70** — Ctrl+R 历史搜索匹配折叠 `[Pasted text]` pill 内的文本
+- **item 70** — Ctrl+R 历史搜索现在能匹配折叠在粘贴 pill（Pasted text 占位符）内的原始文本
 - **item 47/48** — blockquote 开头代码块的首部空行不再丢失（官方 `ELt`）；transcript 视图（Ctrl+O）部分 `⎿` 行上方缺空行的问题修复
 - **item 22** — PreCompact hook 输出在 **10,000 chars** 截断，超大输出不再导致 compaction 失败/重复
-- **item 89/33** — hook `if` 条件（如 `Monitor(tail *)`）家族匹配 Monitor 工具的 shell 命令；Bash 家族 hook 也作用于 Monitor 命令——可 block/ask 但**不可** approve/rewrite；两者经官方 `Gjr` 共享 preparePermissionMatcher 移植
+- **item 89/33** — hook 家族匹配：Monitor 工具的 shell 命令现在命中 `Bash` 家族 hook/matcher（可 block/ask 但**不可** approve/rewrite）与 `Monitor(...)` `if` 条件——家族**名字**匹配生产已生效；括号内**命令内容**收窄（如 `Monitor(tail *)` 的 `tail *` 模式）依赖 tree-sitter 解析，而 `TREE_SITTER_BASH` 不在生产 FEATURE_ALLOWLIST——该内容收窄本轮为 wired-dormant：命令不可解析时 fail-safe 保留 hook（宁可多跑、不漏拦 block/ask）；两者均经官方 `Gjr` 共享 preparePermissionMatcher 移植
 - **item 66/62** — `~/.claude/skills/.trash`（含 `plugins/.trash`）封顶 **1024 entries**；skill 文件 watcher 不再反复重查已 trash 的 skill
-- **item 86/94** — Bash tool 清理继承的 `which` alias/function 且不再传递导出的 which/unsetenv 函数（官方 `ZSn`）；macOS `git grep` 使用 C locale 规避 regex 内存泄漏（官方 `TSn`）
+- **item 86/94** — Bash tool 清理继承的 `which` alias/function 且不再传递导出的 which/unsetenv 函数（官方 `ZSn`，生产生效）；macOS `git grep` C locale wrapper（官方 `TSn`）为 wired-dormant——wrapper 安装以命令可解析（`kind==='simple'`）为前提，同上受 `TREE_SITTER_BASH` 生产限制，不可解析时不安装（fail-closed，行为与现状一致）
 - **item 30** — `sandbox.excludedCommands` 设置描述更新为"调用中每个命令都必须命中某条目"（旧文案"always run outside the sandbox"低报约束）
 - **item 93** — `FORCE_HYPERLINK` 改为值感知：falsy 值（空串/unset）不再强制开启而是 fall-through 到检测，`0`/`false`/`no`/`off` 显式禁用（官方 `ZWe`/`os`）
 - **item 24** — markdown 表格流式布局稳定性 grounded NO-OP：官方修复完全落在 v314 4096-char chunker `Kgo`（openTable 状态），OCC 的 StreamingMarkdown 无 chunker（block-boundary stablePrefix），两种症状结构上不可能出现；characterization test 固化
-- **item 32** — `-p --resume`/`--continue` 进入 worktree 的 sandbox 保护 PARTIAL：rebuild 块已字节精确移植到 sandbox adapter（12 tests），但因 OCC print-mode worktree-binding 子系统缺失（官方 `LWe` 前置条件是 OCC 既有 gap）而 dormant（§3.B STAGE）
+- **item 32** — `-p --resume`/`--continue` 进入 worktree 的 sandbox 保护：**本发布运行时未生效（staged，无生产调用点）**——官方 `YF` rebuild 块已字节精确移植到 sandbox adapter（12 tests 覆盖纯函数/adapter 层），但 OCC print-mode resume 从不进入 worktree（官方 `LWe` worktree-binding 子系统缺失为既有 gap），交互式启动则在 sandbox 初始化**之前**进入 worktree（config 按新 cwd 构建，无 staleness 可修）；激活前需先移植 `LWe` 子系统（§3.B STAGE），且 gate `tengu_anchored_lantern` 默认关
 - **auto-mode 描述** — `Inspect or reset auto mode configuration`（去掉 "classifier"），官方 v312↔v314 `--help` 实时 diff 的唯一 help-surface 变化，×2 字节验证
 - **Monitor TDZ 修复** — `MONITOR_TOOL_NAME` 提取到无依赖叶子模块 `src/tools/MonitorTool/toolName.ts`（对齐 BashTool/PowerShellTool 约定），打破 MonitorTool→bashPermissions→…→safetyEvent import cycle；MonitorTool.ts 再导出保持表面兼容
 - **README** Tracks badge/anchors → 2.1.314 (partial)

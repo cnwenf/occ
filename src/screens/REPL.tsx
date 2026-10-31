@@ -144,7 +144,7 @@ import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPAT
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
 import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
 import { requestSessionTitle } from '../utils/sessionTitle.js';
-import { contentToText, firstTitleEligibleMessage, isUsageLimitContinuationText, makeTitleFallback, reduceTitleFallback, titleInputFromQueuedMessage, type SessionTitleRequestResult, type TitleFallback } from '../utils/sessionTitleInput.js';
+import { contentToText, firstTitleEligibleMessage, isUsageLimitContinuationText, makeTitleFallback, reduceTitleFallback, titleInputFromDispatchedMessage, type SessionTitleRequestResult, type TitleFallback } from '../utils/sessionTitleInput.js';
 import { LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
 import { escapeXml } from '../utils/xml.js';
 import type { ThinkingConfig } from '../utils/thinking.js';
@@ -2981,14 +2981,12 @@ export function REPL({
       const eligibleText = firstEligible ? contentToText(eligibleContent) : null;
       const isContinuationText = eligibleText !== null && isUsageLimitContinuationText(eligibleText);
       const fallback = makeTitleFallback({
-        prose: isContinuationText || !firstEligible ? null : titleInputFromQueuedMessage({
-          content: eligibleContent,
-          origin: (firstEligible as { origin?: { kind?: string } }).origin,
-          // OCC messages don't carry the queue's skipSlashCommands flag;
-          // undefined → official uzn l=false → dispatchesSlashCommands=true.
-          queueSkipSlashCommands: undefined,
-          commands,
-        }),
+        // 2.1.408 review P3-2: the dispatched-message → official-uzn mapping
+        // lives in titleInputFromDispatchedMessage (sessionTitleInput.ts),
+        // unit-tested without mounting the REPL; its doc records the
+        // skipSlashCommands queue-flag divergence (OCC message surface
+        // doesn't carry it → undefined → dispatchesSlashCommands=true).
+        prose: isContinuationText || !firstEligible ? null : titleInputFromDispatchedMessage(firstEligible, commands),
         isContinuationTurn: isContinuationText || newMessages.some(m => m.type === 'user' && (m as { origin?: { kind?: string } }).origin?.kind === 'auto-continuation'),
         fallback: titleFallbackRef.current,
       });

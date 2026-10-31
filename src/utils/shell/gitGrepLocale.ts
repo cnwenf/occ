@@ -265,6 +265,16 @@ function hasBareAssignmentCommand(commands: SimpleCommand[]): boolean {
  * Official `ESn(e)` @256139513 — returns the shell preamble part
  * `{ ${_Vt(kwr)}; }` when `command` is a safe macOS `git grep` invocation,
  * else null. Call with the NORMALIZED command (official `De=LSn(L)`).
+ *
+ * PRODUCTION DORMANCY (2.1.408 review P2-2/P3-3 — wired, dormant): the
+ * `parsed?.kind !== 'simple'` gate below is fed by parseForSecurity, which
+ * returns 'parse-unavailable' for every real command in production builds
+ * (TREE_SITTER_BASH is not in the 6-flag FEATURE_ALLOWLIST). This function
+ * therefore always returns null in production and the LC_ALL wrapper is
+ * never installed — fail-closed: `git grep` runs exactly as it does today,
+ * with no wrapper rewriting. The full decision chain below is the
+ * byte-verified official logic, kept warm for the round that ships
+ * tree-sitter (recorded in CLAUDE.md security divergences).
  */
 export async function buildGitGrepLocalePrefix(
   command: string,

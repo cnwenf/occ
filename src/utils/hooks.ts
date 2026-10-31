@@ -2670,6 +2670,16 @@ async function prepareIfConditionMatcher(
   const toolName = normalizeLegacyToolName(hookInput.tool_name as string)
   const tool = tools && findToolByName(tools, hookInput.tool_name as string)
   const input = tool?.inputSchema.safeParse(hookInput.tool_input)
+  // PRODUCTION DORMANCY (2.1.408 review P2-2): the tool matchers below
+  // (BashTool/MonitorTool preparePermissionMatcher) narrow by command CONTENT
+  // via parseForSecurity, which returns 'parse-unavailable' for every real
+  // command in production builds (TREE_SITTER_BASH is not in the 6-flag
+  // FEATURE_ALLOWLIST) — both matchers then fail-safe to `() => true`, so a
+  // parenthesized if-rule (e.g. `Monitor(tail *)`) keeps the hook for ANY
+  // command instead of narrowing. The if-condition TOOL-NAME half (own name +
+  // familyNames below) is structural and fully live. Direction is fail-safe:
+  // hooks over-fire; block/ask enforcement never under-fires. See
+  // monitorIfConditionProduction314.test.ts for the unmocked production truth.
   const patternMatcher =
     input?.success && tool?.preparePermissionMatcher
       ? await tool.preparePermissionMatcher(input.data)
@@ -2744,6 +2754,42 @@ function isInternalHook(matched: MatchedHook): boolean {
  */
 function hookDedupKey(m: MatchedHook, payload: string): string {
   return `${m.pluginRoot ?? m.skillRoot ?? ''}\0${payload}`
+}
+
+/**
+ * 2.1.408 review P3-4 — dedup collision rule for the keep-LAST Map dedups
+ * below. A hook can legitimately match the same call TWICE under the same
+ * dedup key: once through its own tool's matcher (e.g. `Monitor(tail *)`)
+ * and once through a FAMILY matcher (e.g. `Bash(tail *)` — familyOnly spread
+ * sets `throughFamilyOnly` on every hook of that matcher). Plain
+ * `new Map(entries)` keeps the LAST entry, so when the family-matcher entry
+ * lands second the survivor carries `throughFamilyOnly: true` — which strips
+ * the hook's legitimate allow/updatedInput power (jN gating) even though it
+ * matched directly under its own name. The official binary's `!Se(dn,L,h)`
+ * guard excludes hooks that already matched directly, producing the same
+ * outcome regardless of matcher order.
+ *
+ * Rule: last-wins (preserving the last-merged-scope semantics for settings
+ * hooks) EXCEPT a `throughFamilyOnly` entry never displaces a non-family
+ * entry under the same key. Map.set on an existing key keeps the original
+ * insertion position, so ordering matches `new Map(entries)` exactly.
+ */
+function dedupeMatchedHooks<T extends MatchedHook>(
+  entries: Iterable<readonly [string, T]>,
+): T[] {
+  const map = new Map<string, T>()
+  for (const [key, entry] of entries) {
+    const existing = map.get(key)
+    if (
+      existing !== undefined &&
+      entry.throughFamilyOnly === true &&
+      existing.throughFamilyOnly !== true
+    ) {
+      continue
+    }
+    map.set(key, entry)
+  }
+  return Array.from(map.values())
 }
 
 /**
@@ -3245,9 +3291,11 @@ export async function getMatchingHooks(
   // Key is namespaced by pluginRoot/skillRoot (see hookDedupKey above) so
   // cross-plugin template collisions don't drop hooks (gh-29724).
   //
-  // Note: new Map(entries) keeps the LAST entry on key collision, not first.
-  // For settings hooks this means the last-merged scope wins; for
-  // same-plugin duplicates the pluginRoot is identical so it doesn't matter.
+  // Collision rule (dedupeMatchedHooks above): last entry wins — for settings
+  // hooks the last-merged scope wins; for same-plugin duplicates the
+  // pluginRoot is identical so it doesn't matter — EXCEPT a
+  // throughFamilyOnly entry never displaces a direct-matcher entry under the
+  // same key (2.1.408 review P3-4, official `!Se(dn,L,h)` outcome).
   // Fast-path: callback/function hooks don't need dedup (each is unique).
   // Skip the 6-pass filter + 4×Map + 4×Array.from below when all hooks are
   // callback/function — the common case for internal hooks like
@@ -3264,86 +3312,76 @@ export async function getMatchingHooks(
   // Hooks with different `if` conditions are distinct even if otherwise identical.
   const getIfCondition = (hook: { if?: string }): string => hook.if ?? ''
 
-  const uniqueCommandHooks = Array.from(
-    new Map(
-      matchedHooks
-        .filter(
-          (
-            m,
-          ): m is MatchedHook & { hook: HookCommand & { type: 'command' } } =>
-            m.hook.type === 'command',
-        )
-        // shell is part of identity: {command:'echo x', shell:'bash'}
-        // and {command:'echo x', shell:'powershell'} are distinct hooks,
-        // not duplicates. Default to 'bash' so legacy configs (no shell
-        // field) still dedup against explicit shell:'bash'.
-        .map(m => [
-          hookDedupKey(
-            m,
-            `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${getIfCondition(m.hook)}`,
-          ),
+  const uniqueCommandHooks = dedupeMatchedHooks(
+    matchedHooks
+      .filter(
+        (
           m,
-        ]),
-    ).values(),
+        ): m is MatchedHook & { hook: HookCommand & { type: 'command' } } =>
+          m.hook.type === 'command',
+      )
+      // shell is part of identity: {command:'echo x', shell:'bash'}
+      // and {command:'echo x', shell:'powershell'} are distinct hooks,
+      // not duplicates. Default to 'bash' so legacy configs (no shell
+      // field) still dedup against explicit shell:'bash'.
+      .map(m => [
+        hookDedupKey(
+          m,
+          `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${getIfCondition(m.hook)}`,
+        ),
+        m,
+      ] as const),
   )
-  const uniquePromptHooks = Array.from(
-    new Map(
-      matchedHooks
-        .filter(m => m.hook.type === 'prompt')
-        .map(m => [
-          hookDedupKey(
-            m,
-            `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
-          ),
+  const uniquePromptHooks = dedupeMatchedHooks(
+    matchedHooks
+      .filter(m => m.hook.type === 'prompt')
+      .map(m => [
+        hookDedupKey(
           m,
-        ]),
-    ).values(),
+          `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
+        ),
+        m,
+      ] as const),
   )
-  const uniqueAgentHooks = Array.from(
-    new Map(
-      matchedHooks
-        .filter(m => m.hook.type === 'agent')
-        .map(m => [
-          hookDedupKey(
-            m,
-            `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
-          ),
+  const uniqueAgentHooks = dedupeMatchedHooks(
+    matchedHooks
+      .filter(m => m.hook.type === 'agent')
+      .map(m => [
+        hookDedupKey(
           m,
-        ]),
-    ).values(),
+          `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
+        ),
+        m,
+      ] as const),
   )
-  const uniqueHttpHooks = Array.from(
-    new Map(
-      matchedHooks
-        .filter(m => m.hook.type === 'http')
-        .map(m => [
-          hookDedupKey(
-            m,
-            `${(m.hook as { url: string }).url}\0${getIfCondition(m.hook as { if?: string })}`,
-          ),
+  const uniqueHttpHooks = dedupeMatchedHooks(
+    matchedHooks
+      .filter(m => m.hook.type === 'http')
+      .map(m => [
+        hookDedupKey(
           m,
-        ]),
-    ).values(),
+          `${(m.hook as { url: string }).url}\0${getIfCondition(m.hook as { if?: string })}`,
+        ),
+        m,
+      ] as const),
   )
   const callbackHooks = matchedHooks.filter(m => m.hook.type === 'callback')
   // Function hooks don't need deduplication - each callback is unique
   const functionHooks = matchedHooks.filter(m => m.hook.type === 'function')
   // 2.1.118: mcp_tool hooks dedup by server/tool identity.
-  const uniqueMcpToolHooks = Array.from(
-    new Map(
-      matchedHooks
-        .filter(
-          (m): m is MatchedHook & { hook: HookCommand & { type: 'mcp_tool' } } =>
-            m.hook.type === 'mcp_tool',
-        )
-        .map(m => [
-          hookDedupKey(
-            m,
-            `${m.hook.server}/${m.hook.tool}\0${getIfCondition(m.hook)}`,
-          ),
+  const uniqueMcpToolHooks = dedupeMatchedHooks(
+    matchedHooks
+      .filter(
+        (m): m is MatchedHook & { hook: HookCommand & { type: 'mcp_tool' } } =>
+          m.hook.type === 'mcp_tool',
+      )
+      .map(m => [
+        hookDedupKey(
           m,
-        ]),
-    ).values(),
+          `${m.hook.server}/${m.hook.tool}\0${getIfCondition(m.hook)}`,
+        ),
+        m,
+      ] as const),
   )
   const uniqueHooks = [
     ...uniqueCommandHooks,

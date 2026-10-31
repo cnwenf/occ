@@ -30,8 +30,16 @@ import type { HooksSettings } from '../../settings/types.js'
  * with NO preparePermissionMatcher, and v312 has no `$Fr` — both NEW in v314.
  *
  * OCC wiring: prepareIfConditionMatcher (src/utils/hooks.ts) already consults
- * `tool?.preparePermissionMatcher(input.data)`, so adding the official matcher
- * to the MonitorTool def makes `if: "Monitor(tail *)"` work end-to-end.
+ * `tool?.preparePermissionMatcher(input.data)`, so the official matcher is
+ * wired into the if-condition path. IMPORTANT — production dormancy (2.1.408
+ * review P2-2): the CONTENT-narrowing half (`tail *`) only functions when
+ * parseForSecurity can produce a simple parse; tree-sitter sits behind the
+ * dead TREE_SITTER_BASH flag in production builds, where the matcher
+ * fail-safes to `() => true` and if-rules keep the hook for ANY command (the
+ * tool-NAME half — own name + Bash family — stays live). The tests below
+ * exercise the ported Gjr LOGIC through a mocked parse seam; the unmocked
+ * production truth (parse-unavailable → hook kept, never dropped) is pinned
+ * by monitorIfConditionProduction314.test.ts.
  * The Gjr body is mirrored from OCC's BashTool.tsx inline matcher (that file
  * is out-of-cluster for edits; official shares ONE Gjr between both defs).
  */
@@ -200,7 +208,7 @@ describe('2.1.314 item 89 — MonitorTool.preparePermissionMatcher (official $Fr
   })
 })
 
-describe('2.1.314 item 89 — getMatchingHooks e2e: if `Monitor(tail *)` on a Monitor call', () => {
+describe('2.1.314 item 89 — getMatchingHooks e2e: if `Monitor(tail *)` on a Monitor call (MOCKED parse seam — exercises the official Gjr narrowing LOGIC; in production builds content narrowing is dormant, see monitorIfConditionProduction314.test.ts)', () => {
   function configWithIf(ifCondition: string): HooksSettings {
     return {
       PreToolUse: [

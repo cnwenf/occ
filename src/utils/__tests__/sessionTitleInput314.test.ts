@@ -16,6 +16,7 @@ import {
   parseSlashCommand,
   reduceTitleFallback,
   startsAsKnownCommand,
+  titleInputFromDispatchedMessage,
   titleInputFromMessage,
   titleInputFromQueuedMessage,
   type TitleCommand,
@@ -675,5 +676,65 @@ describe('2.1.314 isSensitiveTitleInput (official Xhn, URe)', () => {
     // `/security-review[Pasted text #1] ...` → qR rewrites to
     // `/security-review [Pasted text #1] ...` so the name still resolves.
     expect(isSensitiveTitleInput('/security-review[Pasted text #1] tail', cmds)).toBe(true)
+  })
+})
+
+describe('2.1.408 review P3-2 titleInputFromDispatchedMessage — REPL wiring mapping (dispatched message → official uzn)', () => {
+  const commands = [promptCommand()]
+
+  test('undefined message → null', () => {
+    expect(titleInputFromDispatchedMessage(undefined, commands)).toBeNull()
+  })
+
+  test('non-user message → null (content extraction is user-only, as at the REPL site)', () => {
+    const assistant = {
+      type: 'assistant',
+      message: { role: 'assistant', content: 'some assistant prose that is long enough' },
+    } as never
+    expect(titleInputFromDispatchedMessage(assistant, commands)).toBeNull()
+  })
+
+  test('prose user message → the prose (flag value is irrelevant for prose)', () => {
+    const msg = userMsg('please refactor the auth module') as never
+    expect(titleInputFromDispatchedMessage(msg, commands)).toBe(
+      'please refactor the auth module',
+    )
+  })
+
+  test('queueSkipSlashCommands stays undefined → dispatchesSlashCommands=true: known command + human origin titles via zMr', () => {
+    const msg = userMsg('/security-review deep', {
+      origin: { kind: 'human' },
+    }) as never
+    expect(titleInputFromDispatchedMessage(msg, commands)).toBe(
+      '/security-review deep\nRun a security review of the current branch',
+    )
+  })
+
+  test('known command without a human origin → null (zMr $l gate still applies through the helper)', () => {
+    const msg = userMsg('/security-review deep') as never
+    expect(titleInputFromDispatchedMessage(msg, commands)).toBeNull()
+  })
+
+  test('DOCUMENTED DIVERGENCE: `/`-leading text from a skip-flagged dispatch is titled where the official would skip', () => {
+    // The official derives titles from the QUEUE ITEM (skipSlashCommands
+    // visible) → uzn returns null for `/unknown-command` text under skip.
+    // OCC derives from the dispatched message, which does not carry the
+    // flag → undefined → dispatchesSlashCommands=true → unknown slash text
+    // falls into zMr's raw-text branch and IS titled. Pinned so a future
+    // message-surface change (stamping the flag) must update this test
+    // deliberately.
+    const msg = userMsg('/shrug please look into the flaky e2e suite') as never
+    expect(titleInputFromDispatchedMessage(msg, commands)).toBe(
+      '/shrug please look into the flaky e2e suite',
+    )
+    // Contrast: the same content with the official skip flag → null.
+    expect(
+      titleInputFromQueuedMessage({
+        content: '/shrug please look into the flaky e2e suite',
+        origin: undefined,
+        queueSkipSlashCommands: true,
+        commands,
+      }),
+    ).toBeNull()
   })
 })

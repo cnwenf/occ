@@ -440,6 +440,19 @@ export const MonitorTool = buildTool({
     }
     // Hook `if` filtering is "no match → skip hook" (deny-like semantics), so
     // compound commands must fire the hook if ANY subcommand matches.
+    //
+    // PRODUCTION DORMANCY (2.1.408 review P2-2): parseForSecurity routes
+    // through parseCommandRaw, which returns null unless TREE_SITTER_BASH(_SHADOW)
+    // is feature-allowlisted — neither is in OCC's 6-flag FEATURE_ALLOWLIST, so
+    // in production builds EVERY command hits the non-simple branch below and
+    // this matcher is `() => true`. Content narrowing (the `tail *` in
+    // `Monitor(tail *)`) therefore does not narrow in production; the
+    // fail-safe direction keeps the hook (over-fire, never under-fires a
+    // block/ask). BashTool's identical matcher has the same dormancy
+    // (pre-existing). The simple-parse branch below is the byte-faithful
+    // official Gjr logic, exercised by tests through the mocked parse seam
+    // (monitorIfCondition314.test.ts) and pinned in its production shape by
+    // monitorIfConditionProduction314.test.ts (unmocked).
     const parsed = await parseForSecurity(command)
     if (parsed.kind !== 'simple') {
       // parse-unavailable / too-complex: fail safe by running the hook.

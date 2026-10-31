@@ -744,7 +744,18 @@ export async function cleanupOldMessageFilesInBackground(): Promise<void> {
   // the cap applies "whatever cleanupPeriodDays says". Official De sweeps
   // [gYe,aFe] (skills/.trash + plugins/.trash); plugins is N-A in OCC
   // (marketplace removed, OCC-31) → skills only.
-  await cleanupSkillsTrashCap()
+  // 2.1.408 review P3-1: the official folds De's {messages,errors} tally
+  // into the sweep result collection `w` (merged via `x(r,…)`); OCC's sweep
+  // returns void with no collection, so consume the tally here instead of
+  // discarding it — surface a summary line whenever the cap sweep hit
+  // errors (trimSyncTrashRoot already emits sync_trash_trim analytics and
+  // per-failure sync_trash_trim_failed debug lines internally).
+  const trashCapTally = await cleanupSkillsTrashCap()
+  if (trashCapTally.errors > 0) {
+    logForDebugging(
+      `Cleanup: skills/.trash cap sweep removed ${trashCapTally.messages} entr${trashCapTally.messages === 1 ? 'y' : 'ies'} with ${trashCapTally.errors} error(s)`,
+    )
+  }
   if (process.env.USER_TYPE === 'ant') {
     await cleanupNpmCacheForAnthropicPackages()
   }

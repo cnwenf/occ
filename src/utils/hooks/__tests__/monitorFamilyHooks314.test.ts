@@ -668,3 +668,98 @@ describe('2.1.314 item 33 — executePreToolHooks real-child on a Monitor call',
     ).toEqual([])
   }, 20_000)
 })
+
+// ---------------------------------------------------------------------------
+// 2.1.408 review P3-4 — dedup collision rule: a throughFamilyOnly entry must
+// never displace a direct-matcher entry under the same hookDedupKey (official
+// `!Se(dn,L,h)` guard excludes hooks that already matched directly). The same
+// `echo x` command registered under BOTH `Monitor` (direct) and `Bash`
+// (family-only for a Monitor call) collides on the dedup key; plain
+// keep-LAST Map semantics left the survivor flagged throughFamilyOnly when
+// the Bash matcher came second, stripping the hook's legitimate
+// allow/updatedInput power (jN gating) despite the direct match.
+// ---------------------------------------------------------------------------
+
+function dualMatcherConfig(directFirst: boolean): HooksSettings {
+  const direct = {
+    matcher: 'Monitor',
+    hooks: [{ type: 'command', command: 'echo x' }],
+  }
+  const family = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command: 'echo x' }],
+  }
+  return {
+    PreToolUse: directFirst ? [direct, family] : [family, direct],
+  } as unknown as HooksSettings
+}
+
+describe('2.1.408 review P3-4 — dedup prefers the direct-matcher entry over a family-only entry', () => {
+  test('Monitor matcher BEFORE Bash matcher → single survivor, NO family flags', async () => {
+    mockedHooksConfig = dualMatcherConfig(true)
+    const matched = await getMatchingHooks(
+      undefined,
+      's-33',
+      'PreToolUse',
+      monitorPreToolInput('tail -f app.log'),
+    )
+    expect(matched.length).toBe(1)
+    const flags = matched[0] as unknown as Flags
+    expect(flags.throughFamilyOnly).toBeUndefined()
+    expect(flags.matcherMetThroughOtherName).toBeUndefined()
+  })
+
+  test('Bash matcher BEFORE Monitor matcher (keep-LAST would flag it) → same survivor, NO family flags', async () => {
+    mockedHooksConfig = dualMatcherConfig(false)
+    const matched = await getMatchingHooks(
+      undefined,
+      's-33',
+      'PreToolUse',
+      monitorPreToolInput('tail -f app.log'),
+    )
+    expect(matched.length).toBe(1)
+    const flags = matched[0] as unknown as Flags
+    expect(flags.throughFamilyOnly).toBeUndefined()
+    expect(flags.matcherMetThroughOtherName).toBeUndefined()
+  })
+
+  test('Bash-only matcher on a Monitor call → still family-flagged (no direct match to prefer)', async () => {
+    mockedHooksConfig = commandHookConfig('Bash')
+    const matched = await getMatchingHooks(
+      undefined,
+      's-33',
+      'PreToolUse',
+      monitorPreToolInput('tail -f app.log'),
+    )
+    expect(matched.length).toBe(1)
+    const flags = matched[0] as unknown as Flags
+    expect(flags.throughFamilyOnly).toBe(true)
+    expect(flags.matcherMetThroughOtherName).toBe(true)
+  })
+
+  test('dual matchers on a real Bash call → single survivor, NO family flags (direct only)', async () => {
+    mockedHooksConfig = dualMatcherConfig(false)
+    const matched = await getMatchingHooks(undefined, 's-33', 'PreToolUse', {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    } as never)
+    expect(matched.length).toBe(1)
+    const flags = matched[0] as unknown as Flags
+    expect(flags.throughFamilyOnly).toBeUndefined()
+    expect(flags.matcherMetThroughOtherName).toBeUndefined()
+  })
+
+  test('dual matchers on a Monitor ws-only call → only the direct Monitor matcher matches ($Fr gate), no flags', async () => {
+    mockedHooksConfig = dualMatcherConfig(false)
+    const matched = await getMatchingHooks(
+      undefined,
+      's-33',
+      'PreToolUse',
+      monitorPreToolInput(undefined),
+    )
+    expect(matched.length).toBe(1)
+    const flags = matched[0] as unknown as Flags
+    expect(flags.throughFamilyOnly).toBeUndefined()
+  })
+})

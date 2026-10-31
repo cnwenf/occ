@@ -49,7 +49,7 @@ OCC does not ship).
 | 66 | `~/.claude/skills/.trash` (and `plugins/.trash`) capped at ~**1024** entries regardless of `cleanupPeriodDays` | C | PORT |
 | 62 | skill file watcher no longer re-checks every removed skill kept in `.trash` (filesystem load grew per removal) | C | PORT |
 | 30 | `sandbox.excludedCommands` setting description now says **every command in a call must match an entry** (not "always run outside the sandbox") | D | PORT ✓ |
-| 32 | sandbox protections now apply to a worktree entered by `claude -p --resume`/`--continue` | D | **PARTIAL** — rebuild block ported byte-exact (adapter, 12 tests); caller-side precondition (print-mode worktree-binding restore, official `LWe`) is a PRE-EXISTING OCC gap (string `worktree_resume_refused` present in v312 too) → block dormant in OCC; see §3.B STAGE row + §7 |
+| 32 | sandbox protections now apply to a worktree entered by `claude -p --resume`/`--continue` | D | **STAGED — NOT PRESENT AT RUNTIME** (re-annotated from PARTIAL per the 2.1.408 acceptance review P2-1): rebuild block ported byte-exact (adapter, 12 tests) but has NO production call site, and none can be faithfully wired today — print resume never enters worktrees (official `LWe` worktree-binding is a PRE-EXISTING OCC gap, `worktree_resume_refused` in v312 too), interactive startup restores the worktree BEFORE sandbox init (config built fresh vs worktree cwd → nothing stale to rebuild; `isSandboxActiveForResume()` false at that point), and the mid-session `/resume` co-occurrence is outside official `YF` startup scope. Gate `tengu_anchored_lantern` defaults off regardless. Sandbox-resume protection recorded as PENDING in CLAUDE.md security divergences; see §3.B STAGE row + §7 + the adapter's STAGED block comment |
 | 6 | `claude -p` no longer exits 0 with no output on startup failure; prints the error and exits **1** | F | PORT |
 | 61 | sessions no longer stay untitled when the first prompt failed (e.g. usage limit) and the conversation continued | F | PORT |
 | 78 | session auto-title: a session starting with a skill / prompt-based command (e.g. `/security-review`) gets a title from it | F | PORT |
@@ -65,7 +65,7 @@ OCC does not ship).
 | 1 | `permissions.blockWritesOutsideWorkingDirectories` (Write/Edit/NotebookEdit refuse paths outside working dirs in every mode) | New cross-cutting permission setting touching every file-tool permission path in all modes; needs its own byte-verification pass + a dedicated regression matrix. High-value — top next-round candidate. Forensics started (§5.1). |
 | 41 | Model IDs spelled with a **dot** behind an LLM gateway (`claude-opus-4.8`) treated as older model (wrong context window/output/effort/thinking/cost) | Touches `src/utils/model/` capability resolution (context window, output limit, effort, thinking, cost). Relevant to OCC's custom-gateway usage but needs careful per-field forensics to avoid regressing the model ladder. Staged with forensics (§5.2). |
 | 23 | Background diff refreshes briefly take the repo index lock (`.git/index.lock`), racing concurrent git commands | Needs forensics of the official's lock-free refresh mechanism; OCC's diff-refresh path differs. |
-| (32-pre) | Print-mode worktree binding on resume: official `YF` restores the session's worktree cwd in `-p --resume/--continue` (`LWe` + refuse reasons `worktree_unverified`/`worktree_resume_refused`/`worktree-gone`, `WUn`/`tbo` messages, `S=r.persist&&!fl()` binding-clear logic) | PRE-EXISTING gap (present in v312 strings too — not a 312→314 delta). OCC's print `loadInitialMessages` never calls `restoreWorktreeForResume`; only interactive paths do. Until ported, the 2.1.314 sandbox-rebuild block (item 32, adapter already landed + tested) stays dormant in print mode. Needs its own round: full `LWe` subsystem byte-verification + refuse-path matrix. |
+| (32-pre) | Print-mode worktree binding on resume: official `YF` restores the session's worktree cwd in `-p --resume/--continue` (`LWe` + refuse reasons `worktree_unverified`/`worktree_resume_refused`/`worktree-gone`, `WUn`/`tbo` messages, `S=r.persist&&!fl()` binding-clear logic) | PRE-EXISTING gap (present in v312 strings too — not a 312→314 delta). OCC's print `loadInitialMessages` never calls `restoreWorktreeForResume`; only interactive paths do. Until ported, the 2.1.314 sandbox-rebuild block (item 32, adapter already landed + tested) stays dormant — no call site exists in ANY mode (interactive startup enters the worktree before sandbox init, so its config is never stale; review P2-1). Needs its own round: full `LWe` subsystem byte-verification + refuse-path matrix. |
 | 49/53/54 | vim: `dw`/`dW`/`yw`/`yW` past EOL + `w`/`W` stop on empty lines; `p` over charwise selection honoring linewise yank; `aw`/`iw` taking the trailing line break | OCC has a real vim engine (`src/vim/`); each fix needs per-motion byte-verification + OCC-vim behavior A/B. Staged (occ44 §3d precedent — vim fixes need per-site decompilation). |
 | 84 | File tools ask before editing the local copy of the org's server-managed settings | Security-positive; needs forensics of the managed-settings path guard + OCC's file-tool permission wiring. |
 | 34 | A settings file excluded with `--setting-sources` still supplies some settings (auto-mode rules, saved permission consents) | Needs forensics of which setting classes the official gates behind `--setting-sources`; OCC's setting-source plumbing differs. |
@@ -311,3 +311,117 @@ All green against `dist/cli.js`:
 - Residual branches cleaned: `agent/occ/10476a32` (local+remote) and remote `agent/occ/1f430df2` deleted after merge.
 - Post-release smoke on the shipped build: `--version` → `OCC 2.1.408` exit 0; `--resume-session-at` without `--resume` → official-byte-identical stderr + exit 1; headless `-p` → PONG exit 0; `--help` auto-mode row = `Inspect or reset auto mode configuration`.
 
+
+## §10 2.1.408 acceptance-review fix round (OCC-138 review P2/P3 — post-release, pre-re-verify)
+
+Code review of the v2.1.408 release (head `50118c1d`, base `284c6bfa`) returned verdict **COMMENT**:
+3 P2 + 4 P3 findings + 2 human-verify items. All dispositions below; fixes land on `main` as an
+amend-in-place of the 2.1.408 section (NO version bump/tag until re-verify passes — issue release
+flow = release AFTER acceptance).
+
+### §10.1 P2 dispositions
+
+- **P2-1 (item 32 sandbox resume-rebuild = dead code)** → **re-annotated, option (b): NOT PRESENT
+  AT RUNTIME**. `refreshSandboxConfigForResumedWorktree` + `SANDBOX_RESUME_REBUILD_GATE` +
+  `SANDBOX_RESUME_REBUILD_ERROR_MESSAGE` have ZERO production call sites (grep-verified) and none
+  can be faithfully wired today: (1) print-mode resume never enters worktrees — the official `LWe`
+  worktree-binding subsystem is a pre-existing gap; (2) interactive startup restores the worktree
+  BEFORE sandbox init, so the sandbox config is built against the worktree cwd and the wired call
+  is a provable no-op (`isSandboxActiveForResume()` false); (3) mid-session `/resume` co-occurrence
+  sits outside the official `YF` startup-check scope. Wiring anyway would invent behavior
+  (forbidden by `aligning-with-official-binary`). Item 32 re-annotated PARTIAL→**STAGED** in §3.A
+  row 32, §3.B "32-pre", the CHANGELOG 2.1.408 bullet, the adapter's STAGED/DORMANT block comment,
+  and CLAUDE.md security divergences ("Sandbox-resume worktree protection is PENDING" — acceptance
+  consequence recorded: a resumed session that changes cwd does NOT get rebuilt sandbox
+  protections in any mode until the `LWe` round lands). Exports kept warm (12 tests) for the
+  `LWe` round. Gate `tengu_anchored_lantern` defaults false upstream regardless.
+- **P2-2 (hook `if:` command-content narrowing non-functional in production)** → **honest
+  annotation + production-truth test; argv-splitter replacement REJECTED**. Root cause confirmed:
+  `TREE_SITTER_BASH`/`TREE_SITTER_BASH_SHADOW` are not in the 6-flag `FEATURE_ALLOWLIST` →
+  `parseCommandRaw` null → `parseForSecurity` = `'parse-unavailable'` for every real command →
+  tool `preparePermissionMatcher` fail-safes to `() => true`. A hand-rolled argv-splitter was
+  considered and rejected: it cannot guarantee no false-negatives on real shell syntax
+  (quotes/globs/`;`-chains), and a false-negative UNDER-fires block/ask hooks — violating the
+  fail-closed ethos; the official itself only narrows through the tree-sitter parse. Fixes:
+  (a) CHANGELOG items 33/89 reworded — family **NAME** matching (Monitor↔Bash) is live and
+  structural; parenthesized **command-CONTENT** narrowing is wired-dormant pending tree-sitter;
+  fail-safe direction stated (hook KEPT, over-fires, never under-fires). (b) PRODUCTION DORMANCY
+  comments at the two seams: `MonitorTool.preparePermissionMatcher` + `prepareIfConditionMatcher`
+  (hooks.ts). (c) `monitorIfCondition314.test.ts` header/describe re-labelled "MOCKED parse seam —
+  exercises the official Gjr narrowing LOGIC"; its "drops the hook" assertion holds only with a
+  working parser. (d) NEW unmocked `monitorIfConditionProduction314.test.ts` pins production truth:
+  `parseForSecurity` → `'parse-unavailable'`; Monitor matcher → `true` for every command pattern;
+  ws-only input still `false` ($Fr gate live without parser); `getMatchingHooks` KEEPS
+  `if 'Monitor(git *)'`/`'Monitor(tail *)'`/`'Bash(git *)'` hooks on a Monitor command call,
+  DROPS `WebFetch(git *)` (tool-NAME half live). Header notes assertions MUST flip if tree-sitter
+  is ever allowlisted. Recorded in CLAUDE.md security divergences; tree-sitter WASM in release
+  builds = pending platform decision (review Human-verify #2).
+- **P2-3 (CHANGELOG item-70 bullet contained literal `[Pasted text` → warm-cache What's-new top-3
+  would render it verbatim and break `test/e2e/version-2.1.239-keybinding-flavor.e2e.test.ts:167`
+  `not.toContain("[Pasted text")`)** → **reworded**: bullet now reads "…折叠在粘贴 pill（Pasted text
+  占位符）内的原始文本" — static-verified `grep -c '\[Pasted text'` over the 2.1.408 section = **0**
+  (the two hits at lines ~1697/1700 live in the OLD 2.1.239 section, outside the top-3 window).
+
+### §10.2 P3 dispositions
+
+- **P3-1 (cleanup.ts:747 discarded `cleanupSkillsTrashCap()` tally)** → FIXED: `{messages, errors}`
+  captured; `logForDebugging` summary emitted when `errors > 0` (official folds the tally into its
+  sweep collection `w` via `x(r,…)`; OCC's sweep returns void, so the call site consumes it).
+- **P3-2 (REPL.tsx title site always passed `queueSkipSlashCommands: undefined`, wiring untested)**
+  → FIXED via extraction + tests + **recorded divergence (this note)**. Investigation settled: the
+  OCC message surface genuinely does not carry the flag — `QueuedCommand.skipSlashCommands`
+  (textInputTypes.ts:393) is consumed at DISPATCH gating (`isSlashCommand()` in
+  messageQueueManager.ts:568, handlePromptSubmit exit-word/immediate gates, processUserInput
+  `effectiveSkipSlash` bridge-safe override) and is never stamped onto the persisted `UserMessage`.
+  Threading it through would be a cross-cutting change (processUserInput chain + new JSONL field)
+  disproportionate for a P3 edge. So: `titleInputFromDispatchedMessage(message, commands)`
+  extracted into `src/utils/sessionTitleInput.ts` (the dispatched-message → official-`uzn` mapping,
+  unit-testable without mounting the REPL), REPL.tsx call site swapped to it, 6 wiring tests added
+  to sessionTitleInput314.test.ts. **Recorded divergence (official derives from the QUEUE ITEM
+  where the skip flag is visible; OCC derives from the rendered post-dispatch message where it is
+  not → `undefined` → `dispatchesSlashCommands=true`):** the first title-eligible message from a
+  skip-flagged bridge/CCR dispatch whose text leads with `/` can be titled by OCC where the
+  official skips it. Prose behavior identical; non-human origins still filtered by `zMr`'s
+  isHumanOrigin gate. One test pins the divergence explicitly (DOCUMENTED DIVERGENCE case).
+- **P3-3a (official `Ac`/`WIe` secret-pattern scan missing from `isSensitiveTitleInput`)** →
+  RECORDED as accepted divergence in CLAUDE.md (SEC-1 Low): the Anthropic-internal pattern DB is
+  not extractable byte-faithfully; direction — OCC may title from `!command`/`/cmd args` text
+  containing a secret where official suppresses; title text stays local to session metadata.
+- **P3-3b (item 94 macOS git-grep LC_ALL wrapper unreachable in production)** → CHANGELOG line
+  reworded to "wired, dormant" + `gitGrepLocale.ts` PRODUCTION DORMANCY docstring paragraph:
+  `parsed?.kind !== 'simple'` gate fed by parse-unavailable → always null → wrapper never
+  installed — fail-closed (`git grep` runs exactly as today). Same tree-sitter root cause as P2-2.
+- **P3-3c (item-6 test asserted main.tsx SOURCE STRING only)** → FIXED: real subprocess test added
+  to printStartupExit314.test.ts — spawns the REAL CLI (`bun src/entrypoints/cli.tsx -p …
+  --resume 00000000-0000-4000-8000-000000000000`, isolated HOME/CLAUDE_CONFIG_DIR/cwd, dummy key;
+  the resume load failure fires before any network/auth — deterministic, offline, ~1.5 s): text
+  format → exit **1** + stderr `No conversation found with session ID: …` + empty stdout;
+  stream-json → exit **1** + `error_during_execution` result line with `is_error:true` + errors
+  array. The source-string test is KEPT as the wiring pin (it proves the escaped-rejection
+  `.catch(endHeadlessSessionOnEscapedError)` attachment specifically). Suite 7/7.
+- **P3-4 (hooks.ts dedup keep-LAST + family-flag edge)** → FIXED: `dedupeMatchedHooks()` collision
+  rule replaces all five `Array.from(new Map(…))` keep-LAST constructions (command/prompt/agent/
+  http/mcp_tool): last-wins is preserved (settings scope-merge semantics) EXCEPT a
+  `throughFamilyOnly` entry never displaces a non-family entry under the same `hookDedupKey` —
+  replicating the official `!Se(dn,L,h)` outcome (hooks that already matched directly are excluded
+  from the family-only downgrade) regardless of matcher order. Insertion-position semantics
+  identical to `new Map(entries)`. Tests: 5 added to monitorFamilyHooks314.test.ts (dual
+  `Monitor`+`Bash` matchers both orders → single survivor, NO family flags; Bash-only → still
+  flagged; direct Bash call → unflagged; ws-only Monitor call → direct matcher only). A/B
+  verified: removing the guard fails exactly the direct-first ordering test (35/1), restoring it
+  passes 36/36.
+
+### §10.3 Human-verify items (recorded, pending)
+
+1. **SEC-2**: `tengu_anchored_lantern` gate defaults false upstream — sandbox-resume protection
+   recorded as PENDING in the acceptance decision (CLAUDE.md bullet + §3.A row 32 STAGED).
+2. **TREE_SITTER_BASH absence** is a pre-existing platform limit (WASM not carried in release
+   builds) — recorded in CLAUDE.md as a pending platform decision; P2-2/P3-3b dormancy
+   annotations all point at it.
+
+### §10.4 Release handling
+
+Fixes committed on top of `50118c1d` and fast-forwarded to `main`; the v2.1.408 tag is NOT moved
+and NO 2.1.409 is cut until 验收员 re-verify passes (issue release flow: release AFTER acceptance).
+The CHANGELOG 2.1.408 section is amended in place so the raw-feed → warm-cache What's-new surface
+serves the corrected text immediately (P2-3 e2e assertion safe).
