@@ -61,5 +61,16 @@ const FEATURE_ALLOWLIST: Set<string> = new Set([
   // false for unregistered names, so membership here is what reproduces the
   // default-true behavior of the official gate.
   'tengu_maple_pier',
+  // CC 2.1.316 (OCC-139): ultrathink keyword boost. The official external
+  // build ships the gate `ePt` (@276986161) ON — its only runtime condition
+  // is GrowthBook `tengu_turtle_carbon` (default true) plus the NEW
+  // CLAUDE_CODE_DISABLE_ULTRATHINK kill switch (ported in thinking.ts). All
+  // three official consumers are self-contained with no blocking init: the
+  // effort-boost machinery `gme` (2.1.311 port in utils/effort/ultrathink.ts),
+  // the attachment trigger `iPr` (attachments.ts), and the rainbow UI. The
+  // prerequisite stale default-effort branch in getDefaultEffortForModel was
+  // removed the same round (byte-verified absent from official v314+v316).
+  // e2e REPL-verified this round.
+  'ULTRATHINK',
 ])
 export const feature = (name: string): boolean => FEATURE_ALLOWLIST.has(name)

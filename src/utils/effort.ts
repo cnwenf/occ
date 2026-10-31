@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
-import { isUltrathinkEnabled } from './thinking.js'
+// CC 2.1.316 (OCC-139): the `isUltrathinkEnabled` import was dropped with the
+// stale default-effort branch it fed (see getDefaultEffortForModel).
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
@@ -231,6 +232,22 @@ export function parseEffortCliLevel(value: string): EffortLevel | undefined {
   const normalized = value.trim().toLowerCase()
   const candidate = EFFORT_LEVEL_ALIASES[normalized] ?? normalized
   return isEffortLevel(candidate) ? candidate : undefined
+}
+
+/**
+ * CC 2.1.316 — official `XCt` (@278280656, byte-verified):
+ *   `function XCt(){let e=i.CLAUDE_CODE_SUBAGENT_EFFORT;return e===void 0?void 0:IH(e)}`
+ * `IH` @278279939 ≡ parseEffortCliLevel (the Gap-139a port of official `fhe`)
+ * — note the official uses the STRICT CLI-style parser here (string levels
+ * only, trim, 'med' alias), NOT the loose env parser `oL`/`rK` used by
+ * CLAUDE_CODE_EFFORT_LEVEL. So '5' is invalid and ' XHIGH ' is valid.
+ * 'inherit' parses to undefined — at the apply site (official `Pxo` @291219542,
+ * ported as resolveSubagentEffortEnvDefault in WorkflowTool/primitives.ts) it
+ * means "keep inheriting the session effort".
+ */
+export function getSubagentEffortEnvDefault(): EffortLevel | undefined {
+  const raw = process.env.CLAUDE_CODE_SUBAGENT_EFFORT
+  return raw === undefined ? undefined : parseEffortCliLevel(raw)
 }
 
 export interface EffortCliFlagResult {
@@ -782,10 +799,17 @@ export function getDefaultEffortForModel(
     return 'medium'
   }
 
-  // When ultrathink feature is on, default effort to medium (ultrathink bumps to high)
-  if (isUltrathinkEnabled() && modelSupportsEffort(model)) {
-    return 'medium'
-  }
+  // CC 2.1.316 (OCC-139): REMOVED the stale `isUltrathinkEnabled() &&
+  // modelSupportsEffort(model) → 'medium'` branch. Byte-verified against the
+  // official v314 AND v316 ELF default-effort resolvers: neither has ANY
+  // ultrathink-gate consumer (official gate `ePt` @276986161 feeds only the
+  // boost machinery `gme`, the attachment trigger `iPr`, and the UI
+  // truncation guard `QAr`). The official sonnet-5 catalog entry
+  // (@273821232) declares default_effort "high" ≡ the undefined→high API
+  // fallback below, so ultrathink ON must NOT drag it to medium. (The branch
+  // was dormant while ULTRATHINK was off the allowlist; this round enables
+  // the flag to match the official shipped build, so the stale branch had to
+  // go first.)
 
   // Fallback to undefined, which means we don't set an effort level. This
   // should resolve to high effort level in the API.
