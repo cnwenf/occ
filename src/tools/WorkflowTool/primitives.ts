@@ -64,9 +64,12 @@ import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 // CC 2.1.316 (OCC-139): CLAUDE_CODE_SUBAGENT_EFFORT env default (official
-// XCt parser + Pxo resolver ports).
+// XCt parser + Pxo resolver ports). parseEffortEnvValue ≡ official rK/oL
+// loose parser — the named-effort arm of the `at=rK(Te?.effort)??Pxo(...)`
+// call site (review P2-2).
 import {
   getSubagentEffortEnvDefault,
+  parseEffortEnvValue,
   type EffortLevel,
 } from '../../utils/effort.js'
 
@@ -171,16 +174,21 @@ export function workflowAgentTelemetryAttributes(
  * Guard arms `uE(e)` (@282513324 — built-in web-fetch agent; OCC ships no
  * web-fetch workflow base) and `w_(t)` (@278930169 — permissionLayers effort
  * layer; OCC has no permissionLayers store) are verified vacuous in OCC and
- * omitted. `namedEffort !== ''` mirrors the call-site `rK(Te?.effort)` loose
- * parser treating undefined/null/'' as unnamed (and OCC's agentDef only
- * carries effort when opts.effort is truthy). Analytics arms map to OCC's
- * stubbed logEvent (no-op parity, workflow telemetry convention); the
+ * omitted. The named-effort guard IS the call-site `rK` loose parse
+ * (parseEffortEnvValue — levels case-insensitive, 'med' alias, integer
+ * pass-through, NO trim; undefined/null/'' parse to nothing): OCC-139 review
+ * P2-2 — a non-empty UNPARSEABLE named value ('turbo', ' XHIGH ') must fall
+ * through to the env default exactly like the official `??` chain, where the
+ * earlier truthiness guard diverged by blocking it. Analytics arms map to
+ * OCC's stubbed logEvent (no-op parity, workflow telemetry convention); the
  * 'inherit' comparison is case-strict per the official `n!=="inherit"`.
  */
 export function resolveSubagentEffortEnvDefault(
   namedEffort: string | undefined,
 ): EffortLevel | undefined {
-  if (namedEffort !== undefined && namedEffort !== '') {
+  // Official `rK(Te?.effort) ?? Pxo(...)`: Pxo is consulted ONLY when the
+  // named value loose-parses to nothing (review P2-2 — not truthiness).
+  if (parseEffortEnvValue(namedEffort) !== undefined) {
     return undefined
   }
   const raw = process.env.CLAUDE_CODE_SUBAGENT_EFFORT
@@ -543,18 +551,25 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     }
 
     // Build the ephemeral AgentDefinition.
-    // CC 2.1.316 (OCC-139): the CLAUDE_CODE_SUBAGENT_EFFORT env default is
-    // stamped onto the definition when the named effort parses to nothing —
-    // official call site @297031178 (`at=rK(Te?.effort)??Pxo(...)`,
-    // `et=at!==void 0?{...ct,effort:at}:ct`). A named opts.effort wins (the
-    // truthy spread below overrides the env default), matching the official
-    // precedence.
-    const envEffortDefault = resolveSubagentEffortEnvDefault(opts.effort)
+    // CC 2.1.316 (OCC-139): the CLAUDE_CODE_SUBAGENT_EFFORT env default —
+    // official call site @297031178 (byte-verified):
+    //   `at=rK(Te?.effort)??Pxo(ct,Y.permissionLayers),
+    //    et=at!==void 0?{...ct,effort:at}:ct`
+    // The named opts.effort loose-parses through rK (≡ parseEffortEnvValue:
+    // canonicalizes 'med'→'medium', case-insensitive levels, integer
+    // pass-through, NO trim) and WINS when it parses; only when it parses to
+    // nothing does Pxo's env default apply — an unparseable non-empty named
+    // value ('turbo') falls THROUGH to the env default (review P2-2; the
+    // earlier truthy-spread diverged by keeping the raw value and blocking
+    // the env). The single effective value is stamped exactly like the
+    // official `et` spread and flows to the prefix-stagger key below.
+    const effectiveEffort =
+      parseEffortEnvValue(opts.effort) ??
+      resolveSubagentEffortEnvDefault(opts.effort)
     const agentDef = {
       ...GENERAL_PURPOSE_AGENT,
       agentType: opts.label ? `wf-${opts.label}` : 'workflow-agent',
-      ...(envEffortDefault !== undefined ? { effort: envEffortDefault } : {}),
-      ...(opts.effort ? { effort: opts.effort } : {}),
+      ...(effectiveEffort !== undefined ? { effort: effectiveEffort } : {}),
     }
 
     // Set up worktree isolation if requested.

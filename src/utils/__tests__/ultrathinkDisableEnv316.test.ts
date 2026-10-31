@@ -2,7 +2,7 @@
  * CC 2.1.316 (OCC-139): `CLAUDE_CODE_DISABLE_ULTRATHINK` kill switch +
  * ULTRATHINK feature enablement.
  *
- * Changelog bullet 3: "Added `CLAUDE_CODE_DISABLE_ULTRATHINK` to turn off the
+ * Changelog bullet 1: "Added `CLAUDE_CODE_DISABLE_ULTRATHINK` to turn off the
  * ultrathink keyword boost."
  *
  * Official v316 gate `ePt` (@276986161, byte-verified):
@@ -14,7 +14,7 @@
  *
  * `ePt` consumers in v316 (exhaustive — 3, byte-verified):
  *   - `gme` @278285563 — the effort-boost gate ≡ OCC canBoost/shouldBoost
- *     (2.1.311 port in src/utils/effort/ultrathink.ts).
+ *     (2.1.311 port in src/utils/effort/ultrathinkBoost.ts).
  *   - `iPr` @286516968 — the ultrathink attachment trigger ≡ OCC
  *     attachments.ts:1671.
  *   - `QAr` @307686155 — a ≤4000-char UI truncation guard (NOT ported;
@@ -68,6 +68,17 @@ describe('CC 2.1.316: CLAUDE_CODE_DISABLE_ULTRATHINK (official ePt)', () => {
 
   test.each(['0', 'false', 'no'])(
     '%s → disabled too (official raw truthiness !env.X, not a bool parse)',
+    value => {
+      process.env[ENV_VAR] = value
+      expect(isUltrathinkEnabled()).toBe(false)
+    },
+  )
+
+  // Review P3-6 edge pin: raw truthiness does NOT trim — a whitespace-only
+  // value is a non-empty string, hence truthy, hence DISABLES. (Counter-
+  // intuition guard: an isEnvTruthy-style parse would treat ' ' as falsy.)
+  test.each([' ', ' FALSE '])(
+    '%s → disabled (raw truthiness does not trim — whitespace-only is truthy)',
     value => {
       process.env[ENV_VAR] = value
       expect(isUltrathinkEnabled()).toBe(false)

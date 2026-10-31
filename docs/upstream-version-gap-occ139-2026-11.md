@@ -140,7 +140,7 @@ family as `CLAUDE_CODE_DISABLE_WEB_FETCH` (WebFetchTool precedent) → NO `isEnv
 
 | Official | Offset | OCC equivalent | Status |
 |---|---|---|---|
-| `gme` boost gate | @278285563 | `canBoost`/`shouldBoostTurnEffortForUltrathink` (utils/effort/ultrathink.ts, 2.1.311 port) | already ported — now live |
+| `gme` boost gate | @278285563 | `canBoost`/`shouldBoostTurnEffortForUltrathink` (utils/effort/ultrathinkBoost.ts, 2.1.311 port) | already ported — now live |
 | `iPr` attachment trigger (`tengu_ultrathink` event + `[{type:"ultrathink_effort"}]`) | @286516968 | attachments.ts:1671 | already ported — now live |
 | `QAr` ≤4000-char UI truncation guard (`fe`=4000) | @307686155 | — | NOT ported (pre-existing trim; input-length UI guard only — recorded as divergence) |
 
@@ -153,15 +153,20 @@ with byte-evidence comment**.
 
 **ULTRATHINK allowlist enablement**: official external builds ship the ultrathink machinery ON
 (ePt's only runtime condition is GrowthBook `tengu_turtle_carbon` default-true; OCC's GB stub
-returns the default → enabled). All consumers are self-contained (boost machinery, attachment
-trigger, rainbow UI) — no KAIROS/UDS_INBOX-style blocking init. Conditional on e2e REPL
-verification (§6); fallback = revert the allowlist entry and keep the env-check port as
-dormant-but-faithful.
+returns the default → enabled). Official v316 ePt consumers are exactly three (byte-verified,
+review P3-5): `gme` @278285563 (boost machinery — 2.1.311 port in ultrathinkBoost.ts),
+`iPr` @286516968 (attachment trigger), `QAr` @307686155 (≤4000-char UI truncation guard,
+NOT ported — STAGE #22 below); the rainbow render is an OCC UI consequence of the boost, not
+a separate official consumer. Ported consumers are self-contained — no KAIROS/UDS_INBOX-style
+blocking init. Conditional on e2e REPL verification (§6); fallback = revert the allowlist
+entry and keep the env-check port as dormant-but-faithful.
 
 Render-side consequence: `HighlightedThinkingText` now rainbow-highlights the `ultrathink`
 keyword per-char (official default-ON behavior) — `thinkingPointerInactive287.test.tsx` third
-assertion updated to strip ANSI before containment (intent = pointer color, not highlight
-absence; documented inline).
+assertion strips ANSI before containment (intent = pointer color, not highlight absence) AND,
+per review P2-3, pins the RAW SGR shape on top: a per-char `38;2;r;g;b` interleaving regex
+over `[ultrahink]` + a ≥12 truecolor-open count floor (measured truth: 13 SGR total, 12
+truecolor opens, single trailing reset — a collapsed single-color render fails both pins).
 
 ### WP-B — bullet 4: `CLAUDE_CODE_SUBAGENT_EFFORT`
 
@@ -226,31 +231,92 @@ New tests (all RED-first, byte-evidence headers):
 | File | Coverage |
 |---|---|
 | `src/utils/__tests__/subagentEffortEnv316.test.ts` | XCt semantics: unset→undefined; 5 levels; `med` alias; trim+lowercase (`' XHIGH '`→xhigh); `'5'` rejected (IH not oL); garbage rejected; `'inherit'`→undefined; `''`→undefined — 12 tests |
-| `src/tools/WorkflowTool/__tests__/subagentEffortEnv316.test.ts` | Pxo semantics: named effort blocks env; `''` counts unnamed (rK arm); unset env→undefined; parse arm; trim/alias; garbage; numeric; inherit (+case-strict `INHERIT`); empty env — 10 tests |
-| `src/utils/__tests__/ultrathinkDisableEnv316.test.ts` | feature('ULTRATHINK')===true; ePt raw truthiness ('1'/'true'/'yes' AND '0'/'false'/'no' all disable; `''`/unset enable); resolver pins: sonnet-5→undefined (±DISABLE env), opus-5-5/haiku-5-5/sonnet-5-5→medium, opus-4-7→xhigh — 15 tests |
+| `src/tools/WorkflowTool/__tests__/subagentEffortEnv316.test.ts` | Pxo semantics: named effort blocks env; `''` counts unnamed (rK arm); unset env→undefined; parse arm; trim/alias; garbage; numeric; inherit (+case-strict `INHERIT`); empty env — 10 tests **+ review round: P2-2 rK-loose-parse precedence 3 ('turbo'/'HIGH!'/' XHIGH ' fall to env; 'med'/'5'/'XHIGH' block) + P3-4 analytics-arm sink assertions 6 (parsed→success event, garbage→unknown_level, 'inherit'/' inherit ' strictness, unset→none, named-block→none) = 19 total** |
+| `src/utils/__tests__/ultrathinkDisableEnv316.test.ts` | feature('ULTRATHINK')===true; ePt raw truthiness ('1'/'true'/'yes' AND '0'/'false'/'no' all disable; `''`/unset enable; **+ review P3-6: `' '`/`' FALSE '` whitespace-only → disabled, no trim**); resolver pins: sonnet-5→undefined (±DISABLE env), opus-5-5/haiku-5-5/sonnet-5-5→medium, opus-4-7→xhigh — 17 tests |
+| `src/tools/WorkflowTool/__tests__/subagentEffortWiring316.test.ts` | **review P2-1 (NEW)**: integration coverage of the `createPrimitives().agent()` wiring seam — runAgent + prefixStagger spies capture the real agentDefinition/key: env stamp→def.effort+key slot; named 'low' wins; 'med'→'medium'; 'turbo'+env 'high'→'high'; 'med'≡'medium' key parity; all-empty→undefined def + `''` key slot — 6 tests |
 
 GREEN edits: `effort.ts` (XCt port + stale-branch removal + import drop),
-`thinking.ts` (ePt env arm), `featureFlags.ts` ('ULTRATHINK'), `primitives.ts` (Pxo helper +
-agentDef wiring + prefixKey effective effort), `thinkingPointerInactive287.test.tsx`
-(ANSI-strip assertion, §4 WP-A).
+`thinking.ts` (ePt env arm), `featureFlags.ts` ('ULTRATHINK' + review P3-5 consumer
+enumeration fix), `primitives.ts` (Pxo helper + agentDef wiring + prefixKey effective
+effort; **review P2-2: named-effort guard = `parseEffortEnvValue` rK loose parse per
+official `at=rK(Te?.effort)??Pxo(...)`, single-spread `effectiveEffort`**),
+`prefixStagger.ts` (**review P2-2: key effort param widened to
+`string | number | undefined` — rK integer pass-through**),
+`thinkingPointerInactive287.test.tsx` (ANSI-strip assertion + **review P2-3 raw-SGR
+per-char rainbow pins**, §4 WP-A).
 
 Suite results: 37/37 new tests pass; affected suites (sonnet55Launch284, haiku55Launch293,
 opus55Launch280, ultrathinkTurnEffort311, thinkingTriggerFilter311, effortIndicator304,
 agentEffortParam292, effortGap97) **217 pass / 0 fail**; full `bun test src` **13,501 pass**
 with **ZERO regressions vs stashed baseline** (fail-set diff empty; the 271 remaining fails are
 pre-existing on main in this sandbox — baseline fail set identical, mostly env-dependent:
-network/native-installer/advisor-wiring tests); `bun run build` green (`dist/cli.js` 30.62 MB,
-MACRO.VERSION 2.1.409).
+network/native-installer/advisor-wiring tests); `bun run build` green (`dist/cli.js` 30.62 MB).
+Version-surface note (review P3-1): these suite/build measurements ran against the PRE-BUMP
+dist reporting `OCC 2.1.409`; the release bump to **2.1.410** landed after them, and the
+shipped build was rebuilt from the bumped tree — `bun dist/cli.js --version` → `OCC 2.1.410`,
+with the occ-versioning + commands-alignment e2e re-run green against it (§6.2).
+
+### §5.1 Review-fix round (acceptance NEEDS_CHANGES: 3 P2 + 7 P3)
+
+All three P2 gates fixed RED→GREEN in-round; the seven P3s (doc surfaces, edge pins,
+operator docs) landed the same round:
+
+- **P2-1** — wiring-seam integration suite `subagentEffortWiring316.test.ts` (6 tests,
+  runAgent + prefixStagger spies on the real `createPrimitives().agent()` path; table above).
+- **P2-2** — `resolveSubagentEffortEnvDefault` named-effort guard switched from truthiness to
+  the official `rK(Te?.effort) ?? Pxo(...)` loose parse (`parseEffortEnvValue`): unparseable
+  named values ('turbo', ' XHIGH ' — rK does NOT trim) fall through to the env default;
+  'med' canonicalizes to 'medium' and blocks; `agent()` wiring collapsed to a single-spread
+  `effectiveEffort`; prefixStagger key effort param widened for rK integer pass-through.
+- **P2-3** — `thinkingPointerInactive287.test.tsx` third assertion re-pins the RAW SGR
+  rainbow shape on top of the ANSI-strip containment (per-char interleaving regex + ≥12
+  truecolor-open floor; measured truth 13 SGR / 12 truecolor opens / single trailing reset —
+  the review's ≥20 open+close floor was inapplicable because chalk.level=3 per-char rendering
+  emits opens without per-char closes; a collapsed single-color render fails both pins).
+- **P3-1** — §5/§6 version-surface reconciliation (pre-bump 2.1.409 measurements vs shipped
+  post-bump 2.1.410 build; notes above + §6 item 2).
+- **P3-2** — `featureFlags.ts` citation fixed to `utils/effort/ultrathinkBoost.ts` (the
+  cited `utils/effort/ultrathink.ts` never existed); same fix in
+  `ultrathinkDisableEnv316.test.ts` header.
+- **P3-3** — `ultrathinkDisableEnv316.test.ts` header changelog index fixed (bullet 3 →
+  bullet 1, matching the official 2.1.316 changelog ordering).
+- **P3-4** — Pxo analytics arms now ASSERTED (6 tests): harness = the analytics module's own
+  sink API (`attachAnalyticsSink`/`_resetForTesting`, the agentTelemetry.test.ts convention),
+  deliberately NOT `mock.module` (bun module-mock registrations leak across files in a
+  shared-process run — scripts/ci-test.sh root-cause note; an earlier mock.module draft broke
+  agentTelemetry 2/12, proven by isolation runs, then replaced by the leak-free sink harness).
+- **P3-5** — ePt consumer enumeration corrected everywhere (featureFlags.ts, §4 WP-A above):
+  exactly three official consumers `gme`/`iPr`/`QAr`; rainbow UI is an OCC render
+  consequence; `QAr` un-ported → STAGE #22.
+- **P3-6** — kill-switch whitespace edge pins: `' '` and `' FALSE '` → disabled (raw
+  truthiness does not trim).
+- **P3-7** — CLAUDE.md operator notes: ULTRATHINK default-ON fail-open cost (CWE-770
+  informational), `CLAUDE_CODE_DISABLE_ULTRATHINK` raw-truthiness semantics (CWE-1188
+  informational — ANY non-empty value disables, incl. '0'/'false'/' '),
+  `CLAUDE_CODE_SUBAGENT_EFFORT` scope + precedence.
+
+Review-fix round gates: focused suites 57/57; WorkflowTool + effort sweep 198/198; messages +
+prior-round suites 49/49; model/indicator/agentEffort suites 551/551 — 0 fail. New/updated
+test total this round: 54 (12 utils env316 + 19 WorkflowTool env316 + 17 ultrathinkDisable
++ 6 wiring). Full e2e replay on the review-fix tree: **776 pass / 11 skip / 1 fail** (925 s) —
+the single fail is the known `/feedback` real-API wording flake (model reply phrasing vs the
+`/Issue (created|filed)/i` assertion; same flake class as the 2.1.408 round), isolated re-run
+of `commands-behavior.e2e.test.ts` **16/16 green**. biome: 0 errors on all changed files
+(2 pre-existing `noConfusingVoidType` warnings in untouched primitives.ts signatures).
+Post-fix build green (30.62 MB) + `bun dist/cli.js --version` → `OCC 2.1.410`.
 
 ## §6 e2e / acceptance evidence
 
-All runs against the freshly built `dist/cli.js` (30.62 MB, `OCC 2.1.409` at build time),
+All runs against the freshly built `dist/cli.js` (30.62 MB; the research/e2e runs below were
+measured on the PRE-BUMP dist reporting `OCC 2.1.409` — the shipped post-bump build reports
+`OCC 2.1.410`, rebuilt + version-surface re-verified per item 2, review P3-1),
 scrubbed env (`env -u` every inherited `CLAUDE*`/`AI_AGENT` var), real tmux REPL + real model
 round-trips per Leader order "不接受纯源码阅读推断":
 
 1. **`bun test test/e2e` (full internal e2e suite): 777 pass / 11 skip / 0 fail**, 2844
    expect() calls, 788 tests across 162 files (965.32 s) — green WITH this round's changes.
-2. **Version surface**: `bun dist/cli.js --version` → `OCC 2.1.409` (build-time pkg version).
+2. **Version surface**: `bun dist/cli.js --version` → `OCC 2.1.410` on the shipped post-bump
+   build (review-fix round re-verified; the pre-bump research dist reported `OCC 2.1.409`).
 3. **REPL boot with ULTRATHINK enabled (default)**: tmux session boots to the prompt with no
    hang — the allowlist enablement has no blocking-init side effect (the KAIROS/UDS_INBOX
    failure mode explicitly ruled out live).
