@@ -425,3 +425,19 @@ Fixes committed on top of `50118c1d` and fast-forwarded to `main`; the v2.1.408 
 and NO 2.1.409 is cut until 验收员 re-verify passes (issue release flow: release AFTER acceptance).
 The CHANGELOG 2.1.408 section is amended in place so the raw-feed → warm-cache What's-new surface
 serves the corrected text immediately (P2-3 e2e assertion safe).
+
+**Release outcome (2026-10-31, post re-verify).** 验收员 independently re-ran the probes and passed
+the round (RE-VERIFICATION PASS on head `83511430`; one immaterial correction recorded: the 2
+remaining paste-pill literals outside the feed window sit in the **2.1.309** section — lines
+1697/1700 — not the 2.1.239 section as the fix-round comment said; neither is inside the
+`getRecentReleaseNotesSync(3)` top-3 window, so P2-3 is unaffected). 2.1.409 was then cut per the
+issue release flow: release commit `f004aba4` (CHANGELOG `## 2.1.409` section — zero bracket
+literals, feed-safe — + package.json bump) ff-pushed `83511430..f004aba4` on `main`; tag
+`v2.1.409` → `f004aba4` pushed; publish.yml run 41164690193 built green and failed at the npm
+Publish step with the known `E404 PUT @cnwenf%2focc` NPM_TOKEN debt (OCC-127/129 — not a
+regression; v2.1.407/v2.1.408 runs identical), so the `if: success()` Create GitHub Release step
+was skipped and the release was created manually (`gh release create v2.1.409 --generate-notes`):
+https://github.com/cnwenf/occ/releases/tag/v2.1.409. Parity verified: 208 remote v2.1.* tags ==
+208 GitHub Releases, zero missing. v2.1.408 tag untouched at `d0092e82`. Post-release docs commit
+folds in the reviewer's LOW note: README.md 3× count wording `PARTIAL 1` → `STAGED 1` (item-32
+re-annotation linkage; zh-CN/en READMEs unaffected).
