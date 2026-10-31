@@ -216,7 +216,10 @@ export function getWorkflowPrefixStaggerCapMs(env: NodeJS.ProcessEnv = process.e
  */
 export function buildWorkflowPrefixKey(parts: {
   model: string | undefined
-  effort: string | undefined
+  // EffortValue (level | integer) — CC 2.1.316 review P2-2: the effective
+  // effort can arrive loose-parsed as an integer (rK integer pass-through);
+  // String(effort ?? '') below is the official Ze shape either way.
+  effort: string | number | undefined
   agentType: string
   toolNames: string
   schemaJson: string
