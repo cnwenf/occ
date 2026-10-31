@@ -63,6 +63,12 @@ import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+// CC 2.1.316 (OCC-139): CLAUDE_CODE_SUBAGENT_EFFORT env default (official
+// XCt parser + Pxo resolver ports).
+import {
+  getSubagentEffortEnvDefault,
+  type EffortLevel,
+} from '../../utils/effort.js'
 
 /** Lifetime cap on total agent() calls across a workflow. Runaway backstop. */
 export const WORKFLOW_AGENT_LIFETIME_CAP = 1000
@@ -145,6 +151,49 @@ export function workflowAgentTelemetryAttributes(
     'workflow.run_id': runId,
     'workflow.name': workflowName,
   }
+}
+
+/**
+ * CC 2.1.316 (OCC-139) — official `Pxo` (@291219542, byte-verified), the
+ * CLAUDE_CODE_SUBAGENT_EFFORT resolver, ported for OCC's workflow agent()
+ * harness (the official call site @297031178 is the Workflow tool's agent():
+ *   `at=rK(Te?.effort)??Pxo(ct,Y.permissionLayers),
+ *    et=at!==void 0?{...ct,effort:at}:ct`
+ * — the env default is stamped onto the agent definition ONLY when the named
+ * per-agent effort parses to nothing; the official Task/Agent tool does NOT
+ * consult SUBAGENT_EFFORT):
+ *   `function Pxo(e,t){if(e.effort!==void 0||uE(e)||w_(t)!==void 0)return;
+ *     let n=i.CLAUDE_CODE_SUBAGENT_EFFORT;if(n===void 0)return;
+ *     let o=XCt();if(o!==void 0)g("subagent_effort_default");
+ *     else if(n!=="inherit")f("subagent_effort_default","unknown_level");
+ *     return o}`
+ *
+ * Guard arms `uE(e)` (@282513324 — built-in web-fetch agent; OCC ships no
+ * web-fetch workflow base) and `w_(t)` (@278930169 — permissionLayers effort
+ * layer; OCC has no permissionLayers store) are verified vacuous in OCC and
+ * omitted. `namedEffort !== ''` mirrors the call-site `rK(Te?.effort)` loose
+ * parser treating undefined/null/'' as unnamed (and OCC's agentDef only
+ * carries effort when opts.effort is truthy). Analytics arms map to OCC's
+ * stubbed logEvent (no-op parity, workflow telemetry convention); the
+ * 'inherit' comparison is case-strict per the official `n!=="inherit"`.
+ */
+export function resolveSubagentEffortEnvDefault(
+  namedEffort: string | undefined,
+): EffortLevel | undefined {
+  if (namedEffort !== undefined && namedEffort !== '') {
+    return undefined
+  }
+  const raw = process.env.CLAUDE_CODE_SUBAGENT_EFFORT
+  if (raw === undefined) {
+    return undefined
+  }
+  const parsed = getSubagentEffortEnvDefault()
+  if (parsed !== undefined) {
+    logEvent('subagent_effort_default')
+  } else if (raw !== 'inherit') {
+    logEvent('subagent_effort_default', { reason: 'unknown_level' })
+  }
+  return parsed
 }
 
 /** agent() options shape. */
@@ -494,9 +543,17 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     }
 
     // Build the ephemeral AgentDefinition.
+    // CC 2.1.316 (OCC-139): the CLAUDE_CODE_SUBAGENT_EFFORT env default is
+    // stamped onto the definition when the named effort parses to nothing —
+    // official call site @297031178 (`at=rK(Te?.effort)??Pxo(...)`,
+    // `et=at!==void 0?{...ct,effort:at}:ct`). A named opts.effort wins (the
+    // truthy spread below overrides the env default), matching the official
+    // precedence.
+    const envEffortDefault = resolveSubagentEffortEnvDefault(opts.effort)
     const agentDef = {
       ...GENERAL_PURPOSE_AGENT,
       agentType: opts.label ? `wf-${opts.label}` : 'workflow-agent',
+      ...(envEffortDefault !== undefined ? { effort: envEffortDefault } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
     }
 
@@ -577,7 +634,10 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     // happens before the "started" emit (binary: enter precedes the runner).
     const prefixKey = buildWorkflowPrefixKey({
       model: agentModel,
-      effort: opts.effort,
+      // CC 2.1.316 (OCC-139): the EFFECTIVE effort (named or env default) —
+      // siblings sharing a prompt prefix must share it even when the effort
+      // arrives via CLAUDE_CODE_SUBAGENT_EFFORT rather than opts.effort.
+      effort: agentDef.effort,
       agentType: agentDef.agentType,
       toolNames: ctx.availableTools.map(t => t.name).join(','),
       schemaJson: opts.schema ? JSON.stringify(opts.schema) : '',

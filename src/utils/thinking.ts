@@ -15,11 +15,22 @@ export type ThinkingConfig =
   | { type: 'disabled' }
 
 /**
- * Build-time gate (feature) + runtime gate (GrowthBook). The build flag
- * controls code inclusion in external builds; the GB flag controls rollout.
+ * Build-time gate (feature) + env kill switch + runtime gate (GrowthBook).
+ * The build flag controls code inclusion in external builds; the GB flag
+ * controls rollout.
+ *
+ * CC 2.1.316 (OCC-139): official gate `ePt` (@276986161, byte-verified):
+ *   `function ePt(){return!i.CLAUDE_CODE_DISABLE_ULTRATHINK&&v("tengu_turtle_carbon",!0)}`
+ * (v314's `hxt` @247108806 was just the GB read — the env arm is NEW in
+ * 2.1.316.) Raw truthiness `!env.X`: ANY non-empty value disables, including
+ * '0'/'false' — same official family as CLAUDE_CODE_DISABLE_WEB_FETCH
+ * (WebFetchTool precedent), so no isEnvTruthy bool-parse here.
  */
 export function isUltrathinkEnabled(): boolean {
   if (!feature('ULTRATHINK')) {
+    return false
+  }
+  if (process.env.CLAUDE_CODE_DISABLE_ULTRATHINK) {
     return false
   }
   return getFeatureValue_CACHED_MAY_BE_STALE('tengu_turtle_carbon', true)

@@ -49,6 +49,14 @@ describe('2.1.287 #25: rtt non-selected pointer color (subtle → inactive)', ()
 
   test('the pointer glyph + text still render', async () => {
     const out = await renderPointer()
-    expect(out).toContain('ultrathink about this')
+    // CC 2.1.316 (OCC-139): ULTRATHINK is now allowlisted (official ships the
+    // ultrathink gate ON — ePt @276986161), so the rtt trigger branch renders
+    // "ultrathink" with per-char rainbow SGR codes interleaved. Strip ANSI
+    // before the containment check — the official default-ON build renders
+    // the same rainbow split, so contiguous colored text is no longer the
+    // expected ANSI shape; the plain-text content is unchanged.
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI-strip — the regex intentionally matches the ESC (\u001b) control character to remove the per-char rainbow SGR codes (same pattern as rawHyperlinkSanitize295).
+    const plain = out.replace(/\u001b\[[0-9;]*m/g, '')
+    expect(plain).toContain('ultrathink about this')
   })
 })
